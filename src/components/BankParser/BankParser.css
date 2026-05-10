@@ -75,10 +75,33 @@
   margin-bottom: 15px;
 }
 
+.file-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
 .file-list h4 {
-  margin-bottom: 10px;
+  margin: 0;
   color: #333;
   font-size: 14px;
+}
+
+.btn-clear-all {
+  background: #ff9800;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.btn-clear-all:hover {
+  background: #f57c00;
 }
 
 .file-list ul {

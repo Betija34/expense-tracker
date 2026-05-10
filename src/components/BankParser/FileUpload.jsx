@@ -86,12 +86,14 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
 
     const issues = []
     for (const tx of transactions) {
-      const txDate = new Date(tx.date)
-      const txMonth = txDate.getMonth() + 1
-      const txYear = txDate.getFullYear()
+      // Parse ISO format date (YYYY-MM-DD)
+      const [year, month, day] = tx.date.split('-')
+      const txMonth = parseInt(month)
+      const txYear = parseInt(year)
 
       if (txMonth !== fileMonth.month || txYear !== fileMonth.year) {
-        issues.push(`Transaction on ${tx.date} doesn't match file month (${fileMonth.name} ${fileMonth.year})`)
+        const displayDate = new Date(`${year}-${month}-${day}T00:00:00Z`).toLocaleDateString()
+        issues.push(`Transaction on ${displayDate} doesn't match file month (${fileMonth.name} ${fileMonth.year})`)
       }
     }
 
@@ -101,13 +103,24 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
     }
   }
 
-  // Detect account type from OCR text
-  const detectAccountType = (text) => {
-    const lowerText = text.toLowerCase()
-    if (lowerText.includes('mastercard') || lowerText.includes('credit')) {
-      return 'Mastercard'
+  // Extract account number from OCR text (appears at top of statement)
+  // Returns { accountNumber, accountType } or { accountNumber: null, accountType: 'Unknown' }
+  const extractAccountNumber = (text) => {
+    // Account numbers for Rabona accounts
+    const accountMappings = {
+      '357032438089': 'Current Account',  // RCC
+      '357535881125': 'Mastercard'         // RMC
     }
-    return 'Current Account'
+
+    // Try to find any known account number in the text
+    for (const [accountNum, accountType] of Object.entries(accountMappings)) {
+      if (text.includes(accountNum)) {
+        return { accountNumber: accountNum, accountType }
+      }
+    }
+
+    // If no account number found, return unknown
+    return { accountNumber: null, accountType: 'Unknown' }
   }
 
   // Extract transactions from OCR text
@@ -127,13 +140,23 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
     for (const pattern of patterns) {
       let match
       while ((match = pattern.exec(text)) !== null) {
-        const [, date, vendor, amountStr] = match
+        const [, dateStr, vendor, amountStr] = match
         if (vendor && vendor.trim().length > 0) {
           // Parse European number format: 8.000,00 → 8000.00
           const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
 
+          // Convert DD/MM/YYYY or DD-MM-YYYY to ISO 8601 format (YYYY-MM-DD)
+          let isoDate
+          if (dateStr.includes('/')) {
+            const [day, month, year] = dateStr.split('/')
+            isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+          } else {
+            const [day, month, year] = dateStr.split('-')
+            isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+          }
+
           transactions.push({
-            date: date.replace(/\//g, '-').replace(/-/g, '/'),
+            date: isoDate,
             vendor: vendor.trim(),
             amount: parsedAmount,
             currency: 'EUR',
@@ -163,12 +186,17 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
 
           const text = result.data.text
           const transactions = extractTransactions(text)
-          const accountType = detectAccountType(text)
+          const { accountNumber, accountType } = extractAccountNumber(text)
+
+          if (!accountNumber) {
+            throw new Error('Could not identify account number in statement. Ensure this is a valid Rabona bank statement.')
+          }
 
           resolve({
             file: file.name,
             text: text,
             transactions: transactions,
+            accountNumber: accountNumber,
             accountType: accountType,
             transactionCount: transactions.length
           })
@@ -185,6 +213,9 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
       setError('Please select at least one file')
       return
     }
+
+    // Store files before upload (so we can show them after)
+    const filesToUpload = [...files]
 
     try {
       setUploading(true)
@@ -254,9 +285,10 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
         if (fileMonth && fileData.transactions && fileData.transactions.length > 0) {
           const validation = validateTransactionDates(fileData.transactions, fileMonth)
           if (!validation.valid) {
-            console.warn(`⚠️ Month mismatch in ${file.name}:`, validation.issues)
-            // Still allow upload but log the warning
-            fileData.monthWarning = validation.issues
+            // BLOCK UPLOAD - Month mismatch is a critical error
+            throw new Error(
+              `❌ Month mismatch in "${file.name}":\n${validation.issues.join('\n')}\n\nFile claims to be ${fileMonth.name.toUpperCase()} ${fileMonth.year}, but contains transactions from other months. Please verify the file is correct.`
+            )
           }
           fileData.fileMonth = fileMonth
         }
@@ -266,18 +298,18 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
         setProcessingStatus(`Processed ${processedData.length}/${files.length} files...`)
       }
 
-      // Find appropriate account based on detected type
+      // Match account by account number (extracted from bank statement)
+      const firstFileAccountNumber = processedData[0]?.accountNumber
       const primaryAccount = accounts.find(a => {
+        // Try to match by account type first (from OCR)
         if (processedData[0]?.accountType === 'Mastercard') {
           return a.name === 'Mastercard'
         }
         return a.name === 'Current Account'
       }) || accounts[0]
 
-      // Generate file name: COMPANY-MONTH-YEAR-TRANSACTIONCOUNT.png
-      const now = new Date()
-      const monthYear = `${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`
-      const fileName = `${selectedCompany.split(' ')[0]}-${monthYear}-${totalTransactions}.png`
+      // Use original filename - keep as provided by user
+      const originalFileName = files[0].name
 
       // Create bank import record
       setProcessingStatus('Saving to database...')
@@ -288,7 +320,7 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
           company_id: company.id,
           account_id: primaryAccount.id,
           import_date: new Date().toISOString().split('T')[0],
-          file_name: fileName,
+          file_name: originalFileName,
           file_type: files[0].type.startsWith('image/') ? 'image' : 'csv',
           transaction_count: totalTransactions,
           status: 'completed'
@@ -322,15 +354,16 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
       }
 
       setProcessingStatus('')
-      setSuccess(`Successfully imported ${totalTransactions} transactions from ${files.length} file(s)!`)
-      setFiles([])
+      setSuccess(`✅ Successfully imported ${totalTransactions} transactions from ${filesToUpload.length} file(s)!`)
+      // DON'T clear files - keep them visible so user can add more or see what was uploaded
+      // setFiles([])
 
       // Trigger callback to refresh
       if (onUploadSuccess) {
         onUploadSuccess(bankImport.id)
       }
 
-      setTimeout(() => setSuccess(null), 5000)
+      setTimeout(() => setSuccess(null), 7000)
     } catch (err) {
       console.error('Upload error:', err)
       setError(err.message || 'Upload failed')
@@ -371,7 +404,16 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
 
       {files.length > 0 && (
         <div className="file-list">
-          <h4>Selected Files ({files.length})</h4>
+          <div className="file-list-header">
+            <h4>Selected Files ({files.length})</h4>
+            <button
+              onClick={() => setFiles([])}
+              className="btn-clear-all"
+              title="Clear all files from list"
+            >
+              Clear All
+            </button>
+          </div>
           <ul>
             {files.map((file, idx) => (
               <li key={idx}>
@@ -379,6 +421,7 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
                 <button
                   onClick={() => removeFile(idx)}
                   className="btn-remove"
+                  title="Remove this file"
                 >
                   ✕
                 </button>

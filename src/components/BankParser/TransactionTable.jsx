@@ -211,7 +211,12 @@ export function TransactionTable({ bankImportId, selectedCompany, onStatusChange
                   <td className="account-badge">
                     {getAccountAbbreviation(transaction.accounts?.name)}
                   </td>
-                  <td>{new Date(transaction.transaction_date).toLocaleDateString()}</td>
+                  <td>
+                    {(() => {
+                      const [year, month, day] = transaction.transaction_date.split('-')
+                      return `${day}/${month}/${year}`
+                    })()}
+                  </td>
                   <td>{transaction.description}</td>
                   <td className={transaction.transaction_type === 'credit' ? 'amount-incoming' : 'amount-outgoing'}>
                     ${Math.abs(transaction.amount).toFixed(2)}
