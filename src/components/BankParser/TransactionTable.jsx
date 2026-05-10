@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
+import { EditTransaction } from './EditTransaction'
 import './BankParser.css'
 
-export function TransactionTable({ bankImportId, selectedCompany }) {
+export function TransactionTable({ bankImportId, selectedCompany, onStatusChange }) {
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(false)
   const [selectedTransactions, setSelectedTransactions] = useState(new Set())
+  const [filterStatus, setFilterStatus] = useState('all') // 'all', 'matched', 'unmatched'
+  const [editingTransaction, setEditingTransaction] = useState(null)
 
   useEffect(() => {
     if (bankImportId) {
@@ -18,7 +21,7 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
       setLoading(true)
       const { data, error } = await supabase
         .from('bank_transactions')
-        .select('*')
+        .select('*, accounts(name)')
         .eq('bank_import_id', bankImportId)
         .order('transaction_date', { ascending: false })
 
@@ -28,6 +31,25 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
       console.error('Error loading transactions:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const getAccountAbbreviation = (accountName) => {
+    if (!accountName) return '—'
+    if (accountName.includes('Mastercard')) return 'RMC'
+    if (accountName.includes('Current')) return 'RCC'
+    return '—'
+  }
+
+  const getRowClassName = (transaction) => {
+    const isIncoming = transaction.transaction_type === 'credit'
+    const accountName = transaction.accounts?.name || ''
+    const isMastercard = accountName.includes('Mastercard')
+
+    if (isMastercard) {
+      return isIncoming ? 'row-rmc-incoming' : 'row-rmc-outgoing'
+    } else {
+      return isIncoming ? 'row-rcc-incoming' : 'row-rcc-outgoing'
     }
   }
 
@@ -48,7 +70,7 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
     }
 
     try {
-      // Update selected transactions status to 'ready_import'
+      // Update selected transactions status to 'matched'
       const transactionsToImport = transactions.filter(t =>
         selectedTransactions.has(t.id)
       )
@@ -60,12 +82,17 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
           .eq('id', transaction.id)
       }
 
-      alert(`${transactionsToImport.length} transaction(s) imported`)
+      alert(`${transactionsToImport.length} transaction(s) finalized`)
       loadTransactions()
       setSelectedTransactions(new Set())
+
+      // Trigger parent callback to refresh stats
+      if (onStatusChange) {
+        onStatusChange()
+      }
     } catch (err) {
-      console.error('Error importing transactions:', err)
-      alert('Error importing transactions')
+      console.error('Error finalizing transactions:', err)
+      alert('Error finalizing transactions')
     }
   }
 
@@ -83,6 +110,14 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
 
   const selectedCount = selectedTransactions.size
   const importedCount = transactions.filter(t => t.status === 'matched').length
+  const unmatchedCount = transactions.filter(t => t.status === 'unmatched').length
+
+  // Filter transactions based on selected filter
+  const filteredTransactions = transactions.filter(t => {
+    if (filterStatus === 'matched') return t.status === 'matched'
+    if (filterStatus === 'unmatched') return t.status === 'unmatched'
+    return true
+  })
 
   return (
     <div className="transaction-section">
@@ -91,71 +126,123 @@ export function TransactionTable({ bankImportId, selectedCompany }) {
         <div className="transaction-stats">
           <span>Total: {transactions.length}</span>
           <span>Selected: {selectedCount}</span>
-          <span>Imported: {importedCount}</span>
+          <span>Finalized: {importedCount}</span>
         </div>
       </div>
 
-      {selectedCount > 0 && (
+      {/* Filter buttons */}
+      <div className="filter-group">
         <button
-          onClick={handleImportSelected}
-          className="button"
+          className={`filter-btn ${filterStatus === 'all' ? 'active' : ''}`}
+          onClick={() => setFilterStatus('all')}
         >
-          Import {selectedCount} Transaction(s)
+          All ({transactions.length})
         </button>
+        <button
+          className={`filter-btn ${filterStatus === 'unmatched' ? 'active' : ''}`}
+          onClick={() => setFilterStatus('unmatched')}
+        >
+          Pending ({unmatchedCount})
+        </button>
+        <button
+          className={`filter-btn ${filterStatus === 'matched' ? 'active' : ''}`}
+          onClick={() => setFilterStatus('matched')}
+        >
+          Finalized ({importedCount})
+        </button>
+      </div>
+
+      {selectedCount > 0 && (
+        <div className="action-buttons">
+          <button
+            onClick={handleImportSelected}
+            className="button"
+          >
+            ✓ Finalize {selectedCount} Transaction(s)
+          </button>
+        </div>
       )}
 
       <div className="table-container">
-        <table className="bank-transactions-table">
-          <thead>
-            <tr>
-              <th width="40">
-                <input
-                  type="checkbox"
-                  checked={selectedCount === transactions.filter(t => t.status === 'unmatched').length && selectedCount > 0}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      const unmatchedIds = transactions
-                        .filter(t => t.status === 'unmatched')
-                        .map(t => t.id)
-                      setSelectedTransactions(new Set(unmatchedIds))
-                    } else {
-                      setSelectedTransactions(new Set())
-                    }
-                  }}
-                />
-              </th>
-              <th>Date</th>
-              <th>Description</th>
-              <th>Amount</th>
-              <th>Type</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {transactions.map(transaction => (
-              <tr key={transaction.id} className={`status-${transaction.status}`}>
-                <td>
+        {filteredTransactions.length === 0 ? (
+          <div className="empty-state">
+            <p>No transactions match the current filter</p>
+          </div>
+        ) : (
+          <table className="bank-transactions-table">
+            <thead>
+              <tr>
+                <th width="40">
                   <input
                     type="checkbox"
-                    checked={selectedTransactions.has(transaction.id)}
-                    onChange={() => toggleTransaction(transaction.id)}
-                    disabled={transaction.status !== 'unmatched'}
+                    checked={selectedCount === filteredTransactions.filter(t => t.status === 'unmatched').length && selectedCount > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const unmatchedIds = filteredTransactions
+                          .filter(t => t.status === 'unmatched')
+                          .map(t => t.id)
+                        setSelectedTransactions(new Set(unmatchedIds))
+                      } else {
+                        setSelectedTransactions(new Set())
+                      }
+                    }}
                   />
-                </td>
-                <td>{new Date(transaction.transaction_date).toLocaleDateString()}</td>
-                <td>{transaction.description}</td>
-                <td className={transaction.transaction_type === 'credit' ? 'amount-incoming' : 'amount-outgoing'}>
-                  ${Math.abs(transaction.amount).toFixed(2)}
-                </td>
-                <td>{transaction.transaction_type === 'credit' ? '➕ In' : '➖ Out'}</td>
-                <td>
-                  {transaction.status === 'matched' ? '✅ Imported' : '⏳ Pending'}
-                </td>
+                </th>
+                <th>Account</th>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Amount</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th width="60">Edit</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filteredTransactions.map(transaction => (
+                <tr key={transaction.id} className={getRowClassName(transaction)}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedTransactions.has(transaction.id)}
+                      onChange={() => toggleTransaction(transaction.id)}
+                      disabled={transaction.status !== 'unmatched'}
+                    />
+                  </td>
+                  <td className="account-badge">
+                    {getAccountAbbreviation(transaction.accounts?.name)}
+                  </td>
+                  <td>{new Date(transaction.transaction_date).toLocaleDateString()}</td>
+                  <td>{transaction.description}</td>
+                  <td className={transaction.transaction_type === 'credit' ? 'amount-incoming' : 'amount-outgoing'}>
+                    ${Math.abs(transaction.amount).toFixed(2)}
+                  </td>
+                  <td>{transaction.transaction_type === 'credit' ? '➕ In' : '➖ Out'}</td>
+                  <td>
+                    {transaction.status === 'matched' ? '✅ Finalized' : '⏳ Pending'}
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => setEditingTransaction(transaction)}
+                      className="btn-edit"
+                      title="Edit transaction"
+                    >
+                      ✎
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+
+      {editingTransaction && (
+        <EditTransaction
+          transaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSave={loadTransactions}
+        />
+      )}
     </div>
   )
 }
