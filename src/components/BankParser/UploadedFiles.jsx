@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
 
-export function UploadedFiles({ bankImportId, selectedCompany, onRefresh }) {
+export function UploadedFiles({ selectedCompany, onRefresh }) {
   const [imports, setImports] = useState([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!selectedCompany) return
     loadImports()
-  }, [selectedCompany, bankImportId, onRefresh])
+  }, [selectedCompany, onRefresh])
 
   const loadImports = async () => {
     try {

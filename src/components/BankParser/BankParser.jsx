@@ -7,29 +7,36 @@ import { UploadedFiles } from './UploadedFiles'
 import './BankParser.css'
 
 export function BankParser({ selectedCompany }) {
-  const [currentBankImportId, setCurrentBankImportId] = useState(null)
   const [stats, setStats] = useState({ totalTransactions: 0, editedCount: 0, finalizedCount: 0 })
   const [refreshTrigger, setRefreshTrigger] = useState(0)
 
-  // Load stats whenever bankImportId changes
   useEffect(() => {
-    if (currentBankImportId) {
+    if (selectedCompany) {
       loadStats()
     }
-  }, [currentBankImportId, refreshTrigger])
+  }, [selectedCompany, refreshTrigger])
 
   const loadStats = async () => {
     try {
+      // Get company ID first
+      const { data: company } = await supabase
+        .from('companies')
+        .select('id')
+        .eq('name', selectedCompany)
+        .single()
+
+      if (!company) return
+
+      // Query all transactions for this company
       const { data: transactions, error } = await supabase
         .from('bank_transactions')
         .select('*')
-        .eq('bank_import_id', currentBankImportId)
+        .eq('company_id', company.id)
 
       if (error) throw error
 
       const total = transactions?.length || 0
       const finalized = transactions?.filter(t => t.status === 'matched').length || 0
-      // edited count could be transactions that have been modified - for now, use pending unmatched
       const edited = transactions?.filter(t => t.status === 'unmatched').length || 0
 
       setStats({
@@ -42,8 +49,8 @@ export function BankParser({ selectedCompany }) {
     }
   }
 
-  const handleUploadSuccess = (bankImportId) => {
-    setCurrentBankImportId(bankImportId)
+  const handleUploadSuccess = () => {
+    // Refresh stats after upload (doesn't matter which file was uploaded)
     setRefreshTrigger(prev => prev + 1)
   }
 
@@ -66,15 +73,14 @@ export function BankParser({ selectedCompany }) {
 
         {/* Uploaded Files Section - Moved up for better UX */}
         <UploadedFiles
-          bankImportId={currentBankImportId}
           selectedCompany={selectedCompany}
           onRefresh={handleImportRefresh}
         />
 
         <hr className="section-divider" />
 
-        {/* Stats Section - Only show if we have an import */}
-        {currentBankImportId && (
+        {/* Stats Section - Show if we have transactions */}
+        {stats.totalTransactions > 0 && (
           <>
             <BankParserStats stats={stats} />
             <hr className="section-divider" />
@@ -83,7 +89,6 @@ export function BankParser({ selectedCompany }) {
 
         {/* Transactions Section */}
         <TransactionTable
-          bankImportId={currentBankImportId}
           selectedCompany={selectedCompany}
           onStatusChange={loadStats}
           refreshTrigger={refreshTrigger}

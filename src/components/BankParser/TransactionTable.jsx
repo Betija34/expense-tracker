@@ -3,7 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { EditTransaction } from './EditTransaction'
 import './BankParser.css'
 
-export function TransactionTable({ bankImportId, selectedCompany, onStatusChange, refreshTrigger }) {
+export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigger }) {
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(false)
   const [selectedTransactions, setSelectedTransactions] = useState(new Set())
@@ -11,18 +11,33 @@ export function TransactionTable({ bankImportId, selectedCompany, onStatusChange
   const [editingTransaction, setEditingTransaction] = useState(null)
 
   useEffect(() => {
-    if (bankImportId) {
+    if (selectedCompany) {
       loadTransactions()
     }
-  }, [bankImportId, refreshTrigger])
+  }, [selectedCompany, refreshTrigger])
 
   const loadTransactions = async () => {
     try {
       setLoading(true)
+
+      // Get company ID
+      const { data: company } = await supabase
+        .from('companies')
+        .select('id')
+        .eq('name', selectedCompany)
+        .single()
+
+      if (!company) {
+        setTransactions([])
+        setLoading(false)
+        return
+      }
+
+      // Query all transactions for this company
       const { data, error } = await supabase
         .from('bank_transactions')
         .select('*, accounts(name)')
-        .eq('bank_import_id', bankImportId)
+        .eq('company_id', company.id)
         .order('transaction_date', { ascending: false })
 
       if (error) throw error
