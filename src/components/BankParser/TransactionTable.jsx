@@ -3,7 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { EditTransaction } from './EditTransaction'
 import './BankParser.css'
 
-export function TransactionTable({ bankImportId, selectedCompany, onStatusChange }) {
+export function TransactionTable({ bankImportId, selectedCompany, onStatusChange, refreshTrigger }) {
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(false)
   const [selectedTransactions, setSelectedTransactions] = useState(new Set())
@@ -14,7 +14,7 @@ export function TransactionTable({ bankImportId, selectedCompany, onStatusChange
     if (bankImportId) {
       loadTransactions()
     }
-  }, [bankImportId])
+  }, [bankImportId, refreshTrigger])
 
   const loadTransactions = async () => {
     try {

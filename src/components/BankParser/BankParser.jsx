@@ -86,6 +86,7 @@ export function BankParser({ selectedCompany }) {
           bankImportId={currentBankImportId}
           selectedCompany={selectedCompany}
           onStatusChange={loadStats}
+          refreshTrigger={refreshTrigger}
         />
       </div>
     </div>
