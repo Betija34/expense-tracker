@@ -64,6 +64,15 @@ export function BankParser({ selectedCompany }) {
 
         <hr className="section-divider" />
 
+        {/* Uploaded Files Section - Moved up for better UX */}
+        <UploadedFiles
+          bankImportId={currentBankImportId}
+          selectedCompany={selectedCompany}
+          onRefresh={handleImportRefresh}
+        />
+
+        <hr className="section-divider" />
+
         {/* Stats Section - Only show if we have an import */}
         {currentBankImportId && (
           <>
@@ -77,15 +86,6 @@ export function BankParser({ selectedCompany }) {
           bankImportId={currentBankImportId}
           selectedCompany={selectedCompany}
           onStatusChange={loadStats}
-        />
-
-        <hr className="section-divider" />
-
-        {/* Uploaded Files Section */}
-        <UploadedFiles
-          bankImportId={currentBankImportId}
-          selectedCompany={selectedCompany}
-          onRefresh={handleImportRefresh}
         />
       </div>
     </div>
