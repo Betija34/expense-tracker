@@ -114,24 +114,30 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
   const extractTransactions = (text) => {
     const transactions = []
 
-    // Match patterns like: DATE VENDOR AMOUNT
-    // This is a basic pattern - adjust based on your bank statement format
+    // Match patterns for bank statement format:
+    // DD/MM/YYYY  Description  Amount(EUR)
+    // Amount format: European (comma as decimal, dot as thousands: 8.000,00)
     const patterns = [
-      /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+(€|USD|\$)\s*([\d,]+\.?\d*)/gi,
-      /(\d{2}-\d{2}-\d{4})\s+(.+?)\s+(€|USD|\$)\s*([\d,]+\.?\d*)/gi,
+      // Pattern 1: DD/MM/YYYY with European number format (8.000,00)
+      /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
+      // Pattern 2: DD-MM-YYYY with European number format
+      /(\d{2}-\d{2}-\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
     ]
 
     for (const pattern of patterns) {
       let match
       while ((match = pattern.exec(text)) !== null) {
-        const [, date, vendor, currency, amount] = match
+        const [, date, vendor, amountStr] = match
         if (vendor && vendor.trim().length > 0) {
+          // Parse European number format: 8.000,00 → 8000.00
+          const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
+
           transactions.push({
             date: date.replace(/\//g, '-').replace(/-/g, '/'),
             vendor: vendor.trim(),
-            amount: parseFloat(amount.replace(',', '')),
-            currency: currency,
-            type: amount.includes('-') ? 'debit' : 'credit',
+            amount: parsedAmount,
+            currency: 'EUR',
+            type: parsedAmount < 0 ? 'debit' : 'credit',
             status: 'pending'
           })
         }
