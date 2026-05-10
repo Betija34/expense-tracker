@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rabona Holdings - Expense Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        header {
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%);
+            color: white;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 5px;
+        }
+
+        header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #ddd;
+        }
+
+        .tab-button {
+            padding: 12px 20px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 16px;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab-button.active {
+            color: #2E7D32;
+            border-bottom-color: #2E7D32;
+        }
+
+        .tab-button:hover {
+            color: #2E7D32;
+        }
+
+        .tab-content {
+            display: none;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #2E7D32;
+            box-shadow: 0 0 0 3px rgba(46, 125, 50, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .button {
+            background: #2E7D32;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        .button:hover {
+            background: #1B5E20;
+        }
+
+        .button.secondary {
+            background: #666;
+        }
+
+        .button.secondary:hover {
+            background: #444;
+        }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-left: 4px solid #2E7D32;
+        }
+
+        .card h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .card .value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #2E7D32;
+        }
+
+        .filters {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
+
+        th {
+            background: #f5f5f5;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #ddd;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        .status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status.complete {
+            background: #E8F5E9;
+            color: #2E7D32;
+        }
+
+        .status.incomplete {
+            background: #FFF3E0;
+            color: #F57C00;
+        }
+
+        .amount {
+            color: #2E7D32;
+            font-weight: 600;
+        }
+
+        .message {
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+
+        .message.success {
+            background: #E8F5E9;
+            color: #2E7D32;
+            border-left: 4px solid #2E7D32;
+        }
+
+        .message.error {
+            background: #FFEBEE;
+            color: #C62828;
+            border-left: 4px solid #C62828;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .summary-cards {
+                grid-template-columns: 1fr;
+            }
+
+            .filters {
+                grid-template-columns: 1fr;
+            }
+
+            table {
+                font-size: 12px;
+            }
+
+            td, th {
+                padding: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Rabona Holdings - Expense Tracker</h1>
+        <p>April 2026 | Web Version</p>
+    </header>
+
+    <div class="container">
+        <div class="tabs">
+            <button class="tab-button active" onclick="showTab('dashboard')">Dashboard</button>
+            <button class="tab-button" onclick="showTab('add-expense')">Add Expense</button>
+            <button class="tab-button" onclick="showTab('view-expenses')">View Expenses</button>
+            <button class="tab-button" onclick="showTab('reports')">Reports</button>
+        </div>
+
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <h2>Dashboard</h2>
+            <div class="summary-cards" id="summaryCards">
+                <div class="card">
+                    <h3>Total Expenses</h3>
+                    <div class="value" id="totalExpenses">€0.00</div>
+                </div>
+                <div class="card">
+                    <h3>Complete Entries</h3>
+                    <div class="value" id="completeCount">0</div>
+                </div>
+                <div class="card">
+                    <h3>Incomplete Entries</h3>
+                    <div class="value" id="incompleteCount">0</div>
+                </div>
+                <div class="card">
+                    <h3>Number of Transactions</h3>
+                    <div class="value" id="transactionCount">0</div>
+                </div>
+            </div>
+
+            <h3>Category Breakdown</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Total</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody id="categoryBreakdown">
+                    <tr>
+                        <td colspan="3" class="empty-state">No expenses yet</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Add Expense Tab -->
+        <div id="add-expense" class="tab-content">
+            <h2>Add Expense Entry</h2>
+            <div id="messageBox"></div>
+
+            <form id="expenseForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="reference">Reference *</label>
+                        <input type="text" id="reference" placeholder="e.g., 26/04/1" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="date">Date (DD/MM/YYYY) *</label>
+                        <input type="text" id="date" placeholder="DD/MM/YYYY" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="vendor">Vendor *</label>
+                        <input type="text" id="vendor" placeholder="Vendor name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="amount">Amount (€) *</label>
+                        <input type="number" id="amount" placeholder="0.00" step="0.01" min="0" required>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="description">Description</label>
+                    <textarea id="description" placeholder="What was purchased..."></textarea>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="category">Category *</label>
+                        <select id="category" required>
+                            <option value="">Select a category</option>
+                            <option value="Travel">Travel</option>
+                            <option value="Meals">Meals</option>
+                            <option value="Office">Office</option>
+                            <option value="Utilities">Utilities</option>
+                            <option value="Professional Services">Professional Services</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="paymentMethod">Payment Method *</label>
+                        <select id="paymentMethod" required>
+                            <option value="">Select method</option>
+                            <option value="Cash">Cash</option>
+                            <option value="Card">Card</option>
+                            <option value="Transfer">Transfer</option>
+                            <option value="Cheque">Cheque</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="status">Status *</label>
+                        <select id="status" required>
+                            <option value="Complete">Complete</option>
+                            <option value="Incomplete">Incomplete</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="document">Document/Receipt</label>
+                        <input type="file" id="document" accept="image/*,.pdf">
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button type="submit" class="button">Save Expense</button>
+                    <button type="reset" class="button secondary">Clear</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- View Expenses Tab -->
+        <div id="view-expenses" class="tab-content">
+            <h2>View Expenses</h2>
+
+            <div class="filters">
+                <input type="text" id="filterVendor" placeholder="Filter by vendor...">
+                <select id="filterCategory">
+                    <option value="">All Categories</option>
+                    <option value="Travel">Travel</option>
+                    <option value="Meals">Meals</option>
+                    <option value="Office">Office</option>
+                    <option value="Utilities">Utilities</option>
+                    <option value="Professional Services">Professional Services</option>
+                    <option value="Other">Other</option>
+                </select>
+                <select id="filterStatus">
+                    <option value="">All Status</option>
+                    <option value="Complete">Complete</option>
+                    <option value="Incomplete">Incomplete</option>
+                </select>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Reference</th>
+                        <th>Date</th>
+                        <th>Vendor</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="expenseTable">
+                    <tr>
+                        <td colspan="7" class="empty-state">No expenses added yet. Add one to get started!</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Reports Tab -->
+        <div id="reports" class="tab-content">
+            <h2>Reports & Export</h2>
+
+            <div class="action-buttons">
+                <button class="button" onclick="exportToExcel()">Export to Excel</button>
+                <button class="button secondary" onclick="printReport()">Print Report</button>
+            </div>
+
+            <h3 style="margin-top: 30px;">Recent Transactions</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Reference</th>
+                        <th>Date</th>
+                        <th>Vendor</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody id="recentTransactions">
+                    <tr>
+                        <td colspan="6" class="empty-state">No transactions yet</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Initialize app
+        const app = {
+            expenses: JSON.parse(localStorage.getItem('rabona_expenses')) || [],
+
+            init() {
+                this.setupEventListeners();
+                this.updateDashboard();
+                this.renderExpenseTable();
+            },
+
+            setupEventListeners() {
+                document.getElementById('expenseForm').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.addExpense();
+                });
+
+                document.getElementById('filterVendor').addEventListener('input', () => this.renderExpenseTable());
+                document.getElementById('filterCategory').addEventListener('change', () => this.renderExpenseTable());
+                document.getElementById('filterStatus').addEventListener('change', () => this.renderExpenseTable());
+            },
+
+            addExpense() {
+                const reference = document.getElementById('reference').value;
+                const date = document.getElementById('date').value;
+                const vendor = document.getElementById('vendor').value;
+                const amount = parseFloat(document.getElementById('amount').value);
+                const description = document.getElementById('description').value;
+                const category = document.getElementById('category').value;
+                const paymentMethod = document.getElementById('paymentMethod').value;
+                const status = document.getElementById('status').value;
+                const documentFile = document.getElementById('document').files[0];
+
+                // Validate
+                if (!reference || !date || !vendor || !amount || !category || !paymentMethod) {
+                    this.showMessage('Please fill in all required fields', 'error');
+                    return;
+                }
+
+                // Check if reference already exists
+                if (this.expenses.some(e => e.reference === reference)) {
+                    this.showMessage('This reference already exists', 'error');
+                    return;
+                }
+
+                const expense = {
+                    id: Date.now(),
+                    reference,
+                    date,
+                    vendor,
+                    amount,
+                    description,
+                    category,
+                    paymentMethod,
+                    status,
+                    document: documentFile ? documentFile.name : '',
+                    createdAt: new Date().toISOString()
+                };
+
+                this.expenses.push(expense);
+                this.save();
+                this.showMessage('Expense saved successfully!', 'success');
+                document.getElementById('expenseForm').reset();
+                this.updateDashboard();
+                this.renderExpenseTable();
+            },
+
+            deleteExpense(id) {
+                if (confirm('Are you sure you want to delete this entry?')) {
+                    this.expenses = this.expenses.filter(e => e.id !== id);
+                    this.save();
+                    this.updateDashboard();
+                    this.renderExpenseTable();
+                    this.showMessage('Expense deleted', 'success');
+                }
+            },
+
+            updateDashboard() {
+                const total = this.expenses.reduce((sum, e) => sum + e.amount, 0);
+                const complete = this.expenses.filter(e => e.status === 'Complete').length;
+                const incomplete = this.expenses.filter(e => e.status === 'Incomplete').length;
+
+                document.getElementById('totalExpenses').textContent = `€${total.toFixed(2)}`;
+                document.getElementById('completeCount').textContent = complete;
+                document.getElementById('incompleteCount').textContent = incomplete;
+                document.getElementById('transactionCount').textContent = this.expenses.length;
+
+                this.updateCategoryBreakdown();
+                this.updateRecentTransactions();
+            },
+
+            updateCategoryBreakdown() {
+                const categories = {};
+                this.expenses.forEach(e => {
+                    if (!categories[e.category]) {
+                        categories[e.category] = { total: 0, count: 0 };
+                    }
+                    categories[e.category].total += e.amount;
+                    categories[e.category].count += 1;
+                });
+
+                const tbody = document.getElementById('categoryBreakdown');
+                if (Object.keys(categories).length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No expenses yet</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = Object.entries(categories)
+                    .map(([cat, data]) => `
+                        <tr>
+                            <td>${cat}</td>
+                            <td class="amount">€${data.total.toFixed(2)}</td>
+                            <td>${data.count}</td>
+                        </tr>
+                    `)
+                    .join('');
+            },
+
+            updateRecentTransactions() {
+                const recent = [...this.expenses].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 10);
+                const tbody = document.getElementById('recentTransactions');
+
+                if (recent.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No transactions yet</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = recent.map(e => `
+                    <tr>
+                        <td>${e.reference}</td>
+                        <td>${e.date}</td>
+                        <td>${e.vendor}</td>
+                        <td>${e.category}</td>
+                        <td class="amount">€${e.amount.toFixed(2)}</td>
+                        <td>${e.description || '-'}</td>
+                    </tr>
+                `).join('');
+            },
+
+            renderExpenseTable() {
+                let filtered = this.expenses;
+
+                const vendorFilter = document.getElementById('filterVendor').value.toLowerCase();
+                const categoryFilter = document.getElementById('filterCategory').value;
+                const statusFilter = document.getElementById('filterStatus').value;
+
+                if (vendorFilter) {
+                    filtered = filtered.filter(e => e.vendor.toLowerCase().includes(vendorFilter));
+                }
+                if (categoryFilter) {
+                    filtered = filtered.filter(e => e.category === categoryFilter);
+                }
+                if (statusFilter) {
+                    filtered = filtered.filter(e => e.status === statusFilter);
+                }
+
+                const tbody = document.getElementById('expenseTable');
+                if (filtered.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No expenses match your filters</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = filtered
+                    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                    .map(e => `
+                        <tr>
+                            <td><strong>${e.reference}</strong></td>
+                            <td>${e.date}</td>
+                            <td>${e.vendor}</td>
+                            <td>${e.category}</td>
+                            <td class="amount">€${e.amount.toFixed(2)}</td>
+                            <td><span class="status ${e.status.toLowerCase()}">${e.status}</span></td>
+                            <td><button class="button secondary" style="padding: 6px 12px; font-size: 12px;" onclick="app.deleteExpense(${e.id})">Delete</button></td>
+                        </tr>
+                    `)
+                    .join('');
+            },
+
+            showMessage(text, type) {
+                const box = document.getElementById('messageBox');
+                box.innerHTML = `<div class="message ${type}">${text}</div>`;
+                setTimeout(() => { box.innerHTML = ''; }, 3000);
+            },
+
+            save() {
+                localStorage.setItem('rabona_expenses', JSON.stringify(this.expenses));
+            }
+        };
+
+        // Tab switching
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Export to Excel
+        function exportToExcel() {
+            if (app.expenses.length === 0) {
+                alert('No expenses to export');
+                return;
+            }
+
+            let csv = 'Reference,Date,Vendor,Description,Category,Amount,Payment Method,Status\n';
+            app.expenses.forEach(e => {
+                csv += `"${e.reference}","${e.date}","${e.vendor}","${e.description}","${e.category}",${e.amount},"${e.paymentMethod}","${e.status}"\n`;
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'Rabona_Expenses_2026_04.csv';
+            a.click();
+            window.URL.revokeObjectURL(url);
+
+            app.showMessage('Exported to CSV! You can open in Excel.', 'success');
+        }
+
+        // Print report
+        function printReport() {
+            window.print();
+        }
+
+        // Start app
+        app.init();
+    </script>
+</body>
+</html>

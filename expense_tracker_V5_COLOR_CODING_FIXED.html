@@ -1,0 +1,2696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rabona Holdings - Expense Tracker V4</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+        header { background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%); color: white; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        header h1 { font-size: 28px; margin-bottom: 5px; }
+        header p { font-size: 14px; opacity: 0.9; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .top-bar { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .company-selector { display: flex; gap: 10px; align-items: center; }
+        .company-selector select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #ddd; overflow-x: auto; }
+        .tab-button { padding: 12px 20px; border: none; background: none; cursor: pointer; font-size: 16px; color: #666; border-bottom: 3px solid transparent; transition: all 0.3s; white-space: nowrap; }
+        .tab-button.active { color: #2E7D32; border-bottom-color: #2E7D32; }
+        .tab-button:hover { color: #2E7D32; }
+        .tab-content { display: none; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .tab-content.active { display: block; }
+
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 600; color: #333; }
+        input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #2E7D32; box-shadow: 0 0 0 3px rgba(46, 125, 50, 0.1); }
+        input:disabled { background: #f5f5f5; color: #999; }
+
+        .button { background: #2E7D32; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.3s; }
+        .button:hover { background: #1B5E20; }
+        .button.secondary { background: #666; color: white; }
+        .button.secondary:hover { background: #444; }
+        .button.small { padding: 8px 12px; font-size: 12px; }
+
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .form-row.three { grid-template-columns: repeat(3, 1fr); }
+
+        .reference-field { display: flex; gap: 8px; align-items: center; }
+        .reference-field input { flex: 1; }
+        .reference-field button { flex: 0 0 auto; padding: 10px 12px; }
+
+        .split-section { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #e0e0e0; }
+        .split-portion { background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #2E7D32; }
+        .split-portion h4 { margin: 0 0 15px 0; color: #2E7D32; }
+
+        .location-selector { display: flex; gap: 15px; }
+        .location-selector label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; }
+        .location-selector input[type="radio"] { width: auto; }
+
+        .message { padding: 12px; border-radius: 4px; margin-bottom: 15px; }
+        .message.success { background: #E8F5E9; color: #2E7D32; border-left: 4px solid #2E7D32; }
+        .message.error { background: #FFEBEE; color: #C62828; border-left: 4px solid #C62828; }
+        .message.info { background: #E3F2FD; color: #1976D2; border-left: 4px solid #1976D2; }
+
+        .validation-box { background: #E8F5E9; padding: 12px; border-radius: 4px; margin-top: 10px; display: none; }
+        .validation-box.show { display: block; }
+        .validation-box.error { background: #FFEBEE; }
+
+        .hidden { display: none; }
+
+        table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+        th { background: #f5f5f5; padding: 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; font-size: 14px; }
+        td { padding: 12px; border-bottom: 1px solid #eee; font-size: 14px; }
+        tr:hover { background: #f9f9f9; }
+
+        .empty-state { text-align: center; padding: 40px; color: #999; }
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-left: 4px solid #2E7D32; }
+        .card h3 { font-size: 14px; color: #666; margin-bottom: 10px; }
+        .card .value { font-size: 28px; font-weight: bold; color: #2E7D32; }
+
+        /* Bank Parser Row Styling */
+        .bank-row-current { background: #e8e8e8; }
+        .bank-row-mastercard { background: #ffe8f0; }
+        .bank-row-current:hover { background: #d8d8d8; }
+        .bank-row-mastercard:hover { background: #ffd8e8; }
+
+        .amount-incoming { font-weight: bold; color: #2E7D32; }
+        .amount-outgoing { color: #C62828; }
+
+        #matchingModal { display: none !important; }
+        #matchingModal[style*="flex"] { display: flex !important; }
+
+        @media (max-width: 768px) {
+            .form-row { grid-template-columns: 1fr; }
+            .form-row.three { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Rabona Holdings & Espargos - Expense Tracker V4</h1>
+        <p>Bank Reconciliation & Expense Management System</p>
+    </header>
+
+    <div class="container">
+        <!-- Top Bar with Company Selector -->
+        <div class="top-bar">
+            <div class="company-selector">
+                <label for="companySelect" style="margin: 0; font-weight: 600;">Select Company:</label>
+                <select id="companySelect" onchange="app.switchCompany()">
+                    <option value="Rabona">Rabona Holdings</option>
+                    <option value="Espargos">Espargos</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-button active" onclick="showTab('dashboard')">Dashboard</button>
+            <button class="tab-button" onclick="showTab('bank-parser')">Bank Statement Parser</button>
+            <button class="tab-button" onclick="showTab('add-expense')">Add Expense</button>
+            <button class="tab-button" onclick="showTab('view-expenses')">View Expenses</button>
+            <button class="tab-button" onclick="showTab('bank-reconciliation')">Bank Reconciliation</button>
+            <button class="tab-button" onclick="showTab('shareholder-report')">Shareholder Report</button>
+            <button class="tab-button" onclick="showTab('client-report')">Client Report</button>
+            <button class="tab-button" onclick="showTab('reports')">Export & Reports</button>
+        </div>
+
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <h2>Dashboard - <span id="dashboardCompanyName">Rabona Holdings</span></h2>
+
+            <!-- ROW 1: CORE FINANCIALS -->
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Actual Income</h3>
+                    <div class="value" id="actualIncome">€0.00</div>
+                </div>
+                <div class="card">
+                    <h3>Total Expenses</h3>
+                    <div class="value" id="totalExpenses">€0.00</div>
+                </div>
+            </div>
+
+            <!-- ROW 2: INTERNAL ACCOUNT MOVEMENTS -->
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #333; font-size: 16px;">Internal Account Movements</h3>
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Mastercard → Current</h3>
+                    <div class="value" id="mastercardToCurrent">€0.00</div>
+                </div>
+                <div class="card">
+                    <h3>Current → Mastercard</h3>
+                    <div class="value" id="currentToMastercard">€0.00</div>
+                </div>
+                <div class="card">
+                    <h3>Net Internal Movement</h3>
+                    <div class="value" id="netMovement">€0.00</div>
+                </div>
+            </div>
+
+            <!-- ROW 3: SHAREHOLDER MOVEMENTS -->
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #333; font-size: 16px;">Shareholder Movements</h3>
+
+            <!-- YK Row -->
+            <div style="margin-bottom: 20px;">
+                <p style="margin: 0 0 10px 0; color: #666; font-weight: 600;">YK</p>
+                <div class="summary-cards">
+                    <div class="card">
+                        <h3>Transfers From 🟢</h3>
+                        <div class="value" id="ykFrom">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Incoming from shareholder</p>
+                    </div>
+                    <div class="card">
+                        <h3>Transfers To 🔴</h3>
+                        <div class="value" id="ykTo">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Outgoing to shareholder</p>
+                    </div>
+                    <div class="card">
+                        <h3>Balance</h3>
+                        <div class="value" id="ykBalance">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Net position</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BK Row -->
+            <div style="margin-bottom: 20px;">
+                <p style="margin: 0 0 10px 0; color: #666; font-weight: 600;">BK</p>
+                <div class="summary-cards">
+                    <div class="card">
+                        <h3>Transfers From 🟢</h3>
+                        <div class="value" id="bkFrom">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Incoming from shareholder</p>
+                    </div>
+                    <div class="card">
+                        <h3>Transfers To 🔴</h3>
+                        <div class="value" id="bkTo">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Outgoing to shareholder</p>
+                    </div>
+                    <div class="card">
+                        <h3>Balance</h3>
+                        <div class="value" id="bkBalance">€0.00</div>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Net position</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ROW 4: EXPENSES TO BE REIMBURSED TO CLIENTS -->
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #333; font-size: 16px;">Expenses to be Reimbursed to Clients</h3>
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Total Expenses to be Reimbursed</h3>
+                    <div class="value" id="clientReimbTotal">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">To be reimbursed to clients</p>
+                </div>
+            </div>
+
+            <!-- ROW 5: INTER-COMPANY TRANSFERS -->
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #333; font-size: 16px;">Inter-Company Transfers</h3>
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Espargos → Rabona 🟢</h3>
+                    <div class="value" id="espargoToRabona">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Incoming</p>
+                </div>
+                <div class="card">
+                    <h3>Rabona → Espargos 🔴</h3>
+                    <div class="value" id="rabonaToEspargos">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Outgoing</p>
+                </div>
+                <div class="card">
+                    <h3>Net Inter-Company Flow</h3>
+                    <div class="value" id="netInterCompany">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Balance</p>
+                </div>
+            </div>
+
+            <!-- ROW 6: INTER-COMPANY REIMBURSEMENTS -->
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #333; font-size: 16px;">Inter-Company Reimbursements</h3>
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Expenses Paid on Behalf of Espargos</h3>
+                    <div class="value" id="paidForEspargos">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Rabona paid for Espargos</p>
+                </div>
+                <div class="card">
+                    <h3>Expenses Paid on Behalf of Rabona</h3>
+                    <div class="value" id="paidForRabona">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Espargos paid for Rabona</p>
+                </div>
+                <div class="card">
+                    <h3>Balance - Who Owes Who</h3>
+                    <div class="value" id="reimbBalance">€0.00</div>
+                    <p style="font-size: 12px; color: #666; margin-top: 10px;">Net reimbursement owed</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bank Statement Parser Tab -->
+        <div id="bank-parser" class="tab-content">
+            <h2>Bank Statement Parser - <span id="bankParserCompanyName">Rabona Holdings</span></h2>
+            <div id="bankParserMessage"></div>
+
+            <!-- Upload Section -->
+            <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px; font-size: 16px;">Upload Bank Statement Screenshot</h3>
+                <div class="form-group">
+                    <label for="bankStatementUpload" style="display: block; margin-bottom: 10px; cursor: pointer; padding: 20px; background: #f9f9f9; border: 2px dashed #2E7D32; border-radius: 4px; text-align: center; font-weight: 600; color: #2E7D32;">
+                        📸 Click to select bank statement screenshot(s) - Multiple files OK (JPG, PNG, PDF)
+                        <input type="file" id="bankStatementUpload" accept="image/*,.pdf" multiple style="display: none;" onchange="app.parseStatement()" />
+                    </label>
+                    <small style="color: #666;" id="bankStatementFileName">No file selected</small>
+                </div>
+            </div>
+
+            <!-- Uploaded Files List -->
+            <div id="uploadedFilesContainer" style="background: #f0f8ff; padding: 20px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 20px; display: none;">
+                <h3 style="margin-bottom: 15px; font-size: 16px; color: #2E7D32;">📋 Uploaded Files (Newest First)</h3>
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%;">
+                        <thead>
+                            <tr style="background: #e8f5e9;">
+                                <th style="width: 400px; text-align: left; padding: 12px; border-bottom: 2px solid #2E7D32;">File Name</th>
+                                <th style="width: 150px; text-align: left; padding: 12px; border-bottom: 2px solid #2E7D32;">Upload Date</th>
+                                <th style="width: 120px; text-align: left; padding: 12px; border-bottom: 2px solid #2E7D32;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="uploadedFilesTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Extracted Transactions Table -->
+            <div id="extractedTransactionsContainer" style="display: none;">
+                <h3 style="margin-bottom: 15px; font-size: 16px;">Extracted Transactions</h3>
+                <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                    <button class="button secondary small" onclick="app.clearBankTransactions()" style="background: #F57F17;">🗑️ Clear All Transactions</button>
+                    <small style="color: #666; align-self: center;">Clear uploaded statements to prevent duplicates</small>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table id="extractedTransactionsTable">
+                        <thead>
+                            <tr>
+                                <th style="width: 80px;">Ref #</th>
+                                <th style="width: 90px;">Date</th>
+                                <th style="width: 250px;">Description</th>
+                                <th style="width: 100px;">Amount</th>
+                                <th style="width: 80px;">Type</th>
+                                <th style="width: 100px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transactionsList">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add Expense Tab -->
+        <div id="add-expense" class="tab-content">
+            <h2>Add Expense - <span id="addExpenseCompanyName">Rabona Holdings</span></h2>
+            <div id="addExpenseMessage"></div>
+
+            <!-- Split Toggle -->
+            <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 2px solid #e0e0e0;">
+                <label style="display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; margin: 0;">
+                    <input type="checkbox" id="splitToggle" onchange="app.toggleSplit()" />
+                    <span style="font-weight: 600;">Is this a split expense?</span>
+                </label>
+            </div>
+
+            <!-- NO SPLIT FORM -->
+            <div id="noSplitForm">
+                <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ddd;">
+
+                    <!-- References Section -->
+                    <h3 style="margin-bottom: 15px; font-size: 16px;">References & Payment</h3>
+
+                    <!-- General Reference -->
+                    <div class="form-group">
+                        <label>General Reference * (Confirm or Delete to continue)</label>
+                        <div class="reference-field">
+                            <input type="text" id="genRef" placeholder="26/04/1" readonly style="background: #f5f5f5;" />
+                            <button class="button small" onclick="app.confirmReference('genRef')">✓ Confirm</button>
+                            <button class="button small secondary" onclick="app.deleteReference('genRef')">✕ Delete</button>
+                        </div>
+                    </div>
+
+                    <!-- Payment Method -->
+                    <div class="form-group">
+                        <label for="paymentMethod">Payment Method *</label>
+                        <select id="paymentMethod">
+                            <option value="">-- Select payment method --</option>
+                            <option value="RCC BT">RCC BT</option>
+                            <option value="RCC DD">RCC DD</option>
+                            <option value="RCC CardP">RCC CardP</option>
+                            <option value="RMC BT">RMC BT</option>
+                            <option value="RMC DD">RMC DD</option>
+                            <option value="RMC CardP">RMC CardP</option>
+                            <option value="YK CASH">YK CASH</option>
+                            <option value="BK CASH">BK CASH</option>
+                        </select>
+                    </div>
+
+                    <!-- Expense Type & Sub-Reference -->
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="expenseType">Expense Type *</label>
+                            <select id="expenseType" onchange="app.updateSubReferences(); app.toggleReimbursableProject();">
+                                <option value="">-- Select type --</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Travel">Travel</option>
+                                <option value="Reimbursable">Reimbursable</option>
+                                <option value="Salary">Salary</option>
+                            </select>
+                        </div>
+                        <div class="form-group hidden" id="travelRefContainer">
+                            <label>Travel Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="travelRef" placeholder="T04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('travelRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('travelRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group hidden" id="reimbRefContainer">
+                            <label>Reimbursement Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="reimbRef" placeholder="R04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('reimbRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('reimbRef')">✕</button>
+                            </div>
+                        </div>
+                        <div class="form-group hidden" id="salaryRefContainer">
+                            <label>Salary Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="salaryRef" placeholder="S04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('salaryRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('salaryRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Reimbursable Project Selector (shown only when Reimbursable is selected) -->
+                    <div id="reimbursableProjectContainer" style="display: none; background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1976D2;">
+                        <h3 style="margin-bottom: 15px; font-size: 16px; color: #1976D2;">💼 Project/Client (For Reimbursable)</h3>
+                        <div class="form-group">
+                            <label for="reimbursableProject">Which project will this be reimbursed to? *</label>
+                            <select id="reimbursableProject" onchange="app.handleProjectSelection()">
+                                <option value="">-- Select project --</option>
+                                <option value="Urban City">Urban City</option>
+                                <option value="Blue Lagoon">Blue Lagoon</option>
+                                <option value="Green Field Hotel">Green Field Hotel</option>
+                                <option value="Kypseli">Kypseli</option>
+                                <option value="BAD City Hall">BAD City Hall</option>
+                                <option value="BAD City SPA Hotel">BAD City SPA Hotel</option>
+                                <option value="Evia Mare">Evia Mare</option>
+                                <option value="Other">Other (Enter custom project)</option>
+                            </select>
+                        </div>
+                        <!-- Custom project input (shown when "Other" is selected) -->
+                        <div id="customProjectContainer" style="display: none; margin-top: 15px;">
+                            <div class="form-group">
+                                <label for="customProject">Project Name *</label>
+                                <input type="text" id="customProject" placeholder="Enter custom project name" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;" />
+
+                    <!-- Expense Details -->
+                    <h3 style="margin-bottom: 15px; font-size: 16px;">Expense Details</h3>
+
+                    <div class="form-row three">
+                        <div class="form-group">
+                            <label for="invoiceDate">Invoice Date (DD/MM/YYYY) *</label>
+                            <input type="text" id="invoiceDate" placeholder="DD/MM/YYYY" />
+                        </div>
+                        <div class="form-group">
+                            <label for="vendor">Vendor Name * <small style="color: #666; font-weight: 400;">(suggestions appear as you type)</small></label>
+                            <input type="text" id="vendor" placeholder="Vendor name" list="vendorsList" />
+                            <datalist id="vendorsList">
+                                <!-- Dynamically populated with vendor suggestions -->
+                            </datalist>
+                        </div>
+                        <div class="form-group">
+                            <label for="paymentDate">Payment Date (DD/MM/YYYY) *</label>
+                            <input type="text" id="paymentDate" placeholder="DD/MM/YYYY" />
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="amount">Amount (€) *</label>
+                        <input type="number" id="amount" placeholder="0.00" step="0.01" min="0" />
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="category">Category *</label>
+                            <select id="category" onchange="app.updateSubcategories()">
+                                <option value="">-- Select category --</option>
+                                <option value="Cost of Labor">Cost of Labor</option>
+                                <option value="Travel Expenses">Travel Expenses</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Furniture and Equipment">Furniture and Equipment</option>
+                                <option value="Office / General Administrative">Office / General Administrative</option>
+                                <option value="Transportation Expenses">Transportation Expenses</option>
+                                <option value="Bank Charges and Interest">Bank Charges and Interest</option>
+                                <option value="Annual Government Compliance Fees">Annual Government Compliance Fees</option>
+                                <option value="Transfers to Connected Accounts">Transfers to Connected Accounts</option>
+                                <option value="Personal Expenses of Shareholders">Personal Expenses of Shareholders</option>
+                                <option value="Movement Between Accounts">Movement Between Accounts</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="subcategory">Subcategory *</label>
+                            <select id="subcategory">
+                                <option value="">-- Select subcategory --</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Location Selection (for specific items) -->
+                    <div id="locationContainer" class="form-group hidden">
+                        <label>Location *</label>
+                        <div class="location-selector">
+                            <label>
+                                <input type="radio" name="location" value="Cyprus" checked />
+                                Cyprus
+                            </label>
+                            <label>
+                                <input type="radio" name="location" value="Greece" />
+                                Greece
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Custom Salary Field -->
+                    <div id="customSalaryContainer" class="form-group hidden">
+                        <label for="customSalary">Employee Name (Custom)</label>
+                        <input type="text" id="customSalary" placeholder="Enter employee name (e.g., John, Maria)" />
+                    </div>
+
+                    <!-- Project Comment Field -->
+                    <div id="projectCommentContainer" class="form-group hidden">
+                        <label for="projectComment">Project Name (Comment)</label>
+                        <textarea id="projectComment" placeholder="Specify which project this belongs to (e.g., Athinon, Sounio, Pireos 44)" style="height: 60px;"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="status">Status *</label>
+                        <select id="status">
+                            <option value="Complete">Complete</option>
+                            <option value="Incomplete">Incomplete</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 20px;">
+                        <button class="button" onclick="app.saveDraft()" style="background: #1976D2;">💾 Save Draft</button>
+                        <button class="button" id="markCompleteBtn" onclick="app.markComplete()" style="background: #2E7D32;">✓ Mark Complete</button>
+                        <button class="button secondary" onclick="app.clearForm()">Clear</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPLIT FORM (Hidden by default) -->
+            <div id="splitForm" class="hidden">
+                <div class="split-section">
+                    <h3 style="margin-top: 0;">Shared Details</h3>
+                    <div class="form-row three">
+                        <div class="form-group">
+                            <label for="splitInvoiceDate">Invoice Date (DD/MM/YYYY) *</label>
+                            <input type="text" id="splitInvoiceDate" placeholder="DD/MM/YYYY" />
+                        </div>
+                        <div class="form-group">
+                            <label for="splitVendor">Vendor Name * <small style="color: #666; font-weight: 400;">(suggestions appear as you type)</small></label>
+                            <input type="text" id="splitVendor" placeholder="Vendor name" list="vendorsList" />
+                        </div>
+                        <div class="form-group">
+                            <label for="splitPaymentDate">Payment Date (DD/MM/YYYY) *</label>
+                            <input type="text" id="splitPaymentDate" placeholder="DD/MM/YYYY" />
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="splitTotalAmount">Total Amount (€) *</label>
+                        <input type="number" id="splitTotalAmount" placeholder="0.00" step="0.01" min="0" onchange="app.updateSplitValidation()" />
+                    </div>
+                </div>
+
+                <!-- Company Portion -->
+                <div class="split-portion">
+                    <h4>Company Portion</h4>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="companyAmount">Amount (€)</label>
+                            <input type="number" id="companyAmount" placeholder="0.00" step="0.01" min="0" onchange="app.updateSplitValidation()" />
+                        </div>
+                        <div class="form-group">
+                            <label>General Reference *</label>
+                            <div class="reference-field">
+                                <input type="text" id="companyGenRef" placeholder="26/04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('companyGenRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('companyGenRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="companyExpType">Expense Type *</label>
+                            <select id="companyExpType" onchange="app.updateCompanySubRefs()">
+                                <option value="">-- Select --</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Travel">Travel</option>
+                                <option value="Reimbursable">Reimbursable</option>
+                                <option value="Salary">Salary</option>
+                            </select>
+                        </div>
+                        <div id="companySubRefContainer" class="hidden">
+                            <label>Sub-Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="companySubRef" placeholder="T04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('companySubRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('companySubRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="companyCategory">Category *</label>
+                            <select id="companyCategory" onchange="app.updateCompanySubcategories()">
+                                <option value="">-- Select --</option>
+                                <option value="Cost of Labor">Cost of Labor</option>
+                                <option value="Travel Expenses">Travel Expenses</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Furniture and Equipment">Furniture and Equipment</option>
+                                <option value="Office / General Administrative">Office / General Administrative</option>
+                                <option value="Transportation Expenses">Transportation Expenses</option>
+                                <option value="Bank Charges and Interest">Bank Charges and Interest</option>
+                                <option value="Annual Government Compliance Fees">Annual Government Compliance Fees</option>
+                                <option value="Transfers to Connected Accounts">Transfers to Connected Accounts</option>
+                                <option value="Personal Expenses of Shareholders">Personal Expenses of Shareholders</option>
+                                <option value="Movement Between Accounts">Movement Between Accounts</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="companySubcategory">Subcategory *</label>
+                            <select id="companySubcategory"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="companyPayMethod">Payment Method *</label>
+                        <select id="companyPayMethod">
+                            <option value="">-- Select --</option>
+                            <option value="RCC BT">RCC BT</option>
+                            <option value="RCC DD">RCC DD</option>
+                            <option value="RCC CardP">RCC CardP</option>
+                            <option value="RMC BT">RMC BT</option>
+                            <option value="RMC DD">RMC DD</option>
+                            <option value="RMC CardP">RMC CardP</option>
+                            <option value="YK CASH">YK CASH</option>
+                            <option value="BK CASH">BK CASH</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Shareholder YK Portion -->
+                <div class="split-portion">
+                    <h4>Shareholder YK Portion</h4>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ykAmount">Amount (€)</label>
+                            <input type="number" id="ykAmount" placeholder="0.00" step="0.01" min="0" onchange="app.updateSplitValidation()" />
+                        </div>
+                        <div class="form-group">
+                            <label>General Reference *</label>
+                            <div class="reference-field">
+                                <input type="text" id="ykGenRef" placeholder="26/04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('ykGenRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('ykGenRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ykExpType">Expense Type *</label>
+                            <select id="ykExpType" onchange="app.updateYKSubRefs()">
+                                <option value="">-- Select --</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Travel">Travel</option>
+                                <option value="Reimbursable">Reimbursable</option>
+                                <option value="Salary">Salary</option>
+                            </select>
+                        </div>
+                        <div id="ykSubRefContainer" class="hidden">
+                            <label>Sub-Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="ykSubRef" placeholder="T04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('ykSubRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('ykSubRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ykCategory">Category *</label>
+                            <select id="ykCategory" onchange="app.updateYKSubcategories()">
+                                <option value="">-- Select --</option>
+                                <option value="Cost of Labor">Cost of Labor</option>
+                                <option value="Travel Expenses">Travel Expenses</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Furniture and Equipment">Furniture and Equipment</option>
+                                <option value="Office / General Administrative">Office / General Administrative</option>
+                                <option value="Transportation Expenses">Transportation Expenses</option>
+                                <option value="Bank Charges and Interest">Bank Charges and Interest</option>
+                                <option value="Annual Government Compliance Fees">Annual Government Compliance Fees</option>
+                                <option value="Transfers to Connected Accounts">Transfers to Connected Accounts</option>
+                                <option value="Personal Expenses of Shareholders">Personal Expenses of Shareholders</option>
+                                <option value="Movement Between Accounts">Movement Between Accounts</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="ykSubcategory">Subcategory *</label>
+                            <select id="ykSubcategory"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="ykPayMethod">Payment Method *</label>
+                        <select id="ykPayMethod">
+                            <option value="">-- Select --</option>
+                            <option value="RCC BT">RCC BT</option>
+                            <option value="RCC DD">RCC DD</option>
+                            <option value="RCC CardP">RCC CardP</option>
+                            <option value="RMC BT">RMC BT</option>
+                            <option value="RMC DD">RMC DD</option>
+                            <option value="RMC CardP">RMC CardP</option>
+                            <option value="YK CASH">YK CASH</option>
+                            <option value="BK CASH">BK CASH</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Shareholder BK Portion -->
+                <div class="split-portion">
+                    <h4>Shareholder BK Portion</h4>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="bkAmount">Amount (€)</label>
+                            <input type="number" id="bkAmount" placeholder="0.00" step="0.01" min="0" onchange="app.updateSplitValidation()" />
+                        </div>
+                        <div class="form-group">
+                            <label>General Reference *</label>
+                            <div class="reference-field">
+                                <input type="text" id="bkGenRef" placeholder="26/04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('bkGenRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('bkGenRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="bkExpType">Expense Type *</label>
+                            <select id="bkExpType" onchange="app.updateBKSubRefs()">
+                                <option value="">-- Select --</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Travel">Travel</option>
+                                <option value="Reimbursable">Reimbursable</option>
+                                <option value="Salary">Salary</option>
+                            </select>
+                        </div>
+                        <div id="bkSubRefContainer" class="hidden">
+                            <label>Sub-Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="bkSubRef" placeholder="T04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('bkSubRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('bkSubRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="bkCategory">Category *</label>
+                            <select id="bkCategory" onchange="app.updateBKSubcategories()">
+                                <option value="">-- Select --</option>
+                                <option value="Cost of Labor">Cost of Labor</option>
+                                <option value="Travel Expenses">Travel Expenses</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Furniture and Equipment">Furniture and Equipment</option>
+                                <option value="Office / General Administrative">Office / General Administrative</option>
+                                <option value="Transportation Expenses">Transportation Expenses</option>
+                                <option value="Bank Charges and Interest">Bank Charges and Interest</option>
+                                <option value="Annual Government Compliance Fees">Annual Government Compliance Fees</option>
+                                <option value="Transfers to Connected Accounts">Transfers to Connected Accounts</option>
+                                <option value="Personal Expenses of Shareholders">Personal Expenses of Shareholders</option>
+                                <option value="Movement Between Accounts">Movement Between Accounts</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="bkSubcategory">Subcategory *</label>
+                            <select id="bkSubcategory"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="bkPayMethod">Payment Method *</label>
+                        <select id="bkPayMethod">
+                            <option value="">-- Select --</option>
+                            <option value="RCC BT">RCC BT</option>
+                            <option value="RCC DD">RCC DD</option>
+                            <option value="RCC CardP">RCC CardP</option>
+                            <option value="RMC BT">RMC BT</option>
+                            <option value="RMC DD">RMC DD</option>
+                            <option value="RMC CardP">RMC CardP</option>
+                            <option value="YK CASH">YK CASH</option>
+                            <option value="BK CASH">BK CASH</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Client Portion -->
+                <div class="split-portion">
+                    <h4>Client Portion</h4>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="clientAmount">Amount (€)</label>
+                            <input type="number" id="clientAmount" placeholder="0.00" step="0.01" min="0" onchange="app.updateSplitValidation()" />
+                        </div>
+                        <div class="form-group">
+                            <label>General Reference *</label>
+                            <div class="reference-field">
+                                <input type="text" id="clientGenRef" placeholder="26/04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('clientGenRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('clientGenRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="clientExpType">Expense Type *</label>
+                            <select id="clientExpType" onchange="app.updateClientSubRefs()">
+                                <option value="">-- Select --</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Travel">Travel</option>
+                                <option value="Reimbursable">Reimbursable</option>
+                                <option value="Salary">Salary</option>
+                            </select>
+                        </div>
+                        <div id="clientSubRefContainer" class="hidden">
+                            <label>Sub-Reference</label>
+                            <div class="reference-field">
+                                <input type="text" id="clientSubRef" placeholder="R04/1" readonly style="background: #f5f5f5;" />
+                                <button class="button small" onclick="app.confirmReference('clientSubRef')">✓</button>
+                                <button class="button small secondary" onclick="app.deleteReference('clientSubRef')">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="clientCategory">Category *</label>
+                            <select id="clientCategory" onchange="app.updateClientSubcategories()">
+                                <option value="">-- Select --</option>
+                                <option value="Cost of Labor">Cost of Labor</option>
+                                <option value="Travel Expenses">Travel Expenses</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Furniture and Equipment">Furniture and Equipment</option>
+                                <option value="Office / General Administrative">Office / General Administrative</option>
+                                <option value="Transportation Expenses">Transportation Expenses</option>
+                                <option value="Bank Charges and Interest">Bank Charges and Interest</option>
+                                <option value="Annual Government Compliance Fees">Annual Government Compliance Fees</option>
+                                <option value="Transfers to Connected Accounts">Transfers to Connected Accounts</option>
+                                <option value="Personal Expenses of Shareholders">Personal Expenses of Shareholders</option>
+                                <option value="Movement Between Accounts">Movement Between Accounts</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="clientSubcategory">Subcategory *</label>
+                            <select id="clientSubcategory"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="clientPayMethod">Payment Method *</label>
+                        <select id="clientPayMethod">
+                            <option value="">-- Select --</option>
+                            <option value="RCC BT">RCC BT</option>
+                            <option value="RCC DD">RCC DD</option>
+                            <option value="RCC CardP">RCC CardP</option>
+                            <option value="RMC BT">RMC BT</option>
+                            <option value="RMC DD">RMC DD</option>
+                            <option value="RMC CardP">RMC CardP</option>
+                            <option value="YK CASH">YK CASH</option>
+                            <option value="BK CASH">BK CASH</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Validation Box -->
+                <div id="splitValidation" class="validation-box">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span>Total portions:</span>
+                        <strong id="portionTotal">€0.00</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Required total:</span>
+                        <strong id="requiredTotal">€0.00</strong>
+                    </div>
+                    <div id="validationStatus" style="margin-top: 8px; font-weight: 600;"></div>
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="button" onclick="app.saveSplitExpense()">Save Split Expense</button>
+                    <button class="button secondary" onclick="app.clearForm()">Clear</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- View Expenses Tab -->
+        <div id="view-expenses" class="tab-content">
+            <h2>View Expenses - <span id="viewExpenseCompanyName">Rabona Holdings</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Ref #</th>
+                        <th>Date</th>
+                        <th>Vendor</th>
+                        <th>Category</th>
+                        <th>Subcategory</th>
+                        <th>Amount</th>
+                        <th>Payment Method</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="expenseTable">
+                    <tr><td colspan="9" class="empty-state">No expenses yet</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Bank Reconciliation Tab -->
+        <div id="bank-reconciliation" class="tab-content">
+            <h2>Bank Reconciliation - <span id="reconCompanyName">Rabona Holdings</span></h2>
+            <div id="reconMessage"></div>
+
+            <!-- Reconciliation Summary -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px;">
+                <div class="card">
+                    <h3>Total Bank Transactions</h3>
+                    <div class="value" id="totalBankTransactions">0</div>
+                </div>
+                <div class="card">
+                    <h3>Matched</h3>
+                    <div class="value" id="matchedCount">0</div>
+                </div>
+                <div class="card">
+                    <h3>Unmatched</h3>
+                    <div class="value" id="unmatchedCount">0</div>
+                </div>
+                <div class="card" style="border-left-color: #2E7D32;">
+                    <h3>Reconciliation Status</h3>
+                    <div class="value" id="reconStatus" style="color: #FF9800; font-size: 20px;">⚠ 0%</div>
+                </div>
+            </div>
+
+            <!-- Filter Options -->
+            <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 15px; align-items: center;">
+                <label style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                    <input type="radio" name="reconFilter" value="all" checked onchange="app.filterReconciliation()" /> All
+                </label>
+                <label style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                    <input type="radio" name="reconFilter" value="unmatched" onchange="app.filterReconciliation()" /> Unmatched Only
+                </label>
+                <label style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                    <input type="radio" name="reconFilter" value="matched" onchange="app.filterReconciliation()" /> Matched Only
+                </label>
+            </div>
+
+            <!-- Reconciliation Table -->
+            <div style="overflow-x: auto;">
+                <table id="reconciliationTable">
+                    <thead>
+                        <tr style="background: #f5f5f5;">
+                            <th style="width: 80px;">Ref #</th>
+                            <th style="width: 90px;">Date</th>
+                            <th style="width: 180px;">Description</th>
+                            <th style="width: 100px;">Amount</th>
+                            <th style="width: 100px;">Type</th>
+                            <th style="width: 100px;">Status</th>
+                            <th style="width: 150px;">Matched To</th>
+                            <th style="width: 120px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reconciliationBody">
+                        <tr style="text-align: center; color: #999;">
+                            <td colspan="8">No bank transactions loaded. Upload statements in Bank Statement Parser first.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Expense Matching Modal (Hidden) -->
+            <div id="matchingModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+                <div style="background: white; padding: 30px; border-radius: 8px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto;">
+                    <h3 style="margin-bottom: 20px;">Match Transaction to Expense</h3>
+                    <div id="matchingContent"></div>
+                    <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                        <button class="button secondary" onclick="app.closeMatchingModal()">Cancel</button>
+                        <button class="button" onclick="app.confirmMatch()">Confirm Match</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reports Tabs (Placeholders) -->
+        <div id="shareholder-report" class="tab-content">
+            <h2>Shareholder Report</h2>
+            <p>Shareholder report - to be implemented</p>
+        </div>
+
+        <div id="client-report" class="tab-content">
+            <h2>Client Report</h2>
+            <p>Client report - to be implemented</p>
+        </div>
+
+        <div id="reports" class="tab-content">
+            <h2>Export & Reports</h2>
+            <p>Export & reports - to be implemented</p>
+        </div>
+    </div>
+
+    <script>
+        // Category Subcategories Data
+        const categorySubcategories = {
+            'Cost of Labor': ['Salary BK', 'Salary [Custom]', 'Social Insurance', 'PAYE', 'GESI on Dividends', 'Income Tax', 'Provisional Tax', 'Insurance', 'Expense Reimbursement to Employees'],
+            'Travel Expenses': ['Transportation', 'Accommodation', 'Allowances', 'Other (COVID Tests, Special Permits)', 'Marketing Purposes (Hosting Visits)', 'Other Travel Expenses'],
+            'Professional Services': ['Accounting, Audit, Company Secretary Services', 'Services on FF&E', 'IT Services', 'Legal', 'Printing', 'Other'],
+            'Furniture and Equipment': ['Furniture & Fittings Office', 'Computers and Telephones', 'Furniture & Fittings (Mock Up)', 'Computer Software/Webpage Subscriptions'],
+            'Office / General Administrative': ['Office Supply Stationery and Sundries', 'Courier and Postal Services', 'Telephone/Internet/Mobile Expenses', 'Penalties', 'Maintenance', 'Entertainment', 'Representation/Gifts', 'Marketing', 'Miscellaneous'],
+            'Transportation Expenses': ['Taxi', 'Fuel', 'Car Park', 'Other'],
+            'Bank Charges and Interest': ['Card Transaction Admin Fee', 'Total Interest', 'Cash Advance Transfer Fee', 'Card Membership Fee', 'Unexecuted Direct Debit Fee'],
+            'Annual Government Compliance Fees': [],
+            'Transfers to Connected Accounts': ['Espargos', 'Other [Custom]'],
+            'Personal Expenses of Shareholders': ['Transfers to SH A/C and Cash Withdrawal (YK)', 'Payments Made on Behalf of SH (YK)', 'Transfers to SH A/C and Cash Withdrawal (BK)', 'Payments Made on Behalf of SH (BK)'],
+            'Movement Between Accounts': ['Movement from Current Account to Mastercard Account', 'Movement from Mastercard Account to Current Account']
+        };
+
+        const itemsWithLocation = ['Furniture & Fittings Office', 'Computers and Telephones'];
+        const itemsWithCustom = ['Salary [Custom]', 'Other [Custom]'];
+        const itemsWithProject = ['Furniture & Fittings (Mock Up)'];
+
+        const app = {
+            currentCompany: 'Rabona',
+            expenses: { Rabona: [], Espargos: [] },
+            bankTransactions: [],
+            reconciliationData: {},
+            uploadedFiles: { Rabona: [], Espargos: [] }, // Track file names and dates
+            usedRefNumbers: { Rabona: [], Espargos: [] }, // Track which ref#s are used
+            availableRefNumbers: { Rabona: [], Espargos: [] }, // Track which ref#s are available for reuse
+            selectedTransactionForMatch: null,
+            selectedExpenseForMatch: null,
+            nextRefNumbers: { Rabona: { general: 1, travel: 1, reimbursable: 1, salary: 1 }, Espargos: { general: 1, travel: 1, reimbursable: 1, salary: 1 } },
+            confirmedRefs: { Rabona: [], Espargos: [] },
+
+            init() {
+                // Initialize bankTransactions as array for current company
+                this.bankTransactions = [];
+                this.reconciliationData = {};
+                this.vendors = {};
+
+                // Load expenses from localStorage on page load
+                const rabonaExpenses = localStorage.getItem('expenses_Rabona');
+                const espargoExpenses = localStorage.getItem('expenses_Espargos');
+
+                if (rabonaExpenses) {
+                    this.expenses.Rabona = JSON.parse(rabonaExpenses);
+                }
+                if (espargoExpenses) {
+                    this.expenses.Espargos = JSON.parse(espargoExpenses);
+                }
+
+                // Load bank transactions for current company
+                const currentTransactions = localStorage.getItem(`bankTransactions_${this.currentCompany}`);
+                if (currentTransactions) {
+                    this.bankTransactions = JSON.parse(currentTransactions);
+                }
+
+                // Load reconciliation data for current company
+                const currentReconciliation = localStorage.getItem(`reconciliation_${this.currentCompany}`);
+                if (currentReconciliation) {
+                    this.reconciliationData = JSON.parse(currentReconciliation);
+                }
+
+                // Load uploaded files list
+                const uploadedFiles = localStorage.getItem(`uploadedFiles_${this.currentCompany}`);
+                if (uploadedFiles) {
+                    this.uploadedFiles[this.currentCompany] = JSON.parse(uploadedFiles);
+                }
+
+                // Load vendor list for current company
+                const vendorList = localStorage.getItem(`vendors_${this.currentCompany}`);
+                this.vendors[this.currentCompany] = vendorList ? JSON.parse(vendorList) : [];
+                this.updateVendorSuggestions();
+
+                // Load reference number tracking
+                const usedRefs = localStorage.getItem(`usedRefNumbers_${this.currentCompany}`);
+                if (usedRefs) {
+                    this.usedRefNumbers[this.currentCompany] = JSON.parse(usedRefs);
+                }
+
+                const availableRefs = localStorage.getItem(`availableRefNumbers_${this.currentCompany}`);
+                if (availableRefs) {
+                    this.availableRefNumbers[this.currentCompany] = JSON.parse(availableRefs);
+                }
+
+                // Initialize dashboard and expense table
+                this.renderExpenseTable();
+                this.displayUploadedFilesList();
+                this.updateDashboard();
+            },
+
+            switchCompany() {
+                this.currentCompany = document.getElementById('companySelect').value;
+                document.querySelectorAll('[id$="CompanyName"]').forEach(el => {
+                    el.textContent = this.currentCompany === 'Rabona' ? 'Rabona Holdings' : 'Espargos';
+                });
+
+                // Load bank transactions for new company
+                const transactions = localStorage.getItem(`bankTransactions_${this.currentCompany}`);
+                this.bankTransactions = transactions ? JSON.parse(transactions) : [];
+
+                // Load reconciliation data for new company
+                const reconciliation = localStorage.getItem(`reconciliation_${this.currentCompany}`);
+                this.reconciliationData = reconciliation ? JSON.parse(reconciliation) : {};
+
+                // Load uploaded files list for new company
+                const uploadedFiles = localStorage.getItem(`uploadedFiles_${this.currentCompany}`);
+                this.uploadedFiles[this.currentCompany] = uploadedFiles ? JSON.parse(uploadedFiles) : [];
+
+                // Load vendor list for new company
+                const vendorList = localStorage.getItem(`vendors_${this.currentCompany}`);
+                this.vendors[this.currentCompany] = vendorList ? JSON.parse(vendorList) : [];
+                this.updateVendorSuggestions();
+
+                // Load reference number tracking for new company
+                const usedRefs = localStorage.getItem(`usedRefNumbers_${this.currentCompany}`);
+                this.usedRefNumbers[this.currentCompany] = usedRefs ? JSON.parse(usedRefs) : [];
+
+                const availableRefs = localStorage.getItem(`availableRefNumbers_${this.currentCompany}`);
+                this.availableRefNumbers[this.currentCompany] = availableRefs ? JSON.parse(availableRefs) : [];
+
+                this.renderExpenseTable();
+                this.displayUploadedFilesList();
+                this.updateDashboard();
+            },
+
+            toggleSplit() {
+                const isSplit = document.getElementById('splitToggle').checked;
+                document.getElementById('noSplitForm').style.display = isSplit ? 'none' : 'block';
+                document.getElementById('splitForm').style.display = isSplit ? 'block' : 'none';
+            },
+
+            updateSubcategories() {
+                const category = document.getElementById('category').value;
+                const subs = categorySubcategories[category] || [];
+                this.populateSubcategories('subcategory', subs);
+                this.updateSpecialFields();
+            },
+
+            updateCompanySubcategories() {
+                const category = document.getElementById('companyCategory').value;
+                const subs = categorySubcategories[category] || [];
+                this.populateSubcategories('companySubcategory', subs);
+            },
+
+            updateYKSubcategories() {
+                const category = document.getElementById('ykCategory').value;
+                const subs = categorySubcategories[category] || [];
+                this.populateSubcategories('ykSubcategory', subs);
+            },
+
+            updateBKSubcategories() {
+                const category = document.getElementById('bkCategory').value;
+                const subs = categorySubcategories[category] || [];
+                this.populateSubcategories('bkSubcategory', subs);
+            },
+
+            updateClientSubcategories() {
+                const category = document.getElementById('clientCategory').value;
+                const subs = categorySubcategories[category] || [];
+                this.populateSubcategories('clientSubcategory', subs);
+            },
+
+            populateSubcategories(selectId, subcategories) {
+                const select = document.getElementById(selectId);
+                select.innerHTML = '<option value="">-- Select subcategory --</option>';
+                subcategories.forEach(sub => {
+                    const option = document.createElement('option');
+                    option.value = sub;
+                    option.textContent = sub;
+                    select.appendChild(option);
+                });
+            },
+
+            updateSpecialFields() {
+                const subcat = document.getElementById('subcategory').value;
+                document.getElementById('locationContainer').classList.toggle('hidden', !itemsWithLocation.includes(subcat));
+                document.getElementById('customSalaryContainer').classList.toggle('hidden', !itemsWithCustom.includes(subcat));
+                document.getElementById('projectCommentContainer').classList.toggle('hidden', !itemsWithProject.includes(subcat));
+            },
+
+            updateSubReferences() {
+                const type = document.getElementById('expenseType').value;
+                document.getElementById('travelRefContainer').classList.toggle('hidden', type !== 'Travel');
+                document.getElementById('reimbRefContainer').classList.toggle('hidden', type !== 'Reimbursable');
+                document.getElementById('salaryRefContainer').classList.toggle('hidden', type !== 'Salary');
+            },
+
+            updateCompanySubRefs() {
+                const type = document.getElementById('companyExpType').value;
+                document.getElementById('companySubRefContainer').classList.toggle('hidden', !['Travel', 'Reimbursable', 'Salary'].includes(type));
+            },
+
+            updateYKSubRefs() {
+                const type = document.getElementById('ykExpType').value;
+                document.getElementById('ykSubRefContainer').classList.toggle('hidden', !['Travel', 'Reimbursable', 'Salary'].includes(type));
+            },
+
+            updateBKSubRefs() {
+                const type = document.getElementById('bkExpType').value;
+                document.getElementById('bkSubRefContainer').classList.toggle('hidden', !['Travel', 'Reimbursable', 'Salary'].includes(type));
+            },
+
+            updateClientSubRefs() {
+                const type = document.getElementById('clientExpType').value;
+                document.getElementById('clientSubRefContainer').classList.toggle('hidden', !['Travel', 'Reimbursable', 'Salary'].includes(type));
+            },
+
+            confirmReference(refId) {
+                const input = document.getElementById(refId);
+                if (input.value) {
+                    this.confirmedRefs[this.currentCompany].push(input.value);
+                    showMessage(`Reference ${input.value} confirmed!`, 'addExpenseMessage', 'success');
+                }
+            },
+
+            deleteReference(refId) {
+                const input = document.getElementById(refId);
+                input.value = '';
+                showMessage('Reference deleted. Suggest next one.', 'addExpenseMessage', 'info');
+            },
+
+            updateSplitValidation() {
+                const total = parseFloat(document.getElementById('splitTotalAmount').value) || 0;
+                const company = parseFloat(document.getElementById('companyAmount').value) || 0;
+                const yk = parseFloat(document.getElementById('ykAmount').value) || 0;
+                const bk = parseFloat(document.getElementById('bkAmount').value) || 0;
+                const client = parseFloat(document.getElementById('clientAmount').value) || 0;
+                const sum = company + yk + bk + client;
+
+                const validationBox = document.getElementById('splitValidation');
+                validationBox.classList.add('show');
+                document.getElementById('portionTotal').textContent = '€' + sum.toFixed(2);
+                document.getElementById('requiredTotal').textContent = '€' + total.toFixed(2);
+
+                const status = document.getElementById('validationStatus');
+                if (sum === total && total > 0) {
+                    status.textContent = '✓ Portions match total!';
+                    status.style.color = '#2E7D32';
+                    validationBox.classList.remove('error');
+                } else if (sum > total) {
+                    status.textContent = '✗ Portions exceed total';
+                    status.style.color = '#C62828';
+                    validationBox.classList.add('error');
+                } else {
+                    status.textContent = '○ Portions incomplete';
+                    status.style.color = '#666';
+                    validationBox.classList.remove('error');
+                }
+            },
+
+            saveExpense() {
+                // Validate required fields
+                const genRef = document.getElementById('genRef').value;
+                const paymentMethod = document.getElementById('paymentMethod').value;
+                const invoiceDate = document.getElementById('invoiceDate').value;
+                const vendor = document.getElementById('vendor').value;
+                const paymentDate = document.getElementById('paymentDate').value;
+                const amount = parseFloat(document.getElementById('amount').value) || 0;
+                const category = document.getElementById('category').value;
+                const subcategory = document.getElementById('subcategory').value;
+                const status = document.getElementById('status').value;
+                const expenseType = document.getElementById('expenseType').value;
+
+                // Get reimbursable project if applicable
+                let reimbursableProject = '';
+                if (expenseType === 'Reimbursable') {
+                    const selectedProject = document.getElementById('reimbursableProject').value;
+                    if (selectedProject === 'Other') {
+                        reimbursableProject = document.getElementById('customProject').value;
+                    } else {
+                        reimbursableProject = selectedProject;
+                    }
+
+                    if (!reimbursableProject) {
+                        showMessage('Please select a project for this reimbursable expense', 'addExpenseMessage', 'error');
+                        return;
+                    }
+                }
+
+                if (!genRef || !paymentMethod || !invoiceDate || !vendor || !paymentDate || !amount || !category || !subcategory) {
+                    showMessage('Please fill in all required fields', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Create expense object
+                const expense = {
+                    refNumber: genRef,
+                    paymentMethod: paymentMethod,
+                    date: invoiceDate,
+                    vendor: vendor,
+                    paymentDate: paymentDate,
+                    amount: -amount, // Negative for expenses
+                    category: category,
+                    subcategory: subcategory,
+                    status: status,
+                    expenseType: expenseType,
+                    reimbursableProject: reimbursableProject, // Project/client for reimbursable expenses
+                    isSplit: false,
+                    timestamp: new Date().toISOString()
+                };
+
+                // Add to expenses array
+                if (!this.expenses[this.currentCompany]) {
+                    this.expenses[this.currentCompany] = [];
+                }
+                this.expenses[this.currentCompany].push(expense);
+
+                // Save to localStorage
+                localStorage.setItem(`expenses_${this.currentCompany}`, JSON.stringify(this.expenses[this.currentCompany]));
+
+                // If this expense matches a bank transaction reference, auto-match it
+                if (genRef && status === 'Complete') {
+                    const matchingBankTrans = this.bankTransactions.find(t => t.refNumber === genRef);
+                    if (matchingBankTrans) {
+                        if (!this.reconciliationData) {
+                            this.reconciliationData = {};
+                        }
+                        this.reconciliationData[genRef] = {
+                            matched: true,
+                            matchedToRef: genRef
+                        };
+                        localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+                    }
+                }
+
+                // Add vendor to suggestions list
+                this.addVendorToList(vendor);
+
+                showMessage('Expense saved successfully!', 'addExpenseMessage', 'success');
+                this.renderExpenseTable();
+                this.clearForm();
+            },
+
+            saveSplitExpense() {
+                const total = parseFloat(document.getElementById('splitTotalAmount').value) || 0;
+                const company = parseFloat(document.getElementById('companyAmount').value) || 0;
+                const yk = parseFloat(document.getElementById('ykAmount').value) || 0;
+                const bk = parseFloat(document.getElementById('bkAmount').value) || 0;
+                const client = parseFloat(document.getElementById('clientAmount').value) || 0;
+                const sum = company + yk + bk + client;
+
+                if (sum !== total || total === 0) {
+                    showMessage('Portions must equal total amount!', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                const invoiceDate = document.getElementById('splitInvoiceDate').value;
+                const vendor = document.getElementById('splitVendor').value;
+                const paymentDate = document.getElementById('splitPaymentDate').value;
+
+                if (!invoiceDate || !vendor || !paymentDate) {
+                    showMessage('Please fill in all required shared details', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Save company portion
+                if (company > 0) {
+                    const expense = {
+                        refNumber: document.getElementById('companyGenRef').value,
+                        paymentMethod: document.getElementById('companyPayMethod').value,
+                        date: invoiceDate,
+                        vendor: vendor,
+                        paymentDate: paymentDate,
+                        amount: -company,
+                        category: document.getElementById('companyCategory').value,
+                        subcategory: document.getElementById('companySubcategory').value,
+                        status: 'Complete',
+                        expenseType: document.getElementById('companyExpType').value,
+                        isSplit: true,
+                        splitPortion: 'Company',
+                        timestamp: new Date().toISOString()
+                    };
+                    this.expenses[this.currentCompany].push(expense);
+                }
+
+                // Save YK portion
+                if (yk > 0) {
+                    const expense = {
+                        refNumber: document.getElementById('ykGenRef').value,
+                        paymentMethod: document.getElementById('ykPayMethod').value,
+                        date: invoiceDate,
+                        vendor: vendor,
+                        paymentDate: paymentDate,
+                        amount: -yk,
+                        category: document.getElementById('ykCategory').value,
+                        subcategory: document.getElementById('ykSubcategory').value,
+                        status: 'Complete',
+                        expenseType: document.getElementById('ykExpType').value,
+                        isSplit: true,
+                        splitPortion: 'YK',
+                        timestamp: new Date().toISOString()
+                    };
+                    this.expenses[this.currentCompany].push(expense);
+                }
+
+                // Save BK portion
+                if (bk > 0) {
+                    const expense = {
+                        refNumber: document.getElementById('bkGenRef').value,
+                        paymentMethod: document.getElementById('bkPayMethod').value,
+                        date: invoiceDate,
+                        vendor: vendor,
+                        paymentDate: paymentDate,
+                        amount: -bk,
+                        category: document.getElementById('bkCategory').value,
+                        subcategory: document.getElementById('bkSubcategory').value,
+                        status: 'Complete',
+                        expenseType: document.getElementById('bkExpType').value,
+                        isSplit: true,
+                        splitPortion: 'BK',
+                        timestamp: new Date().toISOString()
+                    };
+                    this.expenses[this.currentCompany].push(expense);
+                }
+
+                // Save client portion
+                if (client > 0) {
+                    const expense = {
+                        refNumber: document.getElementById('clientGenRef').value,
+                        paymentMethod: document.getElementById('clientPayMethod').value,
+                        date: invoiceDate,
+                        vendor: vendor,
+                        paymentDate: paymentDate,
+                        amount: -client,
+                        category: document.getElementById('clientCategory').value,
+                        subcategory: document.getElementById('clientSubcategory').value,
+                        status: 'Complete',
+                        expenseType: document.getElementById('clientExpType').value,
+                        isSplit: true,
+                        splitPortion: 'Client',
+                        timestamp: new Date().toISOString()
+                    };
+                    this.expenses[this.currentCompany].push(expense);
+                }
+
+                // Save to localStorage
+                localStorage.setItem(`expenses_${this.currentCompany}`, JSON.stringify(this.expenses[this.currentCompany]));
+
+                // Auto-match split expenses to bank transactions
+                const refNumbers = [
+                    document.getElementById('companyGenRef').value,
+                    document.getElementById('ykGenRef').value,
+                    document.getElementById('bkGenRef').value,
+                    document.getElementById('clientGenRef').value
+                ].filter(ref => ref); // Only include non-empty refs
+
+                refNumbers.forEach(ref => {
+                    const matchingBankTrans = this.bankTransactions.find(t => t.refNumber === ref);
+                    if (matchingBankTrans) {
+                        if (!this.reconciliationData) {
+                            this.reconciliationData = {};
+                        }
+                        this.reconciliationData[ref] = {
+                            matched: true,
+                            matchedToRef: ref
+                        };
+                    }
+                });
+
+                localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+
+                // Add vendor to suggestions list
+                const splitVendor = document.getElementById('splitVendor').value;
+                this.addVendorToList(splitVendor);
+
+                showMessage('Split expense saved successfully!', 'addExpenseMessage', 'success');
+                this.renderExpenseTable();
+                this.clearForm();
+            },
+
+            clearForm() {
+                document.getElementById('splitToggle').checked = false;
+                this.toggleSplit();
+
+                // Clear all field values and borders
+                document.querySelectorAll('input[type="text"], input[type="number"], select, textarea').forEach(el => {
+                    el.value = '';
+                    el.style.borderColor = ''; // Remove custom border color
+                    el.style.borderWidth = ''; // Remove custom border width
+                    el.removeAttribute('data-prefilled');
+                    el.removeAttribute('data-required');
+                });
+
+                document.getElementById('status').value = 'Complete';
+                // Reset form background
+                document.getElementById('add-expense').style.background = 'white';
+
+                // Reset reimbursable project fields
+                document.getElementById('reimbursableProject').value = '';
+                document.getElementById('customProject').value = '';
+                document.getElementById('reimbursableProjectContainer').style.display = 'none';
+                document.getElementById('customProjectContainer').style.display = 'none';
+
+                // Reset extraction editing state
+                this.isEditingExtractedTransaction = false;
+            },
+
+            editBankTransaction(bankTransRefNumber) {
+                // Find the bank transaction
+                const transaction = this.bankTransactions.find(t => t.refNumber === bankTransRefNumber);
+                if (!transaction) {
+                    showMessage('Transaction not found', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Extract month and year from transaction date for auto-fill
+                const [transDay, transMonth, transYear] = transaction.date.split('/');
+
+                // Pre-fill form fields that come from extracted transaction
+                const preFillFields = {
+                    'genRef': transaction.refNumber,
+                    'vendor': transaction.description,
+                    'amount': Math.abs(transaction.amount),
+                    'paymentDate': transaction.date,
+                    'invoiceDate': transaction.date,
+                    'paymentMethod': transaction.accountType === 'mastercard' ? 'RMC BT' : 'RCC BT'
+                };
+
+                // Apply pre-filled values with RED BORDER
+                Object.entries(preFillFields).forEach(([fieldId, value]) => {
+                    const field = document.getElementById(fieldId);
+                    if (field) {
+                        field.value = value;
+                        field.setAttribute('data-prefilled', 'true'); // Mark as pre-filled
+                        field.style.borderColor = '#C62828';
+                        field.style.borderWidth = '2px';
+
+                        // Add change listener to turn border GREEN when edited
+                        field.addEventListener('change', (e) => {
+                            if (e.target.getAttribute('data-prefilled') === 'true') {
+                                e.target.style.borderColor = '#2E7D32'; // Green = edited
+                                e.target.style.borderWidth = '2px';
+                                this.updateMarkCompleteButton();
+                            }
+                        }, { once: false });
+                    }
+                });
+
+                // Smart date field setup
+                const invoiceDateField = document.getElementById('invoiceDate');
+                invoiceDateField.placeholder = `DD/${transMonth}/${transYear}`;
+                invoiceDateField.addEventListener('input', (e) => {
+                    this.handleSmartDateInput(e, transMonth, transYear);
+                }, { once: false });
+
+                // Set status to Incomplete initially
+                document.getElementById('status').value = 'Incomplete';
+
+                // Apply color coding to form
+                const addExpenseDiv = document.getElementById('add-expense');
+                if (transaction.accountType === 'mastercard') {
+                    if (transaction.amount > 0) {
+                        addExpenseDiv.style.background = '#ffb3d9'; // Darker pink for incoming
+                    } else {
+                        addExpenseDiv.style.background = '#ffe8f0'; // Light pink for outgoing
+                    }
+                } else {
+                    if (transaction.amount > 0) {
+                        addExpenseDiv.style.background = '#c0c0c0'; // Darker gray for incoming
+                    } else {
+                        addExpenseDiv.style.background = '#e8e8e8'; // Light gray for outgoing
+                    }
+                }
+
+                // Mark as editing extracted transaction
+                this.isEditingExtractedTransaction = true;
+
+                // Clear fields that user needs to fill
+                document.getElementById('category').value = '';
+                document.getElementById('subcategory').value = '';
+                document.getElementById('expenseType').value = '';
+
+                // Show required field indicators for fields that need to be filled
+                this.showRequiredFieldIndicatorsForExtractedEdit();
+
+                // Switch to Add Expense tab
+                showTab('add-expense');
+                showMessage(`✏️ Editing extracted transaction. Red borders = pre-filled. Edit them to turn green. Save Draft anytime, Mark Complete when all required fields filled.`, 'addExpenseMessage', 'info');
+            },
+
+            showRequiredFieldIndicatorsForExtractedEdit() {
+                // Fields that user MUST fill (not pre-filled)
+                const userMustFillFields = ['category', 'subcategory', 'paymentMethod', 'expenseType'];
+
+                userMustFillFields.forEach(fieldId => {
+                    const field = document.getElementById(fieldId);
+                    if (field && !field.value) {
+                        field.style.borderColor = '#C62828';
+                        field.style.borderWidth = '2px';
+                        field.setAttribute('data-required', 'true');
+
+                        // Add change listener to turn border GREEN when filled
+                        field.addEventListener('change', (e) => {
+                            if (e.target.value) {
+                                e.target.style.borderColor = '#2E7D32'; // Green = filled
+                                e.target.style.borderWidth = '2px';
+                                this.updateMarkCompleteButton();
+                            }
+                        }, { once: false });
+                    }
+                });
+            },
+
+            updateMarkCompleteButton() {
+                // Check if any fields still have red borders (unfilled/unedited)
+                const hasRedBorders = document.querySelectorAll('[style*="border-color: #C62828"]').length > 0;
+                const markCompleteBtn = document.getElementById('markCompleteBtn');
+
+                if (markCompleteBtn) {
+                    markCompleteBtn.disabled = hasRedBorders;
+                    markCompleteBtn.style.opacity = hasRedBorders ? '0.5' : '1';
+                    markCompleteBtn.style.cursor = hasRedBorders ? 'not-allowed' : 'pointer';
+                }
+            },
+
+            saveDraft() {
+                // Save the expense with "Incomplete" status
+                document.getElementById('status').value = 'Incomplete';
+                this.saveExpense();
+            },
+
+            markComplete() {
+                // Check if all required fields are filled
+                const hasRedBorders = document.querySelectorAll('[style*="border-color: #C62828"]').length > 0;
+
+                if (hasRedBorders) {
+                    showMessage('❌ Please review and edit all red-bordered fields before marking complete', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Save the expense with "Complete" status
+                document.getElementById('status').value = 'Complete';
+                this.saveExpense();
+            },
+
+            toggleReimbursableProject() {
+                const expenseType = document.getElementById('expenseType').value;
+                const projectContainer = document.getElementById('reimbursableProjectContainer');
+
+                if (expenseType === 'Reimbursable') {
+                    projectContainer.style.display = 'block';
+                } else {
+                    projectContainer.style.display = 'none';
+                    // Clear project fields when switching away from Reimbursable
+                    document.getElementById('reimbursableProject').value = '';
+                    document.getElementById('customProject').value = '';
+                    document.getElementById('customProjectContainer').style.display = 'none';
+                }
+            },
+
+            handleProjectSelection() {
+                const selected = document.getElementById('reimbursableProject').value;
+                const customContainer = document.getElementById('customProjectContainer');
+
+                if (selected === 'Other') {
+                    customContainer.style.display = 'block';
+                    document.getElementById('customProject').focus();
+                } else {
+                    customContainer.style.display = 'none';
+                    document.getElementById('customProject').value = '';
+                }
+            },
+
+            updateVendorSuggestions() {
+                const datalist = document.getElementById('vendorsList');
+                const vendors = this.vendors[this.currentCompany] || [];
+
+                // Clear existing options
+                datalist.innerHTML = '';
+
+                // Add each vendor as an option
+                vendors.forEach(vendor => {
+                    const option = document.createElement('option');
+                    option.value = vendor;
+                    datalist.appendChild(option);
+                });
+            },
+
+            addVendorToList(vendorName) {
+                if (!vendorName || vendorName.trim() === '') return;
+
+                const vendors = this.vendors[this.currentCompany] || [];
+                vendorName = vendorName.trim();
+
+                // Only add if it's not already in the list (case-insensitive)
+                if (!vendors.some(v => v.toLowerCase() === vendorName.toLowerCase())) {
+                    vendors.push(vendorName);
+                    this.vendors[this.currentCompany] = vendors;
+
+                    // Save to localStorage
+                    localStorage.setItem(`vendors_${this.currentCompany}`, JSON.stringify(vendors));
+
+                    // Update the datalist UI
+                    this.updateVendorSuggestions();
+                }
+            },
+
+            deleteExpense(refNumber) {
+                if (!confirm(`⚠️ Delete expense ${refNumber}?\n\nThis action cannot be undone.`)) {
+                    return;
+                }
+
+                const expenses = this.expenses[this.currentCompany] || [];
+
+                // Find and remove the expense
+                const index = expenses.findIndex(e => (e.generalReference || e.refNumber) === refNumber);
+                if (index > -1) {
+                    const deletedExpense = expenses[index];
+                    expenses.splice(index, 1);
+
+                    // Save to localStorage
+                    localStorage.setItem(`expenses_${this.currentCompany}`, JSON.stringify(expenses));
+
+                    // If this was a reconciled expense, remove the reconciliation match
+                    if (this.reconciliationData[refNumber]) {
+                        delete this.reconciliationData[refNumber];
+                        localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+                    }
+
+                    showMessage(`✅ Expense ${refNumber} deleted successfully`, 'addExpenseMessage', 'success');
+                    this.renderExpenseTable();
+                    this.updateDashboard();
+                } else {
+                    showMessage('Expense not found', 'addExpenseMessage', 'error');
+                }
+            },
+
+            deleteExtractedTransaction(bankTransRefNumber) {
+                if (!confirm(`⚠️ Delete extracted transaction ${bankTransRefNumber}?\n\nThis action cannot be undone.`)) {
+                    return;
+                }
+
+                // Find and remove the bank transaction
+                const index = this.bankTransactions.findIndex(t => t.refNumber === bankTransRefNumber);
+                if (index > -1) {
+                    this.bankTransactions.splice(index, 1);
+
+                    // Save to localStorage
+                    localStorage.setItem(`bankTransactions_${this.currentCompany}`, JSON.stringify(this.bankTransactions));
+
+                    // If this transaction was reconciled, remove the reconciliation match
+                    if (this.reconciliationData[bankTransRefNumber]) {
+                        delete this.reconciliationData[bankTransRefNumber];
+                        localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+                    }
+
+                    showMessage(`✅ Extracted transaction ${bankTransRefNumber} deleted successfully`, 'bankParserMessage', 'success');
+                    this.renderExpenseTable();
+                } else {
+                    showMessage('Transaction not found', 'bankParserMessage', 'error');
+                }
+            },
+
+            handleSmartDateInput(event, suggestedMonth, suggestedYear) {
+                const field = event.target;
+                let value = field.value.trim();
+
+                // If user types just a number 1-31, auto-complete with suggested month/year
+                if (/^\d{1,2}$/.test(value)) {
+                    const day = value.padStart(2, '0');
+                    field.value = `${day}/${suggestedMonth}/${suggestedYear}`;
+                    field.style.color = '#2E7D32'; // Highlight auto-filled suggestion
+                }
+                // If user types day and month (DD/MM), auto-complete with suggested year
+                else if (/^\d{1,2}\/\d{1,2}$/.test(value)) {
+                    field.value = `${value}/${suggestedYear}`;
+                    field.style.color = '#2E7D32'; // Highlight auto-filled suggestion
+                }
+                // If user enters full date, use it as-is
+                else if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)) {
+                    field.style.color = '#333'; // Normal color for user-entered date
+                }
+            },
+
+            showRequiredFieldIndicators() {
+                const requiredFields = ['category', 'subcategory', 'paymentMethod', 'expenseType'];
+                requiredFields.forEach(fieldId => {
+                    const field = document.getElementById(fieldId);
+                    if (field) {
+                        if (!field.value) {
+                            field.style.border = '2px solid red';
+                        }
+                        // Add change listener to remove red border when field is filled
+                        field.addEventListener('change', function() {
+                            if (this.value) {
+                                this.style.border = '';
+                            }
+                        }, { once: false });
+                    }
+                });
+            },
+
+            matchBankTransaction(bankTransRefNumber) {
+                // Find the bank transaction
+                const transaction = this.bankTransactions.find(t => t.refNumber === bankTransRefNumber);
+                if (!transaction) {
+                    showMessage('Transaction not found', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Find matching expenses (same amount, same company)
+                const expenses = this.expenses[this.currentCompany] || [];
+                const matchingExpenses = expenses.filter(exp => {
+                    const expenseAmount = Math.abs(exp.amount);
+                    const transactionAmount = Math.abs(transaction.amount);
+                    return Math.abs(expenseAmount - transactionAmount) < 0.01;
+                });
+
+                if (matchingExpenses.length === 0) {
+                    showMessage(`No matching expenses found with amount €${Math.abs(transaction.amount).toFixed(2)}. Add an expense first.`, 'addExpenseMessage', 'info');
+                    return;
+                }
+
+                // Open matching modal
+                this.showMatchingModal(transaction, matchingExpenses);
+            },
+
+            showMatchingModal(bankTransaction, matchingExpenses) {
+                // Create modal HTML
+                const modalHTML = `
+                    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;" onclick="this.remove()">
+                        <div style="background: white; padding: 30px; border-radius: 8px; max-width: 500px; width: 90%; box-shadow: 0 4px 16px rgba(0,0,0,0.2);" onclick="event.stopPropagation()">
+                            <h3>Match Bank Transaction</h3>
+                            <p>Select an expense to match with this bank transaction (€${Math.abs(bankTransaction.amount).toFixed(2)}):</p>
+
+                            <div style="max-height: 300px; overflow-y: auto; margin: 20px 0;">
+                                ${matchingExpenses.map((exp, idx) => `
+                                    <div onclick="document.querySelector('[data-selected-idx]').removeAttribute('data-selected-idx'); this.setAttribute('data-selected-idx', '${idx}'); this.style.borderColor = '#2E7D32'; this.style.borderWidth = '2px';"
+                                         style="padding: 12px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; cursor: pointer; background: white;"
+                                         data-expense-ref="${exp.generalReference}">
+                                        <strong>${exp.generalReference}</strong> - ${exp.vendor} - €${Math.abs(exp.amount).toFixed(2)}<br/>
+                                        <small style="color: #666;">${exp.invoiceDate} | ${exp.category}</small>
+                                    </div>
+                                `).join('')}
+                            </div>
+
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button class="button secondary" onclick="this.closest('[style*=\"position: fixed\"]').remove()">Cancel</button>
+                                <button class="button" onclick="app.confirmMatch('${bankTransaction.refNumber}', document.querySelector('[data-selected-idx]')?.getAttribute('data-expense-ref')); document.querySelector('[style*=\"position: fixed\"]')?.remove();">Confirm Match</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Insert modal into DOM
+                document.body.insertAdjacentHTML('beforeend', modalHTML);
+            },
+
+            confirmMatch(bankTransRefNumber, expenseRefNumber) {
+                if (!expenseRefNumber) {
+                    showMessage('Please select an expense to match', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Find the matching expense
+                const expense = this.expenses[this.currentCompany].find(e => e.generalReference === expenseRefNumber);
+                if (!expense) {
+                    showMessage('Expense not found', 'addExpenseMessage', 'error');
+                    return;
+                }
+
+                // Store the match in reconciliation data
+                if (!this.reconciliationData) {
+                    this.reconciliationData = {};
+                }
+                this.reconciliationData[bankTransRefNumber] = {
+                    matched: true,
+                    matchedToRef: expenseRefNumber
+                };
+
+                localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+                showMessage('✅ Transaction matched successfully!', 'addExpenseMessage', 'success');
+                this.renderExpenseTable();
+            },
+
+            renderExpenseTable() {
+                const tbody = document.getElementById('expenseTable');
+                const expenses = this.expenses[this.currentCompany] || [];
+                const bankTransactions = this.bankTransactions || [];
+
+                // Combine expenses and bank transactions
+                const allItems = [];
+                const expenseRefNumbers = new Set(expenses.map(e => e.generalReference || e.refNumber));
+
+                // Add expenses (with source="expense")
+                expenses.forEach(exp => {
+                    allItems.push({
+                        type: 'expense',
+                        refNumber: exp.generalReference || exp.refNumber || '',
+                        date: exp.date,
+                        vendor: exp.vendor,
+                        category: exp.category,
+                        subcategory: exp.subcategory,
+                        amount: exp.amount,
+                        paymentMethod: exp.paymentMethod || '',
+                        status: exp.status || 'Complete',
+                        reimbursableProject: exp.reimbursableProject || '',
+                        isManual: true
+                    });
+                });
+
+                // Add bank transactions (with source="extracted") - only if not already matched to an expense
+                bankTransactions.forEach(trans => {
+                    const direction = trans.amount > 0 ? 'inward' : 'outward';
+                    const accountType = trans.accountType === 'mastercard' ? 'mastercard' : 'current';
+
+                    // Check if this transaction has a corresponding expense entry
+                    const hasMatchingExpense = expenseRefNumbers.has(trans.refNumber);
+
+                    // If already matched, skip showing it as a separate item
+                    if (hasMatchingExpense) {
+                        return;
+                    }
+
+                    allItems.push({
+                        type: 'bankTransaction',
+                        refNumber: trans.refNumber || '',
+                        date: trans.date,
+                        vendor: trans.description,
+                        category: '',
+                        subcategory: '',
+                        amount: trans.amount,
+                        paymentMethod: accountType === 'mastercard' ? 'Mastercard' : 'Current Account',
+                        status: 'Pending',
+                        isManual: false,
+                        accountType: accountType,
+                        direction: direction,
+                        bankTransId: trans.refNumber
+                    });
+                });
+
+                // Sort by date (newest first)
+                allItems.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                if (allItems.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No expenses or transactions yet</td></tr>';
+                } else {
+                    tbody.innerHTML = allItems.map((item, idx) => {
+                        // Determine row background color
+                        let rowClass = '';
+                        if (!item.isManual) {
+                            if (item.accountType === 'current') {
+                                rowClass = item.direction === 'inward' ? 'style="background: #c0c0c0;"' : 'style="background: #e8e8e8;"';
+                            } else if (item.accountType === 'mastercard') {
+                                rowClass = item.direction === 'inward' ? 'style="background: #ffb3d9;"' : 'style="background: #ffe8f0;"';
+                            }
+                        }
+
+                        // Format amount
+                        const amountDisplay = item.amount < 0 ?
+                            `<span style="color: #C62828;">-€${Math.abs(item.amount).toFixed(2)}</span>` :
+                            `<span style="color: #2E7D32; font-weight: bold;">€${item.amount.toFixed(2)}</span>`;
+
+                        // Status badge
+                        const statusBadge = item.status === 'Complete' ?
+                            '<span style="background: #E8F5E9; color: #2E7D32; padding: 4px 8px; border-radius: 4px; font-size: 12px;">✅ Complete</span>' :
+                            '<span style="background: #FFF9C4; color: #F57F17; padding: 4px 8px; border-radius: 4px; font-size: 12px;">⏳ Pending</span>';
+
+                        // Action buttons
+                        let actionButtons = '';
+                        if (!item.isManual) {
+                            // Extracted transaction - show Edit, Match, and Delete buttons
+                            actionButtons = `
+                                <button class="button small" onclick="app.editBankTransaction('${item.bankTransId}')">Edit</button>
+                                <button class="button small" style="background: #1976D2;" onclick="app.matchBankTransaction('${item.bankTransId}')">Match</button>
+                                <button class="button small secondary" style="background: #F57F17;" onclick="app.deleteExtractedTransaction('${item.bankTransId}')">🗑️ Delete</button>
+                            `;
+                        } else {
+                            // Manual expense - show delete option
+                            actionButtons = `
+                                <button class="button small secondary" style="background: #F57F17;" onclick="app.deleteExpense('${item.refNumber}')">🗑️ Delete</button>
+                            `;
+                        }
+
+                        // Project info for reimbursable expenses
+                        const projectInfo = item.reimbursableProject ?
+                            `<br/><small style="color: #1976D2; font-weight: 600;">💼 ${item.reimbursableProject}</small>` :
+                            '';
+
+                        return `
+                            <tr ${rowClass}>
+                                <td>${item.refNumber}</td>
+                                <td>${item.date}</td>
+                                <td>${item.vendor}${projectInfo}</td>
+                                <td>${item.category}</td>
+                                <td>${item.subcategory}</td>
+                                <td>${amountDisplay}</td>
+                                <td>${item.paymentMethod}</td>
+                                <td>${statusBadge}</td>
+                                <td>${actionButtons}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+                // Update dashboard metrics
+                this.updateDashboard();
+            },
+
+            updateDashboard() {
+                const expenses = this.expenses[this.currentCompany] || [];
+
+                // Initialize all metrics
+                let actualIncome = 0;
+                let totalExpenses = 0;
+                let currentToMastercard = 0;
+                let mastercardToCurrent = 0;
+                let rabonaToEspargos = 0;
+                let espargoToRabona = 0;
+                let clientReimbTotal = 0;
+                let paidForEspargos = 0;
+                let paidForRabona = 0;
+
+                // Shareholder data (YK, BK only for new layout)
+                const ykData = { from: 0, to: 0 };
+                const bkData = { from: 0, to: 0 };
+
+                expenses.forEach(exp => {
+                    // ROW 1: Actual income
+                    if (exp.category !== 'Transfers to Connected Accounts' &&
+                        exp.category !== 'Personal Expenses of Shareholders' &&
+                        exp.category !== 'Movement Between Accounts' &&
+                        exp.amount > 0) {
+                        actualIncome += exp.amount;
+                    }
+
+                    // ROW 1: Total expenses
+                    if (exp.amount < 0) {
+                        totalExpenses += Math.abs(exp.amount);
+                    }
+
+                    // ROW 2: Internal account movements
+                    if (exp.category === 'Movement Between Accounts') {
+                        if (exp.subcategory === 'Movement from Current Account to Mastercard Account') {
+                            currentToMastercard += exp.amount;
+                        } else if (exp.subcategory === 'Movement from Mastercard Account to Current Account') {
+                            mastercardToCurrent += exp.amount;
+                        }
+                    }
+
+                    // ROW 3: Shareholder transfers (YK and BK only)
+                    if (exp.category === 'Personal Expenses of Shareholders') {
+                        const isYK = exp.subcategory.includes('YK');
+                        const isBK = exp.subcategory.includes('BK');
+
+                        if (isYK || isBK) {
+                            const isTo = exp.subcategory.includes('Transfers to SH') || exp.subcategory.includes('Payments Made on Behalf');
+                            const amount = Math.abs(exp.amount);
+
+                            if (isYK) {
+                                if (isTo) {
+                                    ykData.to += amount;
+                                } else {
+                                    ykData.from += amount;
+                                }
+                            } else if (isBK) {
+                                if (isTo) {
+                                    bkData.to += amount;
+                                } else {
+                                    bkData.from += amount;
+                                }
+                            }
+                        }
+                    }
+
+                    // ROW 4: Expenses to be reimbursed to clients
+                    // Track expenses marked as Reimbursable type OR from Client split portion
+                    if (exp.expenseType === 'Reimbursable' && exp.amount < 0) {
+                        clientReimbTotal += Math.abs(exp.amount);
+                    } else if (exp.splitPortion === 'Client' && exp.amount < 0) {
+                        clientReimbTotal += Math.abs(exp.amount);
+                    }
+
+                    // ROW 5: Inter-company transfers (Rabona ↔ Espargos)
+                    if (exp.category === 'Transfers to Connected Accounts') {
+                        if (exp.subcategory === 'Espargos') {
+                            rabonaToEspargos += exp.amount;
+                        }
+                    }
+
+                    // ROW 6: Expenses paid on behalf
+                    // Track if vendor mentions this is for another company
+                    const vendorLower = (exp.vendor || '').toLowerCase();
+                    if (vendorLower.includes('espargos:') || vendorLower.includes('for espargos') || vendorLower.includes('@espargos')) {
+                        if (this.currentCompany === 'Rabona' && exp.amount < 0) {
+                            paidForEspargos += Math.abs(exp.amount);
+                        }
+                    }
+                    if (vendorLower.includes('rabona:') || vendorLower.includes('for rabona') || vendorLower.includes('@rabona')) {
+                        if (this.currentCompany === 'Espargos' && exp.amount < 0) {
+                            paidForRabona += Math.abs(exp.amount);
+                        }
+                    }
+                });
+
+                // Check Espargos transfers back to Rabona
+                if (this.currentCompany === 'Rabona') {
+                    const espargoExpenses = this.expenses['Espargos'] || [];
+                    espargoExpenses.forEach(exp => {
+                        if (exp.category === 'Transfers to Connected Accounts' &&
+                            (exp.subcategory === 'Other [Custom]' || exp.subcategory.includes('Rabona'))) {
+                            espargoToRabona += exp.amount;
+                        }
+                        // Check for expenses paid on behalf of Rabona
+                        const vendorLower = (exp.vendor || '').toLowerCase();
+                        if (vendorLower.includes('rabona:') || vendorLower.includes('for rabona') || vendorLower.includes('@rabona')) {
+                            if (exp.amount < 0) {
+                                paidForRabona += Math.abs(exp.amount);
+                            }
+                        }
+                    });
+                }
+
+                // Update ROW 1 display
+                document.getElementById('actualIncome').textContent = `€${actualIncome.toFixed(2)}`;
+                document.getElementById('totalExpenses').textContent = `€${totalExpenses.toFixed(2)}`;
+
+                // Update ROW 2 display
+                document.getElementById('mastercardToCurrent').textContent = `€${mastercardToCurrent.toFixed(2)}`;
+                document.getElementById('currentToMastercard').textContent = `€${currentToMastercard.toFixed(2)}`;
+
+                const netMovement = currentToMastercard - mastercardToCurrent;
+                document.getElementById('netMovement').textContent = `€${netMovement.toFixed(2)}`;
+
+                // Update ROW 3 display - YK
+                const ykBalance = ykData.to - ykData.from;
+                document.getElementById('ykFrom').textContent = `€${ykData.from.toFixed(2)}`;
+                document.getElementById('ykTo').textContent = `€${ykData.to.toFixed(2)}`;
+                document.getElementById('ykBalance').textContent = `€${ykBalance.toFixed(2)}`;
+
+                // Update ROW 3 display - BK
+                const bkBalance = bkData.to - bkData.from;
+                document.getElementById('bkFrom').textContent = `€${bkData.from.toFixed(2)}`;
+                document.getElementById('bkTo').textContent = `€${bkData.to.toFixed(2)}`;
+                document.getElementById('bkBalance').textContent = `€${bkBalance.toFixed(2)}`;
+
+                // Update ROW 4 display - Client reimbursements
+                document.getElementById('clientReimbTotal').textContent = `€${clientReimbTotal.toFixed(2)}`;
+
+                // Update ROW 5 display - Inter-company transfers
+                document.getElementById('espargoToRabona').textContent = `€${espargoToRabona.toFixed(2)}`;
+                document.getElementById('rabonaToEspargos').textContent = `€${rabonaToEspargos.toFixed(2)}`;
+
+                const netInterCompany = rabonaToEspargos - espargoToRabona;
+                document.getElementById('netInterCompany').textContent = `€${netInterCompany.toFixed(2)}`;
+
+                // Update ROW 6 display - Inter-company reimbursements
+                document.getElementById('paidForEspargos').textContent = `€${paidForEspargos.toFixed(2)}`;
+                document.getElementById('paidForRabona').textContent = `€${paidForRabona.toFixed(2)}`;
+
+                const reimbBalance = paidForEspargos - paidForRabona;
+                document.getElementById('reimbBalance').textContent = `€${reimbBalance.toFixed(2)}`;
+
+                // Update reconciliation percentage
+                this.updateReconciliationStatus();
+            },
+
+            extractShareholderCode(subcategory) {
+                // Extract shareholder code from subcategory (YK, BK, GK, IG, RG)
+                if (subcategory.includes('YK')) return 'YK';
+                if (subcategory.includes('BK')) return 'BK';
+                if (subcategory.includes('GK')) return 'GK';
+                if (subcategory.includes('IG')) return 'IG';
+                if (subcategory.includes('RG')) return 'RG';
+                return 'Unknown';
+            },
+
+            getShareholderName(code) {
+                const names = { YK: 'YK', BK: 'BK', GK: 'GK', IG: 'IG', RG: 'RG' };
+                return names[code] || code;
+            },
+
+            updateShareholderTransfersTable(shareholderData) {
+                const tbody = document.getElementById('shareholderTransfersBody');
+
+                if (Object.keys(shareholderData).length === 0) {
+                    tbody.innerHTML = `<tr style="text-align: center; color: #999;"><td colspan="6" style="padding: 20px;">No shareholder transfers recorded yet</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = Object.entries(shareholderData).map(([code, data]) => {
+                    const total = data.currentToSH + data.mcToSH + data.shToCurrent + data.shToMC;
+                    return `
+                        <tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 12px; font-weight: 600; border-right: 1px solid #eee;">${data.name}</td>
+                            <td style="padding: 12px; text-align: right; border-right: 1px solid #eee;">€${data.currentToSH.toFixed(2)}</td>
+                            <td style="padding: 12px; text-align: right; border-right: 1px solid #eee;">€${data.mcToSH.toFixed(2)}</td>
+                            <td style="padding: 12px; text-align: right; border-right: 1px solid #eee;">€${data.shToCurrent.toFixed(2)}</td>
+                            <td style="padding: 12px; text-align: right; border-right: 1px solid #eee;">€${data.shToMC.toFixed(2)}</td>
+                            <td style="padding: 12px; text-align: right; font-weight: 600; background: #E8F5E9;">€${total.toFixed(2)}</td>
+                        </tr>
+                    `;
+                }).join('');
+            },
+
+            parseStatement() {
+                const fileInput = document.getElementById('bankStatementUpload');
+                if (!fileInput.files.length) return;
+
+                // Process all selected files
+                const filesToProcess = Array.from(fileInput.files);
+                const uploadedFiles = this.uploadedFiles[this.currentCompany] || [];
+
+                // Filter out duplicates
+                const filesToUpload = filesToProcess.filter(file => {
+                    const isDuplicateName = uploadedFiles.some(f => f.fileName === file.name);
+                    if (isDuplicateName) {
+                        showMessage(`⚠️ Skipping '${file.name}' - already uploaded.`, 'bankParserMessage', 'info');
+                        return false;
+                    }
+                    return true;
+                });
+
+                if (filesToUpload.length === 0) {
+                    showMessage(`❌ All selected files have already been uploaded.`, 'bankParserMessage', 'error');
+                    fileInput.value = '';
+                    return;
+                }
+
+                // Show status
+                document.getElementById('bankStatementFileName').textContent = `Processing ${filesToUpload.length} file(s)...`;
+
+                // Process each file sequentially
+                let processedCount = 0;
+                const processNextFile = () => {
+                    if (processedCount >= filesToUpload.length) {
+                        document.getElementById('bankStatementFileName').textContent = `✅ Processed ${filesToUpload.length} file(s)`;
+                        fileInput.value = '';
+                        return;
+                    }
+
+                    const file = filesToUpload[processedCount];
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const img = new Image();
+                        img.src = e.target.result;
+                        img.onload = () => {
+                            this.extractTransactionsFromImage(img, file.name);
+                            processedCount++;
+                            processNextFile();
+                        };
+                        img.onerror = () => {
+                            showMessage(`❌ Error processing ${file.name}`, 'bankParserMessage', 'error');
+                            processedCount++;
+                            processNextFile();
+                        };
+                    };
+                    reader.readAsDataURL(file);
+                };
+
+                processNextFile();
+            },
+
+            extractTransactionsFromImage(img, fileName) {
+                // Use Tesseract.js for real OCR extraction
+                showMessage('⏳ Extracting transactions from screenshot...', 'bankParserMessage', 'info');
+
+                Tesseract.recognize(img.src, 'eng', {
+                    logger: m => console.log(m)
+                }).then(({ data: { text } }) => {
+                    this.parseOCRText(text, fileName);
+                }).catch(err => {
+                    showMessage('❌ Error reading screenshot. Please ensure image is clear.', 'bankParserMessage', 'error');
+                    console.error(err);
+                });
+            },
+
+            parseOCRText(text, fileName) {
+                // Extract account number from OCR text
+                const accountMatch = text.match(/\d{11,12}/);
+                const accountNumber = accountMatch ? accountMatch[0] : null;
+
+                // Map account number to account type
+                const accountTypeMap = {
+                    '357535881125': 'current',  // Rabona Current Account
+                    '357032438089': 'mastercard' // Rabona Mastercard
+                };
+
+                const accountType = accountTypeMap[accountNumber] || 'current';
+
+                // Parse transaction lines from OCR text
+                // Format: DD/MM/YYYY | Description | Amount (European format with comma as decimal)
+                const lines = text.split('\n');
+                const transactions = [];
+                const dateRegex = /(\d{2}\/\d{2}\/\d{4})/;
+                // Match amounts in European format: optional minus, digits, optional period (thousands), comma, 2 decimals
+                const amountRegex = /(-?\d{1,3}(?:\.\d{3})*,\d{2})/;
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+
+                    const dateMatch = line.match(dateRegex);
+                    const amountMatch = line.match(amountRegex);
+
+                    if (dateMatch && amountMatch) {
+                        const date = dateMatch[1];
+
+                        // Parse European number format: -1.234,56 → -1234.56
+                        let amountStr = amountMatch[1];
+                        const isNegative = amountStr.startsWith('-');
+                        amountStr = amountStr.replace('-', '');  // Remove minus sign
+                        amountStr = amountStr.replace(/\./g, '');  // Remove thousands separators (periods)
+                        amountStr = amountStr.replace(',', '.');   // Convert comma to period (decimal)
+                        let amount = parseFloat(amountStr);
+                        if (isNegative) amount = -amount;
+
+                        // Extract description (everything between date and amount)
+                        const description = line.substring(dateMatch.index + dateMatch[0].length, amountMatch.index).trim();
+
+                        if (description && !isNaN(amount)) {
+                            transactions.push({
+                                date,
+                                description,
+                                amount,
+                                accountType  // Use detected account type for all transactions
+                            });
+                        }
+                    }
+                }
+
+                if (transactions.length === 0) {
+                    showMessage('⚠️ No transactions found. Try uploading a clearer screenshot.', 'bankParserMessage', 'error');
+                    return;
+                }
+
+                // Check for duplicates - prevent same file upload twice
+                const existingBankTransactions = JSON.parse(localStorage.getItem(`bankTransactions_${this.currentCompany}`)) || [];
+                const newTransactions = transactions.filter(newTrans => {
+                    const isDuplicate = existingBankTransactions.some(existing =>
+                        existing.date === newTrans.date &&
+                        existing.description === newTrans.description &&
+                        Math.abs(existing.amount - newTrans.amount) < 0.01
+                    );
+                    return !isDuplicate;
+                });
+
+                const duplicateCount = transactions.length - newTransactions.length;
+                if (duplicateCount > 0) {
+                    showMessage(`⚠️ Found ${duplicateCount} duplicate transaction(s) - skipped. Adding ${newTransactions.length} new transaction(s).`, 'bankParserMessage', 'info');
+                }
+
+                if (newTransactions.length === 0) {
+                    showMessage('❌ All transactions are duplicates. This file has already been uploaded.', 'bankParserMessage', 'error');
+                    return;
+                }
+
+                // Assign reference numbers - continue from current count
+                const currentCount = document.querySelectorAll('#transactionsList tr').length;
+                const nextRefNum = currentCount + 1;
+                const extractedWithRefs = newTransactions.map((trans, idx) => ({
+                    ...trans,
+                    refNumber: `${new Date().getFullYear().toString().slice(2)}/${String(new Date().getMonth() + 1).padStart(2, '0')}/${nextRefNum + idx}`,
+                    direction: trans.amount > 0 ? 'inward' : 'outward'
+                }));
+
+                this.displayParsedTransactions(extractedWithRefs, accountNumber, fileName);
+            },
+
+            displayParsedTransactions(transactions, accountNumber, fileName) {
+                const tbody = document.getElementById('transactionsList');
+                const container = document.getElementById('extractedTransactionsContainer');
+
+                // Append new transactions or replace existing ones
+                const existingHtml = tbody.innerHTML;
+                const isFirstUpload = !container.style.display || container.style.display === 'none' || tbody.innerHTML === '';
+
+                const newRows = transactions.map((trans, idx) => {
+                    // Determine color based on account type AND direction
+                    let backgroundColor = '';
+                    if (trans.accountType === 'current') {
+                        backgroundColor = trans.direction === 'inward' ? '#c0c0c0' : '#e8e8e8';
+                    } else {
+                        backgroundColor = trans.direction === 'inward' ? '#ffb3d9' : '#ffe8f0';
+                    }
+
+                    const amountClass = trans.amount > 0 ? 'amount-incoming' : 'amount-outgoing';
+                    const amountText = trans.amount > 0 ? `€${trans.amount.toFixed(2)}` : `-€${Math.abs(trans.amount).toFixed(2)}`;
+
+                    return `
+                        <tr style="background: ${backgroundColor};">
+                            <td><strong>${trans.refNumber}</strong></td>
+                            <td>${trans.date}</td>
+                            <td>${trans.description}</td>
+                            <td class="${amountClass}">${amountText}</td>
+                            <td>${trans.direction}</td>
+                            <td>
+                                <button class="button small" onclick="app.editBankTransaction('${trans.refNumber}')">Edit</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                // Append to existing transactions (support multiple screenshots)
+                tbody.innerHTML = isFirstUpload ? newRows : existingHtml + newRows;
+
+                // Save bank transactions to localStorage for reconciliation
+                const existingBankTransactions = JSON.parse(localStorage.getItem(`bankTransactions_${this.currentCompany}`)) || [];
+                const allBankTransactions = isFirstUpload ? transactions : [...existingBankTransactions, ...transactions];
+                localStorage.setItem(`bankTransactions_${this.currentCompany}`, JSON.stringify(allBankTransactions));
+                this.bankTransactions = allBankTransactions;
+
+                // Track uploaded file
+                if (fileName) {
+                    const uploadedFiles = this.uploadedFiles[this.currentCompany] || [];
+                    const now = new Date();
+                    uploadedFiles.push({
+                        fileName: fileName,
+                        uploadDate: now.toLocaleDateString('en-GB'), // Format: DD/MM/YYYY (for display)
+                        uploadTimestamp: now.getTime() // Add timestamp for reliable sorting
+                    });
+                    this.uploadedFiles[this.currentCompany] = uploadedFiles;
+                    localStorage.setItem(`uploadedFiles_${this.currentCompany}`, JSON.stringify(uploadedFiles));
+                    this.displayUploadedFilesList();
+                }
+
+                container.style.display = 'block';
+                const accountType = accountNumber === '357535881125' ? 'Current Account' : 'Mastercard';
+                showMessage(`✅ Extracted ${transactions.length} transactions from ${accountType}`, 'bankParserMessage', 'success');
+            },
+
+
+            clearBankTransactions() {
+                if (confirm('⚠️ Clear all uploaded bank statements? This will remove all extracted transactions AND uploaded files list. Make sure you\'ve already reconciled them!')) {
+                    localStorage.removeItem(`bankTransactions_${this.currentCompany}`);
+                    localStorage.removeItem(`reconciliation_${this.currentCompany}`);
+                    localStorage.removeItem(`uploadedFiles_${this.currentCompany}`);
+                    this.bankTransactions = [];
+                    this.reconciliationData = {};
+                    this.uploadedFiles[this.currentCompany] = [];
+
+                    // Clear the table display
+                    document.getElementById('transactionsList').innerHTML = '';
+                    document.getElementById('extractedTransactionsContainer').style.display = 'none';
+                    document.getElementById('bankStatementFileName').textContent = 'No file selected';
+
+                    // Hide uploaded files list
+                    const uploadedFilesContainer = document.getElementById('uploadedFilesContainer');
+                    if (uploadedFilesContainer) uploadedFilesContainer.style.display = 'none';
+
+                    // Reset file input
+                    const fileInput = document.getElementById('bankStatementUpload');
+                    if (fileInput) fileInput.value = '';
+
+                    showMessage('✅ All bank transactions cleared.', 'bankParserMessage', 'success');
+                }
+            },
+
+            displayUploadedFilesList() {
+                const fileListContainer = document.getElementById('uploadedFilesContainer');
+                const fileListBody = document.getElementById('uploadedFilesTableBody');
+
+                const files = this.uploadedFiles[this.currentCompany] || [];
+
+                if (!fileListContainer || !fileListBody) {
+                    console.warn('⚠️ Uploaded files container or body not found in DOM');
+                    return;
+                }
+
+                if (files.length === 0) {
+                    fileListContainer.style.display = 'none';
+                    return;
+                }
+
+                // Sort by upload timestamp NEWEST on top
+                // Use timestamp if available, otherwise parse DD/MM/YYYY for backward compatibility
+                const sortedFiles = [...files].sort((a, b) => {
+                    const timeB = b.uploadTimestamp || new Date(b.uploadDate.split('/').reverse().join('-')).getTime();
+                    const timeA = a.uploadTimestamp || new Date(a.uploadDate.split('/').reverse().join('-')).getTime();
+                    return timeB - timeA;
+                });
+
+                fileListBody.innerHTML = sortedFiles.map(file => `
+                    <tr>
+                        <td><strong>${file.fileName}</strong></td>
+                        <td>${file.uploadDate}</td>
+                        <td>
+                            <button class="button small secondary" onclick="app.deleteUploadedFile('${file.fileName}')">🗑️ Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                fileListContainer.style.display = 'block';
+            },
+
+            deleteUploadedFile(fileName) {
+                if (confirm(`⚠️ Delete uploaded file '${fileName}'? This will remove all its transactions.`)) {
+                    // Remove file from list
+                    this.uploadedFiles[this.currentCompany] = this.uploadedFiles[this.currentCompany].filter(f => f.fileName !== fileName);
+                    localStorage.setItem(`uploadedFiles_${this.currentCompany}`, JSON.stringify(this.uploadedFiles[this.currentCompany]));
+
+                    // Remove transactions from this file (if tracking which transactions came from which file)
+                    // For now, just update display
+                    this.displayUploadedFilesList();
+                    showMessage('✅ File deleted.', 'bankParserMessage', 'success');
+                }
+            },
+
+            // Bank Reconciliation Functions
+            bankTransactions: [],
+            reconciliationData: {},
+            selectedTransactionForMatch: null,
+            selectedExpenseForMatch: null,
+
+            renderReconciliation() {
+                // Load bank transactions from localStorage
+                const bankTransactionsKey = `bankTransactions_${this.currentCompany}`;
+                this.bankTransactions = JSON.parse(localStorage.getItem(bankTransactionsKey)) || [];
+
+                // Initialize reconciliation data for each transaction
+                const reconKey = `reconciliation_${this.currentCompany}`;
+                this.reconciliationData = JSON.parse(localStorage.getItem(reconKey)) || {};
+
+                // Ensure all bank transactions have a reconciliation entry
+                this.bankTransactions.forEach(trans => {
+                    if (!this.reconciliationData[trans.refNumber]) {
+                        this.reconciliationData[trans.refNumber] = { matched: false, matchedToRef: null };
+                    }
+                });
+
+                this.displayReconciliationTable();
+                this.updateReconciliationStatus();
+            },
+
+            displayReconciliationTable() {
+                const tbody = document.getElementById('reconciliationBody');
+                const filter = document.querySelector('input[name="reconFilter"]:checked')?.value || 'all';
+
+                let filteredTransactions = this.bankTransactions;
+                if (filter === 'unmatched') {
+                    filteredTransactions = this.bankTransactions.filter(t => !this.reconciliationData[t.refNumber]?.matched);
+                } else if (filter === 'matched') {
+                    filteredTransactions = this.bankTransactions.filter(t => this.reconciliationData[t.refNumber]?.matched);
+                }
+
+                if (filteredTransactions.length === 0) {
+                    tbody.innerHTML = `<tr style="text-align: center; color: #999;"><td colspan="8">No transactions to display.</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = filteredTransactions.map(trans => {
+                    const reconData = this.reconciliationData[trans.refNumber] || {};
+                    const isMatched = reconData.matched;
+                    const rowClass = trans.accountType === 'current' ? 'bank-row-current' : 'bank-row-mastercard';
+                    const statusBg = isMatched ? '#E8F5E9' : '#FFF9C4';
+                    const statusText = isMatched ? '✅ Matched' : '⚠ Unmatched';
+                    const statusColor = isMatched ? '#2E7D32' : '#F57F17';
+                    const amountText = trans.amount > 0 ? `€${trans.amount.toFixed(2)}` : `-€${Math.abs(trans.amount).toFixed(2)}`;
+                    const amountClass = trans.amount > 0 ? 'amount-incoming' : 'amount-outgoing';
+
+                    // Find matching expense by reference number (also check bank transaction ref)
+                    let matchedExpense = this.expenses[this.currentCompany]?.find(exp => exp.refNumber === reconData.matchedToRef);
+
+                    // Also check if expense was created from this bank transaction (same ref)
+                    if (!matchedExpense) {
+                        matchedExpense = this.expenses[this.currentCompany]?.find(exp => exp.refNumber === trans.refNumber);
+                    }
+
+                    let matchedText = '-';
+                    if (matchedExpense) {
+                        const statusIcon = matchedExpense.status === 'Complete' ? '✅' : '⏳';
+                        const statusLabel = matchedExpense.status === 'Complete' ? 'Complete' : 'In Progress';
+                        matchedText = `${matchedExpense.refNumber} (€${Math.abs(matchedExpense.amount).toFixed(2)}) ${statusIcon} ${statusLabel}`;
+                    }
+
+                    return `
+                        <tr class="${rowClass}">
+                            <td><strong>${trans.refNumber}</strong></td>
+                            <td>${trans.date}</td>
+                            <td>${trans.description}</td>
+                            <td class="${amountClass}">${amountText}</td>
+                            <td>${trans.direction}</td>
+                            <td style="background: ${statusBg}; color: ${statusColor}; font-weight: 600;">${statusText}</td>
+                            <td>${matchedText}</td>
+                            <td>
+                                ${isMatched ? `
+                                    <button class="button small secondary" onclick="app.unmatchTransaction('${trans.refNumber}')">Unmatch</button>
+                                ` : `
+                                    <button class="button small" onclick="app.matchTransaction('${trans.refNumber}', ${trans.amount})">Match</button>
+                                `}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                // Save reconciliation data
+                localStorage.setItem(`reconciliation_${this.currentCompany}`, JSON.stringify(this.reconciliationData));
+            },
+
+            matchTransaction(refNumber, amount) {
+                this.selectedTransactionForMatch = refNumber;
+
+                // Get list of expenses that could match this transaction
+                const expenses = this.expenses[this.currentCompany] || [];
+                const possibleMatches = expenses.filter(exp => {
+                    const reconData = this.reconciliationData[exp.refNumber] || {};
+                    return !reconData.matched && Math.abs(exp.amount - Math.abs(amount)) < 0.01;
+                });
+
+                const content = document.getElementById('matchingContent');
+                if (possibleMatches.length === 0) {
+                    content.innerHTML = `<p style="color: #999; text-align: center;">No matching expenses found with the same amount (€${Math.abs(amount).toFixed(2)}).</p>
+                        <p style="font-size: 12px; color: #666; text-align: center;">Add an expense with this amount in the Add Expense tab first.</p>`;
+                } else {
+                    content.innerHTML = `
+                        <p style="margin-bottom: 15px; color: #666;">Select the expense to match with this bank transaction (€${Math.abs(amount).toFixed(2)}):</p>
+                        <div style="max-height: 300px; overflow-y: auto;">
+                            ${possibleMatches.map(exp => `
+                                <div style="padding: 10px; margin-bottom: 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; transition: all 0.2s;"
+                                     onmouseover="this.style.background='#f5f5f5'"
+                                     onmouseout="this.style.background='white'"
+                                     onclick="app.selectedExpenseForMatch='${exp.refNumber}'; document.querySelectorAll('#matchingContent div[style*=\"border\"]').forEach(el => el.style.borderColor='#ddd'); this.style.borderColor='#2E7D32'; this.style.borderWidth='2px';">
+                                    <strong>${exp.refNumber}</strong> - ${exp.vendor} - €${exp.amount.toFixed(2)}
+                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">${exp.invoiceDate} | ${exp.category}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+
+                document.getElementById('matchingModal').style.display = 'flex';
+            },
+
+            confirmMatch() {
+                if (!this.selectedTransactionForMatch || !this.selectedExpenseForMatch) {
+                    alert('Please select an expense to match.');
+                    return;
+                }
+
+                this.reconciliationData[this.selectedTransactionForMatch] = {
+                    matched: true,
+                    matchedToRef: this.selectedExpenseForMatch
+                };
+
+                this.closeMatchingModal();
+                this.displayReconciliationTable();
+                this.updateReconciliationStatus();
+                showMessage('✅ Transaction matched successfully!', 'reconMessage', 'success');
+            },
+
+            unmatchTransaction(refNumber) {
+                if (confirm('Are you sure you want to unmatch this transaction?')) {
+                    this.reconciliationData[refNumber] = { matched: false, matchedToRef: null };
+                    this.displayReconciliationTable();
+                    this.updateReconciliationStatus();
+                    showMessage('⚠ Transaction unmatched.', 'reconMessage', 'info');
+                }
+            },
+
+            closeMatchingModal() {
+                document.getElementById('matchingModal').style.display = 'none';
+                this.selectedTransactionForMatch = null;
+                this.selectedExpenseForMatch = null;
+            },
+
+            filterReconciliation() {
+                this.displayReconciliationTable();
+            },
+
+            updateReconciliationStatus() {
+                const total = this.bankTransactions.length;
+                const matched = Object.values(this.reconciliationData).filter(r => r.matched).length;
+                const unmatched = total - matched;
+                const percentage = total === 0 ? 0 : Math.round((matched / total) * 100);
+
+                document.getElementById('totalBankTransactions').textContent = total;
+                document.getElementById('matchedCount').textContent = matched;
+                document.getElementById('unmatchedCount').textContent = unmatched;
+
+                const statusEl = document.getElementById('reconStatus');
+                if (percentage === 100 && total > 0) {
+                    statusEl.textContent = '✅ 100%';
+                    statusEl.style.color = '#2E7D32';
+                } else if (percentage >= 50) {
+                    statusEl.textContent = `🟡 ${percentage}%`;
+                    statusEl.style.color = '#FF9800';
+                } else {
+                    statusEl.textContent = `⚠ ${percentage}%`;
+                    statusEl.style.color = '#F57F17';
+                }
+            }
+        };
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+
+            // Update specific tabs when opened
+            if (tabName === 'dashboard') {
+                app.updateDashboard();
+            } else if (tabName === 'bank-reconciliation') {
+                app.renderReconciliation();
+            }
+        }
+
+        function showMessage(text, boxId, type) {
+            const box = document.getElementById(boxId);
+            box.innerHTML = `<div class="message ${type}">${text}</div>`;
+            setTimeout(() => box.innerHTML = '', 4000);
+        }
+
+        // Initialize on page load
+        app.init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,270 @@
+.bank-parser-section {
+  width: 100%;
+}
+
+.bank-parser-section h2 {
+  margin-bottom: 10px;
+  color: #2E7D32;
+}
+
+.bank-parser-section > p {
+  color: #666;
+  margin-bottom: 20px;
+}
+
+.parser-container {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.section-divider {
+  margin: 30px 0;
+  border: none;
+  border-top: 1px solid #ddd;
+}
+
+/* File Upload Styles */
+.file-upload-section h3 {
+  margin-bottom: 15px;
+  color: #333;
+  font-size: 16px;
+}
+
+.upload-area {
+  border: 2px dashed #2E7D32;
+  border-radius: 8px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s;
+  background: #f9f9f9;
+  margin-bottom: 20px;
+}
+
+.upload-area:hover {
+  border-color: #1B5E20;
+  background: #f0f8f5;
+}
+
+.upload-area.drag-over {
+  border-color: #1B5E20;
+  background: #e8f5e9;
+  box-shadow: 0 0 10px rgba(46, 125, 50, 0.2);
+}
+
+.upload-content p {
+  margin: 5px 0;
+  color: #333;
+  font-size: 16px;
+}
+
+.file-input {
+  display: none;
+}
+
+.upload-area:hover::after {
+  content: '';
+}
+
+.file-list {
+  background: #f5f5f5;
+  padding: 15px;
+  border-radius: 4px;
+  margin-bottom: 15px;
+}
+
+.file-list h4 {
+  margin-bottom: 10px;
+  color: #333;
+  font-size: 14px;
+}
+
+.file-list ul {
+  list-style: none;
+  margin-bottom: 15px;
+}
+
+.file-list li {
+  background: white;
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-left: 3px solid #2E7D32;
+}
+
+.file-list span {
+  font-size: 14px;
+  color: #333;
+}
+
+.btn-remove {
+  background: #f44336;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s;
+}
+
+.btn-remove:hover {
+  background: #d32f2f;
+}
+
+/* Transaction Table Styles */
+.transaction-section h3 {
+  margin-bottom: 15px;
+  color: #333;
+  font-size: 16px;
+}
+
+.transaction-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.transaction-stats {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #666;
+}
+
+.transaction-stats span {
+  padding: 4px 8px;
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+.table-container {
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+
+.bank-transactions-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  font-size: 14px;
+}
+
+.bank-transactions-table thead {
+  background: #f5f5f5;
+  border-bottom: 2px solid #ddd;
+}
+
+.bank-transactions-table th {
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #333;
+}
+
+.bank-transactions-table td {
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.bank-transactions-table tbody tr {
+  transition: background 0.2s;
+}
+
+.bank-transactions-table tbody tr:hover {
+  background: #f9f9f9;
+}
+
+.bank-transactions-table input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.status-unmatched {
+  background: #fff9c4;
+}
+
+.status-matched {
+  background: #e8f5e9;
+}
+
+.amount-incoming {
+  color: #2E7D32;
+  font-weight: 600;
+}
+
+.amount-outgoing {
+  color: #C62828;
+  font-weight: 600;
+}
+
+/* Messages */
+.message {
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  font-size: 14px;
+}
+
+.message.error {
+  background: #FFEBEE;
+  color: #C62828;
+  border-left: 4px solid #C62828;
+}
+
+.message.success {
+  background: #E8F5E9;
+  color: #2E7D32;
+  border-left: 4px solid #2E7D32;
+}
+
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.empty-state p {
+  margin: 10px 0;
+}
+
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: #999;
+  font-size: 14px;
+}
+
+@media (max-width: 768px) {
+  .transaction-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .transaction-stats {
+    width: 100%;
+    margin-top: 10px;
+  }
+
+  .bank-transactions-table {
+    font-size: 12px;
+  }
+
+  .bank-transactions-table th,
+  .bank-transactions-table td {
+    padding: 8px;
+  }
+}
