@@ -239,128 +239,147 @@ export function FileUpload({ selectedCompany, onUploadSuccess }) {
 
       if (!accounts || accounts.length === 0) throw new Error('No accounts found for company')
 
-      // Process each file
-      let totalTransactions = 0
-      const processedData = []
+      // Process and upload each file SEPARATELY
+      let totalTransactionsProcessed = 0
+      let successfulUploads = 0
+      const uploadErrors = []
 
       for (const file of files) {
-        const isImage = file.type.startsWith('image/')
+        try {
+          setProcessingStatus(`Processing ${file.name}...`)
 
-        // Extract month from filename
-        const fileMonth = extractMonthFromFilename(file.name)
-        if (fileMonth) {
-          setProcessingStatus(`Validating ${file.name} (${fileMonth.name} ${fileMonth.year})...`)
-        }
+          // CHECK FOR DUPLICATES - reject if file already uploaded
+          const { data: existingFile } = await supabase
+            .from('bank_imports')
+            .select('id')
+            .eq('company_id', company.id)
+            .eq('file_name', file.name)
+            .maybeSingle()
 
-        let fileData = {
-          file: file,
-          transactions: [],
-          accountType: 'Current Account'
-        }
-
-        if (isImage) {
-          fileData = await processImageWithOCR(file)
-        } else if (file.type === 'text/csv') {
-          // Basic CSV parsing - adjust based on your CSV format
-          const text = await file.text()
-          const lines = text.split('\n')
-          const transactions = lines
-            .slice(1) // Skip header
-            .filter(line => line.trim())
-            .map(line => {
-              const [date, vendor, amount, type] = line.split(',')
-              return {
-                date: date?.trim() || '',
-                vendor: vendor?.trim() || '',
-                amount: parseFloat(amount) || 0,
-                type: type?.trim() || 'debit',
-                status: 'pending'
-              }
-            })
-          fileData.transactions = transactions
-          fileData.transactionCount = transactions.length
-        }
-
-        // Validate transaction dates match filename month
-        if (fileMonth && fileData.transactions && fileData.transactions.length > 0) {
-          const validation = validateTransactionDates(fileData.transactions, fileMonth)
-          if (!validation.valid) {
-            // BLOCK UPLOAD - Month mismatch is a critical error
-            throw new Error(
-              `❌ Month mismatch in "${file.name}":\n${validation.issues.join('\n')}\n\nFile claims to be ${fileMonth.name.toUpperCase()} ${fileMonth.year}, but contains transactions from other months. Please verify the file is correct.`
-            )
+          if (existingFile) {
+            uploadErrors.push(`❌ ${file.name} - Already uploaded. Duplicate files not allowed.`)
+            continue
           }
-          fileData.fileMonth = fileMonth
-        }
 
-        totalTransactions += fileData.transactionCount || 0
-        processedData.push(fileData)
-        setProcessingStatus(`Processed ${processedData.length}/${files.length} files...`)
+          const isImage = file.type.startsWith('image/')
+
+          // Extract month from filename
+          const fileMonth = extractMonthFromFilename(file.name)
+          if (fileMonth) {
+            setProcessingStatus(`Validating ${file.name} (${fileMonth.name} ${fileMonth.year})...`)
+          }
+
+          let fileData = {
+            file: file,
+            transactions: [],
+            accountType: 'Current Account'
+          }
+
+          if (isImage) {
+            fileData = await processImageWithOCR(file)
+          } else if (file.type === 'text/csv') {
+            const text = await file.text()
+            const lines = text.split('\n')
+            const transactions = lines
+              .slice(1)
+              .filter(line => line.trim())
+              .map(line => {
+                const [date, vendor, amount, type] = line.split(',')
+                return {
+                  date: date?.trim() || '',
+                  vendor: vendor?.trim() || '',
+                  amount: parseFloat(amount) || 0,
+                  type: type?.trim() || 'debit',
+                  status: 'pending'
+                }
+              })
+            fileData.transactions = transactions
+            fileData.transactionCount = transactions.length
+          }
+
+          // Validate transaction dates match filename month
+          if (fileMonth && fileData.transactions && fileData.transactions.length > 0) {
+            const validation = validateTransactionDates(fileData.transactions, fileMonth)
+            if (!validation.valid) {
+              uploadErrors.push(`❌ ${file.name} - Month mismatch: ${validation.issues[0]}`)
+              continue
+            }
+            fileData.fileMonth = fileMonth
+          }
+
+          // IMPORTANT: Match account for THIS file
+          const primaryAccount = accounts.find(a => {
+            if (fileData.accountType === 'Mastercard') {
+              return a.name === 'Mastercard'
+            }
+            return a.name === 'Current Account'
+          }) || accounts[0]
+
+          // CREATE SEPARATE BANK IMPORT RECORD FOR THIS FILE
+          setProcessingStatus(`Saving ${file.name} to database...`)
+
+          const { data: bankImport, error: importError } = await supabase
+            .from('bank_imports')
+            .insert({
+              company_id: company.id,
+              account_id: primaryAccount.id,
+              import_date: new Date().toISOString().split('T')[0],
+              file_name: file.name,
+              file_type: file.type.startsWith('image/') ? 'image' : 'csv',
+              transaction_count: fileData.transactionCount || 0,
+              status: 'completed'
+            })
+            .select()
+            .single()
+
+          if (importError) throw importError
+
+          // INSERT TRANSACTIONS FOR THIS FILE
+          if (fileData.transactions && fileData.transactions.length > 0) {
+            const transactionsToInsert = fileData.transactions.map(t => ({
+              bank_import_id: bankImport.id,
+              company_id: company.id,
+              account_id: primaryAccount.id,
+              transaction_date: t.date,
+              description: t.vendor,
+              amount: t.amount,
+              transaction_type: t.type,
+              status: 'unmatched',
+              created_at: new Date().toISOString()
+            }))
+
+            const { error: transError } = await supabase
+              .from('bank_transactions')
+              .insert(transactionsToInsert)
+
+            if (transError) throw transError
+          }
+
+          successfulUploads++
+          totalTransactionsProcessed += fileData.transactionCount || 0
+          setProcessingStatus(`Processed ${successfulUploads}/${files.length} files...`)
+        } catch (fileErr) {
+          uploadErrors.push(`❌ ${file.name} - ${fileErr.message}`)
+        }
       }
 
-      // Match account by account number (extracted from bank statement)
-      const firstFileAccountNumber = processedData[0]?.accountNumber
-      const primaryAccount = accounts.find(a => {
-        // Try to match by account type first (from OCR)
-        if (processedData[0]?.accountType === 'Mastercard') {
-          return a.name === 'Mastercard'
-        }
-        return a.name === 'Current Account'
-      }) || accounts[0]
+      // Show results
+      if (successfulUploads === 0) {
+        throw new Error(`No files uploaded:\n${uploadErrors.join('\n')}`)
+      }
 
-      // Use original filename - keep as provided by user
-      const originalFileName = files[0].name
-
-      // Create bank import record
-      setProcessingStatus('Saving to database...')
-
-      const { data: bankImport, error: importError } = await supabase
-        .from('bank_imports')
-        .insert({
-          company_id: company.id,
-          account_id: primaryAccount.id,
-          import_date: new Date().toISOString().split('T')[0],
-          file_name: originalFileName,
-          file_type: files[0].type.startsWith('image/') ? 'image' : 'csv',
-          transaction_count: totalTransactions,
-          status: 'completed'
-        })
-        .select()
-        .single()
-
-      if (importError) throw importError
-
-      // Insert all transactions
-      const transactionsToInsert = processedData.flatMap(data =>
-        (data.transactions || []).map(t => ({
-          bank_import_id: bankImport.id,
-          company_id: company.id,
-          account_id: primaryAccount.id,
-          transaction_date: t.date,
-          description: t.vendor,
-          amount: t.amount,
-          transaction_type: t.type,
-          status: 'unmatched',
-          created_at: new Date().toISOString()
-        }))
-      )
-
-      if (transactionsToInsert.length > 0) {
-        const { error: transError } = await supabase
-          .from('bank_transactions')
-          .insert(transactionsToInsert)
-
-        if (transError) throw transError
+      if (uploadErrors.length > 0) {
+        setError(`⚠️ Partial upload:\n${uploadErrors.join('\n')}`)
       }
 
       setProcessingStatus('')
-      setSuccess(`✅ Successfully imported ${totalTransactions} transactions from ${filesToUpload.length} file(s)!`)
+      setSuccess(`✅ Successfully uploaded ${successfulUploads} file(s) with ${totalTransactionsProcessed} transactions!`)
       // DON'T clear files - keep them visible so user can add more or see what was uploaded
       // setFiles([])
 
-      // Trigger callback to refresh
+      // Trigger callback to refresh (pass company name since we don't have single bankImportId anymore)
       if (onUploadSuccess) {
-        onUploadSuccess(bankImport.id)
+        onUploadSuccess(selectedCompany)
       }
 
       setTimeout(() => setSuccess(null), 7000)
