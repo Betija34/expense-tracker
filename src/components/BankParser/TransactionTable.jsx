@@ -1,14 +1,42 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
+import { nextMainRefSeq } from '../../lib/refUtils'
 import { EditTransaction } from './EditTransaction'
+import { FinalizeTransaction } from './FinalizeTransaction'
 import './BankParser.css'
 
 export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigger }) {
   const [transactions, setTransactions] = useState([])
+  const [companyId, setCompanyId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [selectedTransactions, setSelectedTransactions] = useState(new Set())
   const [filterStatus, setFilterStatus] = useState('all') // 'all', 'matched', 'unmatched'
   const [editingTransaction, setEditingTransaction] = useState(null)
+  const [finalizingTransaction, setFinalizingTransaction] = useState(null)
+  const [recategorizing, setRecategorizing] = useState(null) // { transaction, expense }
+  const [expensesMap, setExpensesMap] = useState(new Map()) // bank_tx_id → [linked expenses]
+  const [uncategorizedIds, setUncategorizedIds] = useState({ out: null, in: null })
+  const [bulkApproving, setBulkApproving] = useState(false)
+
+  // Load the Uncategorized category ids once (for the Bulk Approve workflow)
+  useEffect(() => {
+    const loadUncategorized = async () => {
+      const { data, error } = await supabase
+        .from('expense_categories')
+        .select('id, name, direction')
+        .in('name', ['Uncategorized', 'Uncategorized (in)'])
+      if (error) {
+        console.error('Failed to load Uncategorized categories:', error)
+        return
+      }
+      const map = { out: null, in: null }
+      for (const r of (data || [])) {
+        map[r.direction] = r.id
+      }
+      setUncategorizedIds(map)
+    }
+    loadUncategorized()
+  }, [])
 
   useEffect(() => {
     if (selectedCompany) {
@@ -29,9 +57,11 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
 
       if (!company) {
         setTransactions([])
+        setCompanyId(null)
         setLoading(false)
         return
       }
+      setCompanyId(company.id)
 
       // Query all transactions for this company
       const { data, error } = await supabase
@@ -42,11 +72,91 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
 
       if (error) throw error
       setTransactions(data || [])
+
+      // Also load linked expense refs for finalized transactions
+      const finalizedIds = (data || []).filter(t => t.status === 'matched').map(t => t.id)
+      if (finalizedIds.length > 0) {
+        const { data: expData } = await supabase
+          .from('expenses')
+          .select(`
+            id, bank_transaction_id, reference_number,
+            main_ref_seq, sub_ref_series, sub_ref_month, sub_ref_seq,
+            split_group_id, category_id,
+            expense_categories(name)
+          `)
+          .in('bank_transaction_id', finalizedIds)
+          .order('main_ref_seq')
+        const map = new Map()
+        for (const e of (expData || [])) {
+          if (!map.has(e.bank_transaction_id)) map.set(e.bank_transaction_id, [])
+          map.get(e.bank_transaction_id).push(e)
+        }
+        setExpensesMap(map)
+      } else {
+        setExpensesMap(new Map())
+      }
     } catch (err) {
       console.error('Error loading transactions:', err)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Builds a "26/1/4 (T1/2)" style label — sub-ref shown in parens when present
+  const formatExpenseRef = (e) => {
+    const main = e.reference_number || ''
+    if (e.sub_ref_series && e.sub_ref_month && e.sub_ref_seq) {
+      return `${main} (${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq})`
+    }
+    return main
+  }
+
+  // True if an expense was bulk-approved with the "Uncategorized" placeholder.
+  // Such rows need real categorization (click ↻ to set category).
+  const isUncategorized = (e) =>
+    e.expense_categories?.name === 'Uncategorized' ||
+    e.expense_categories?.name === 'Uncategorized (in)'
+
+  // Renders the status cell for a transaction — for finalized, shows linked expense refs (+ sub-refs if present)
+  const renderStatusCell = (transaction) => {
+    if (transaction.status !== 'matched') return '⏳ Pending'
+    const exps = expensesMap.get(transaction.id) || []
+    if (exps.length === 0) return '✅ Finalized'
+
+    const needsCategory = exps.some(isUncategorized)
+    const needsCategoryChip = needsCategory && (
+      <span style={{
+        background: '#fef3c7', color: '#92400e',
+        border: '1px solid #fcd34d',
+        padding: '1px 6px', borderRadius: 999,
+        fontSize: 10, fontWeight: 600,
+        marginLeft: 4, whiteSpace: 'nowrap',
+      }} title="This expense has a placeholder category — click ↻ to set a real category">
+        Needs category
+      </span>
+    )
+
+    if (exps.length === 1) {
+      return (
+        <span>
+          {needsCategory ? '🟡' : '✅'} Finalized ·{' '}
+          <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#374151' }}>
+            {formatExpenseRef(exps[0])}
+          </span>
+          {needsCategoryChip}
+        </span>
+      )
+    }
+    const refs = exps.map(formatExpenseRef).join(', ')
+    return (
+      <span title={`Linked to: ${refs}`}>
+        {needsCategory ? '🟡' : '✅'} Split into {exps.length} ·{' '}
+        <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#374151' }}>
+          {refs}
+        </span>
+        {needsCategoryChip}
+      </span>
+    )
   }
 
   const getAccountAbbreviation = (accountName) => {
@@ -76,6 +186,95 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
       newSelected.add(id)
     }
     setSelectedTransactions(newSelected)
+  }
+
+  // Bulk Approve — verifies imported data is correct and creates expense rows
+  // with category = "Uncategorized" for each selected unmatched bank tx.
+  // The user then categorizes each one later via the ↻ Re-categorize button.
+  const handleBulkApprove = async () => {
+    const selected = transactions.filter(
+      t => selectedTransactions.has(t.id) && t.status === 'unmatched'
+    )
+    if (selected.length === 0) {
+      alert('No unmatched transactions selected.')
+      return
+    }
+    if (!uncategorizedIds.out || !uncategorizedIds.in) {
+      alert('"Uncategorized" categories not found. Did you run the V7 migration?')
+      return
+    }
+    if (!window.confirm(
+      `Approve ${selected.length} bank transaction${selected.length === 1 ? '' : 's'}?\n\n` +
+      `Each will be marked Uncategorized (data verified). You can categorize them later ` +
+      `using the ↻ Re-categorize button on each row.`
+    )) return
+
+    setBulkApproving(true)
+    let okCount = 0, errCount = 0
+
+    try {
+      for (const tx of selected) {
+        try {
+          const direction = tx.transaction_type === 'credit' ? 'in' : 'out'
+          const categoryId = uncategorizedIds[direction]
+          const [y, m] = tx.transaction_date.split('-').map(Number)
+          const mainSeq = await nextMainRefSeq(companyId, y, m)
+          const yy = String(y).slice(-2)
+          const referenceNumber = `${yy}/${m}/${mainSeq}`
+
+          const { data: inserted, error: insertErr } = await supabase
+            .from('expenses')
+            .insert([{
+              company_id:        companyId,
+              category_id:       categoryId,
+              account_id:        tx.account_id,
+              date:              tx.transaction_date,
+              amount:            Math.abs(Number(tx.amount || 0)),
+              currency:          'EUR',
+              description:       null,
+              vendor:            tx.description,
+              reference_number:  referenceNumber,
+              expense_type:      direction === 'out' ? 'regular' : 'income',
+              direction,
+              main_ref_year:     y,
+              main_ref_month:    m,
+              main_ref_seq:      mainSeq,
+              bank_transaction_id: tx.id,
+              status:            'pending',
+            }])
+            .select('id')
+            .single()
+          if (insertErr) throw insertErr
+
+          const { error: updErr } = await supabase
+            .from('bank_transactions')
+            .update({
+              status: 'matched',
+              matched_expense_id: inserted.id,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', tx.id)
+          if (updErr) throw updErr
+
+          okCount++
+        } catch (e) {
+          console.error('Bulk approve row error for tx', tx.id, e)
+          errCount++
+        }
+      }
+
+      if (errCount === 0) {
+        alert(`✓ Approved ${okCount} transaction${okCount === 1 ? '' : 's'}. Click ↻ on each row to set the category.`)
+      } else {
+        alert(`Approved ${okCount} of ${selected.length}. ${errCount} failed — check console for details.`)
+      }
+
+      setSelectedTransactions(new Set())
+      loadTransactions()
+      if (onStatusChange) onStatusChange()
+    } finally {
+      setBulkApproving(false)
+    }
   }
 
   const handleImportSelected = async () => {
@@ -127,10 +326,22 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
   const importedCount = transactions.filter(t => t.status === 'matched').length
   const unmatchedCount = transactions.filter(t => t.status === 'unmatched').length
 
+  // Count of finalized transactions whose linked expense is still "Uncategorized"
+  const needsCategoryCount = transactions.filter(t => {
+    if (t.status !== 'matched') return false
+    const exps = expensesMap.get(t.id) || []
+    return exps.some(isUncategorized)
+  }).length
+
   // Filter transactions based on selected filter
   const filteredTransactions = transactions.filter(t => {
     if (filterStatus === 'matched') return t.status === 'matched'
     if (filterStatus === 'unmatched') return t.status === 'unmatched'
+    if (filterStatus === 'needs-category') {
+      if (t.status !== 'matched') return false
+      const exps = expensesMap.get(t.id) || []
+      return exps.some(isUncategorized)
+    }
     return true
   })
 
@@ -142,6 +353,11 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
           <span>Total: {transactions.length}</span>
           <span>Selected: {selectedCount}</span>
           <span>Finalized: {importedCount}</span>
+          {needsCategoryCount > 0 && (
+            <span style={{ color: '#92400e', fontWeight: 600 }}>
+              Needs category: {needsCategoryCount}
+            </span>
+          )}
         </div>
       </div>
 
@@ -165,15 +381,55 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
         >
           Finalized ({importedCount})
         </button>
+        {needsCategoryCount > 0 && (
+          <button
+            className={`filter-btn ${filterStatus === 'needs-category' ? 'active' : ''}`}
+            onClick={() => setFilterStatus('needs-category')}
+            style={{
+              background: filterStatus === 'needs-category' ? '#f59e0b' : '#fef3c7',
+              color: filterStatus === 'needs-category' ? 'white' : '#92400e',
+              borderColor: '#fcd34d',
+              fontWeight: 600,
+            }}
+            title="Show only finalized rows that still have the Uncategorized placeholder"
+          >
+            🟡 Needs category ({needsCategoryCount})
+          </button>
+        )}
       </div>
 
+      {/* Bulk action bar — appears when rows are selected */}
       {selectedCount > 0 && (
-        <div className="action-buttons">
+        <div className="action-buttons" style={{
+          background: '#fef3c7', border: '1px solid #fde68a',
+          borderRadius: 4, padding: 10, fontSize: 13, color: '#92400e',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          flexWrap: 'wrap',
+        }}>
+          <div>
+            <strong>{selectedCount} selected.</strong> You can:
+            <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+              <li>
+                <strong>Bulk Approve</strong> — verify data, create Uncategorized expenses. Categorize each later via ↻.
+              </li>
+              <li>
+                <strong>Finalize per-row</strong> — use the ✓ button on each row to set category at the same time.
+              </li>
+            </ul>
+          </div>
           <button
-            onClick={handleImportSelected}
-            className="button"
+            onClick={handleBulkApprove}
+            disabled={bulkApproving}
+            style={{
+              background: '#16a34a', color: 'white', border: 'none',
+              borderRadius: 4, padding: '8px 16px', fontSize: 13,
+              fontWeight: 600, cursor: bulkApproving ? 'wait' : 'pointer',
+              whiteSpace: 'nowrap',
+            }}
           >
-            ✓ Finalize {selectedCount} Transaction(s)
+            {bulkApproving
+              ? '⏳ Approving…'
+              : `✓ Bulk Approve ${selectedCount} (Uncategorized)`}
           </button>
         </div>
       )}
@@ -209,7 +465,7 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
                 <th>Amount</th>
                 <th>Type</th>
                 <th>Status</th>
-                <th width="60">Edit</th>
+                <th width="120">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -237,17 +493,61 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
                     ${Math.abs(transaction.amount).toFixed(2)}
                   </td>
                   <td>{transaction.transaction_type === 'credit' ? '➕ In' : '➖ Out'}</td>
+                  <td>{renderStatusCell(transaction)}</td>
                   <td>
-                    {transaction.status === 'matched' ? '✅ Finalized' : '⏳ Pending'}
-                  </td>
-                  <td>
-                    <button
-                      onClick={() => setEditingTransaction(transaction)}
-                      className="btn-edit"
-                      title="Edit transaction"
-                    >
-                      ✎
-                    </button>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        onClick={() => setEditingTransaction(transaction)}
+                        className="btn-edit"
+                        title="Edit transaction details (date / vendor / amount)"
+                      >
+                        ✎
+                      </button>
+                      {transaction.status !== 'matched' && (
+                        <button
+                          onClick={() => setFinalizingTransaction(transaction)}
+                          className="btn-edit"
+                          title="Finalize & categorize — creates an expense row"
+                          style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}
+                        >
+                          ✓
+                        </button>
+                      )}
+                      {transaction.status === 'matched' && (() => {
+                        const exps = expensesMap.get(transaction.id) || []
+                        const needsCat = exps.some(isUncategorized)
+                        return (
+                          <button
+                            onClick={async () => {
+                              // Fetch the existing expense linked to this transaction
+                              const { data: exp, error: expErr } = await supabase
+                                .from('expenses')
+                                .select('*')
+                                .eq('bank_transaction_id', transaction.id)
+                                .maybeSingle()
+                              if (expErr || !exp) {
+                                alert('Could not find the expense linked to this transaction.')
+                                return
+                              }
+                              setRecategorizing({ transaction, expense: exp })
+                            }}
+                            className="btn-edit"
+                            title={needsCat
+                              ? '⚠ This expense still has placeholder category — click to set a real one'
+                              : 'Re-categorize — edit category, subcategory, reimbursable, etc.'}
+                            style={needsCat
+                              ? {
+                                  background: '#dc2626', color: 'white', borderColor: '#dc2626',
+                                  boxShadow: '0 0 0 3px rgba(220, 38, 38, 0.2)',
+                                }
+                              : { background: '#f59e0b', color: 'white', borderColor: '#f59e0b' }
+                            }
+                          >
+                            ↻
+                          </button>
+                        )
+                      })()}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -261,6 +561,31 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
           transaction={editingTransaction}
           onClose={() => setEditingTransaction(null)}
           onSave={loadTransactions}
+        />
+      )}
+
+      {finalizingTransaction && companyId && (
+        <FinalizeTransaction
+          transaction={finalizingTransaction}
+          companyId={companyId}
+          onClose={() => setFinalizingTransaction(null)}
+          onSave={() => {
+            loadTransactions()
+            if (onStatusChange) onStatusChange()
+          }}
+        />
+      )}
+
+      {recategorizing && companyId && (
+        <FinalizeTransaction
+          transaction={recategorizing.transaction}
+          companyId={companyId}
+          existingExpense={recategorizing.expense}
+          onClose={() => setRecategorizing(null)}
+          onSave={() => {
+            loadTransactions()
+            if (onStatusChange) onStatusChange()
+          }}
         />
       )}
     </div>

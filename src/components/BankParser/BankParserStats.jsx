@@ -17,7 +17,7 @@ export function BankParserStats({ stats = {} }) {
       </div>
 
       <div className="stat-card edited">
-        <div className="stat-label">Edited</div>
+        <div className="stat-label">Pending</div>
         <div className="stat-value">{editedCount}</div>
       </div>
 

@@ -1,0 +1,465 @@
+/* ============================================================
+   View Expenses — table view of finalized expenses for the
+   selected company + month/year context.
+   ============================================================ */
+
+.view-expenses {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.view-expenses h2 {
+  margin: 0;
+}
+
+/* ---------- Action bar (Print / Export) ---------- */
+.action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.action-bar .toolbar-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.action-bar .toolbar-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+.action-bar .toolbar-btn.primary {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+.action-bar .toolbar-btn.primary:hover {
+  background: #1B5E20;
+}
+
+/* Stats card clickable */
+.stat-card.clickable {
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.stat-card.clickable:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+.stat-card .clickable-stat {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.stat-card .clickable-stat:hover {
+  color: #2E7D32;
+}
+
+/* ---------- Reconciliation banner ---------- */
+.recon-banner {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #2E7D32;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+
+.recon-banner.warning {
+  border-left-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.recon-banner.success {
+  border-left-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.recon-banner .label {
+  font-weight: 600;
+  color: #374151;
+}
+
+.recon-banner .stat {
+  color: #4b5563;
+}
+
+.recon-banner .stat strong {
+  color: #111827;
+}
+
+.recon-banner .review-link {
+  margin-left: auto;
+  color: #2E7D32;
+  background: none;
+  border: 1px solid #2E7D32;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.recon-banner .review-link:hover {
+  background: #2E7D32;
+  color: white;
+}
+
+/* ---------- Stats bar ---------- */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #2E7D32;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.stat-card.rcc  { border-left-color: #4b5563; }   /* gray for Current Account */
+.stat-card.rmc  { border-left-color: #db2777; }   /* pink for Mastercard */
+.stat-card.cash { border-left-color: #2563eb; }   /* blue for Cash */
+.stat-card.status { border-left-color: #f59e0b; } /* amber for status */
+
+.stat-card .stat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.stat-card .stat-title {
+  font-weight: 600;
+  color: #111827;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stat-card .stat-count {
+  font-weight: 700;
+  color: #111827;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card .stat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-card .stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  color: #4b5563;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card .stat-row .label  { color: #6b7280; }
+.stat-card .stat-row .value.in  { color: #16a34a; font-weight: 600; }
+.stat-card .stat-row .value.out { color: #dc2626; font-weight: 600; }
+.stat-card .stat-row .value.neutral { color: #111827; font-weight: 600; }
+
+/* Bulk action bar */
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  border-left: 4px solid #16a34a;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #065f46;
+}
+
+/* Clickable status badge */
+.badge-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.1s, transform 0.05s;
+}
+.badge-clickable:hover {
+  filter: brightness(0.95);
+}
+.badge-clickable:active {
+  transform: scale(0.96);
+}
+
+/* ---------- Filters row ---------- */
+.expense-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.expense-filters .filter-btn {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #374151;
+}
+.expense-filters .filter-btn:hover {
+  background: #f3f4f6;
+}
+.expense-filters .filter-btn.active {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+
+/* ---------- Table ---------- */
+.expenses-table-wrap {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.expenses-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.expenses-table th {
+  background: #f9fafb;
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.expenses-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #1f2937;
+  vertical-align: middle;
+}
+
+/* Row colors — matching Bank Parser pastel scheme.
+   Pink = Mastercard (RMC). Gray = Current Account (RCC). Light blue = Cash.
+   Darker shade = incoming, lighter shade = outgoing. Cash is outgoing-only. */
+
+.expenses-table tr.row-rcc-incoming  { background: #e8e8e8; }
+.expenses-table tr.row-rcc-incoming:hover td  { background: #e0e0e0; }
+
+.expenses-table tr.row-rcc-outgoing  { background: #f7f7f7; }
+.expenses-table tr.row-rcc-outgoing:hover td  { background: #f0f0f0; }
+
+.expenses-table tr.row-rmc-incoming  { background: #ffd4e5; }
+.expenses-table tr.row-rmc-incoming:hover td  { background: #ffc9de; }
+
+.expenses-table tr.row-rmc-outgoing  { background: #fff5f8; }
+.expenses-table tr.row-rmc-outgoing:hover td  { background: #fff0f5; }
+
+.expenses-table tr.row-cash-outgoing { background: #e0f2fe; }
+.expenses-table tr.row-cash-outgoing:hover td { background: #cfeafd; }
+
+/* Pending rows — yellow left-edge accent for visibility */
+.expenses-table tr.row-pending td:first-child {
+  border-left: 4px solid #f59e0b;
+  padding-left: 8px;
+}
+
+/* Fallback hover for any row without a specific color class */
+.expenses-table tr:not([class*="row-"]):hover td { background: #f9fafb; }
+
+.expenses-table .select-cell {
+  width: 36px;
+  text-align: center;
+}
+
+.expenses-table .ref-cell {
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 12px;
+  color: #4b5563;
+  white-space: nowrap;
+}
+
+.expenses-table .amount-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.expenses-table .amount-in   { color: #16a34a; }
+.expenses-table .amount-out  { color: #dc2626; }
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.badge-acct-rcc  { background: #dbeafe; color: #1e40af; }
+.badge-acct-rmc  { background: #fce7f3; color: #9d174d; }
+.badge-acct-cash { background: #fef3c7; color: #92400e; }
+.badge-in        { background: #dcfce7; color: #166534; }
+.badge-out       { background: #fee2e2; color: #991b1b; }
+.badge-status-pending  { background: #fef3c7; color: #92400e; }
+.badge-status-approved { background: #d1fae5; color: #065f46; }
+.badge-status-locked   { background: #e0e7ff; color: #3730a3; }
+
+/* ---------- Flag chips ---------- */
+.flag-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.flag-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #4b5563;
+}
+.flag-chip.split        { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+.flag-chip.reimbursable { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.flag-chip.shareholder  { background: #cffafe; color: #155e75; border-color: #67e8f9; }
+.flag-chip.linked       { background: #e0e7ff; color: #3730a3; border-color: #a5b4fc; }
+.flag-chip.bank         { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+
+/* ---------- Actions ---------- */
+.action-buttons {
+  display: inline-flex;
+  gap: 4px;
+}
+.action-btn {
+  background: none;
+  border: 1px solid #d1d5db;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.action-btn:hover { background: #f3f4f6; }
+.action-btn.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---------- States ---------- */
+.empty-state, .loading-state {
+  padding: 40px 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 14px;
+  background: white;
+  border: 1px dashed #d1d5db;
+  border-radius: 6px;
+}
+
+/* ---------- Print Layout ---------- */
+@media print {
+  /* Hide everything outside the view */
+  header, footer, .tabs, .top-bar, .recon-banner .review-link,
+  .expense-filters, .action-bar, .select-cell, .action-buttons,
+  th.select-cell, td.select-cell, th:last-child, td:last-child {
+    display: none !important;
+  }
+
+  body { background: white; }
+
+  .view-expenses {
+    gap: 12px;
+  }
+
+  .view-expenses h2 {
+    color: #111;
+    margin-bottom: 4px;
+  }
+
+  /* Stats cards: keep compact, force grid */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    page-break-inside: avoid;
+  }
+  .stat-card {
+    padding: 8px;
+    border: 1px solid #999;
+    box-shadow: none;
+  }
+
+  /* Recon banner: print-friendly */
+  .recon-banner {
+    background: white;
+    border: 1px solid #999;
+    page-break-inside: avoid;
+  }
+
+  /* Table: print-friendly with borders */
+  .expenses-table-wrap {
+    border: 1px solid #999;
+    overflow: visible;
+  }
+  .expenses-table {
+    font-size: 11px;
+    page-break-inside: auto;
+  }
+  .expenses-table tr {
+    page-break-inside: avoid;
+  }
+  .expenses-table th {
+    background: #f0f0f0 !important;
+    color: #111 !important;
+    border-bottom: 1px solid #999;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .expenses-table td {
+    border-bottom: 1px solid #ddd;
+  }
+
+  /* Keep row colors in print */
+  .expenses-table tr {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Badges retain color */
+  .badge, .flag-chip {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

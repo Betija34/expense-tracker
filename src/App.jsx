@@ -1,43 +1,12 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import { BankParser } from './components/BankParser/BankParser'
+import { ViewExpenses } from './components/ViewExpenses/ViewExpenses'
+import { AddExpense } from './components/AddExpense/AddExpense'
+import { Dashboard } from './components/Dashboard/Dashboard'
+import { ShareholderReport } from './components/ShareholderReport/ShareholderReport'
+import { TravelLog } from './components/TravelLog/TravelLog'
 import './App.css'
-
-// Placeholder components
-const Dashboard = ({ selectedCompany, selectedMonth, selectedYear }) => (
-  <div className="tab-content">
-    <h2>Dashboard - {selectedCompany}</h2>
-    <p>Selected: {selectedMonth}/{selectedYear}</p>
-    <div className="summary-cards">
-      <div className="card">
-        <h3>Monthly Income</h3>
-        <div className="value">$0.00</div>
-      </div>
-      <div className="card">
-        <h3>Total Expenses</h3>
-        <div className="value">$0.00</div>
-      </div>
-      <div className="card">
-        <h3>Net</h3>
-        <div className="value">$0.00</div>
-      </div>
-    </div>
-  </div>
-)
-
-const AddExpense = () => (
-  <div className="tab-content">
-    <h2>Add Expense</h2>
-    <p>Manually add expenses to the system</p>
-  </div>
-)
-
-const ViewExpenses = () => (
-  <div className="tab-content">
-    <h2>View Expenses</h2>
-    <p>View and manage all expenses</p>
-  </div>
-)
 
 function App() {
   const [companies, setCompanies] = useState([])
@@ -172,22 +141,41 @@ function App() {
             selectedCompany={selectedCompany}
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
           />
         )}
         {currentTab === 'bank-parser' && <BankParser selectedCompany={selectedCompany} />}
-        {currentTab === 'add-expense' && <AddExpense />}
-        {currentTab === 'view-expenses' && <ViewExpenses />}
+        {currentTab === 'add-expense' && (
+          <AddExpense
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
+        )}
+        {currentTab === 'view-expenses' && (
+          <ViewExpenses
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
+        )}
         {currentTab === 'shareholder' && (
-          <div className="tab-content">
-            <h2>Shareholder Report</h2>
-            <p>Coming soon...</p>
-          </div>
+          <ShareholderReport
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
         )}
         {currentTab === 'travel' && (
-          <div className="tab-content">
-            <h2>Travel Log</h2>
-            <p>Coming soon...</p>
-          </div>
+          <TravelLog
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
         )}
         {currentTab === 'client' && (
           <div className="tab-content">
