@@ -6,6 +6,7 @@ import { AddExpense } from './components/AddExpense/AddExpense'
 import { Dashboard } from './components/Dashboard/Dashboard'
 import { ShareholderReport } from './components/ShareholderReport/ShareholderReport'
 import { TravelLog } from './components/TravelLog/TravelLog'
+import { ClientReport } from './components/ClientReport/ClientReport'
 import './App.css'
 
 function App() {
@@ -178,10 +179,12 @@ function App() {
           />
         )}
         {currentTab === 'client' && (
-          <div className="tab-content">
-            <h2>Client Report</h2>
-            <p>Coming soon...</p>
-          </div>
+          <ClientReport
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
         )}
       </div>
 
