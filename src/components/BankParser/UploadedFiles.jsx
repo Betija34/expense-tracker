@@ -113,13 +113,28 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
         if (nullErr) throw nullErr
       }
 
-      // Step 4: clear linked_expense_id on counterparts so we don't leave dangling links
+      // Step 4a: clear linked_expense_id on counterparts that the doomed expenses
+      // POINT TO. This handles the "forward" direction of the bidirectional link.
       if (counterpartIdsToClear.length > 0) {
         const { error: unlinkErr } = await supabase
           .from('expenses')
           .update({ linked_expense_id: null })
           .in('id', counterpartIdsToClear)
         if (unlinkErr) throw unlinkErr
+      }
+
+      // Step 4b: clear linked_expense_id on any expense that POINTS TO a doomed
+      // expense — the "reverse" direction. Necessary because the link is stored
+      // bidirectionally on both sides; if step 4a missed any (e.g. counts mismatch
+      // between forward/reverse pointers, or one-sided link from a prior bug),
+      // this catches all remaining incoming references. Without this, deleting
+      // a doomed expense violates expenses_linked_expense_id_fkey.
+      if (expIds.length > 0) {
+        const { error: reverseUnlinkErr } = await supabase
+          .from('expenses')
+          .update({ linked_expense_id: null })
+          .in('linked_expense_id', expIds)
+        if (reverseUnlinkErr) throw reverseUnlinkErr
       }
 
       // Step 5: delete expenses
