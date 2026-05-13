@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { RabonaLogo } from '../../assets/RabonaLogo'
+import './ClientReport.css'
 
 /**
  * Client Report — per-client view of reimbursable activity for the
@@ -174,19 +175,65 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
     .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
   const activeClients = perClientStats.filter(c => c.hasActivity)
 
+  // CSS that overrides the global @page (set in App.css) and forces A4
+  // landscape for the duration of the print. Injected before window.print()
+  // and removed via the afterprint event. Same robust pattern as Travel Log,
+  // Shareholder Report, and Dashboard (but landscape instead of portrait).
+  //
+  // Landscape is required here because Client Report tables have 6 columns
+  // (Date, Reference, Sub-Ref, Vendor, Category, Amount) and need horizontal
+  // room to avoid the columns squeezing or the last column getting clipped.
+  const LANDSCAPE_PRINT_CSS = `
+    @media print {
+      @page {
+        size: A4 landscape;
+        margin: 1cm 1cm 1.5cm 1cm;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 10px;
+          color: #6b7280;
+        }
+      }
+    }
+  `
+
+  const handlePrint = () => {
+    const styleEl = document.createElement('style')
+    styleEl.textContent = LANDSCAPE_PRINT_CSS
+    document.head.appendChild(styleEl)
+    const cleanup = () => {
+      styleEl.remove()
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    window.print()
+  }
+
   return (
-    <div style={{
+    <div className="client-report" style={{
       background: 'white', padding: 20,
       borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
     }}>
-      {/* Page header — appears on page 1 of the printout */}
-      <div style={{ marginBottom: 16 }} className="report-page-header">
+      {/* Toolbar — hidden in print */}
+      <div className="action-bar no-print">
+        <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print</button>
+      </div>
+
+      {/* Screen header — hidden in print (replaced by .print-header letterhead) */}
+      <div style={{ marginBottom: 16 }} className="report-page-header no-print">
         <h2 style={{ margin: 0, color: '#2E7D32' }}>
           Client Report · {selectedCompany}
         </h2>
         <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
           Period: {monthLabel} · Reimbursable activity per client (strict month scope).
         </p>
+      </div>
+
+      {/* Print-only letterhead — appears only in printed/PDF output */}
+      <div className="print-only print-header">
+        <div className="company-name">{selectedCompany}</div>
+        <div className="report-title">Client Report</div>
+        <div className="period-label">Period: {monthLabel}</div>
       </div>
 
       {/* Summary table — appears on page 1 of the printout */}
@@ -200,14 +247,12 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
           No clients found. Mark expenses as Reimbursable with a client, and they'll appear here.
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ ...tableStyle, tableLayout: 'fixed' }}>
-            <colgroup>
-              <col style={{ width: '25%' }} />{/* Client */}
-              <col style={{ width: '25%' }} />{/* Reimbursable Expenses (Out) */}
-              <col style={{ width: '25%' }} />{/* Reimbursements Received (In) */}
-              <col style={{ width: '25%' }} />{/* Net (This Month) */}
-            </colgroup>
+        <div>
+          {/* Summary table. Uses table-layout: auto (default) — see note on
+              the per-client expense table for the Firefox print bug rationale.
+              No overflowX:auto wrapper either — that was causing Firefox print
+              to clip the rightmost column. */}
+          <table style={tableStyle}>
             <thead>
               <tr style={thRow}>
                 <th style={th}>Client</th>
@@ -349,17 +394,11 @@ function ClientExpenseReport({ client, monthYearLabel, companyName }) {
         )}
       </div>
 
-      {/* Single expense table — percentage widths sum to 100%. */}
+      {/* Single expense table. Uses table-layout: auto (default) — Firefox
+          has a print bug where table-layout:fixed + colgroup percentages can
+          cause the last column to be omitted entirely from the printout. */}
       <div>
-        <table style={{ ...tableStyle, tableLayout: 'fixed' }}>
-          <colgroup>
-            <col style={{ width: '11%' }} />  {/* Date */}
-            <col style={{ width: '13%' }} />  {/* Reference Number */}
-            <col style={{ width: '11%' }} />  {/* Sub-Reference */}
-            <col style={{ width: '23%' }} />  {/* Vendor */}
-            <col style={{ width: '24%' }} />  {/* Category */}
-            <col style={{ width: '18%' }} />  {/* Amount */}
-          </colgroup>
+        <table style={tableStyle}>
           <thead>
             <tr style={thRow}>
               <th style={th}>Date</th>

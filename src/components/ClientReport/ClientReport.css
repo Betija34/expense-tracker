@@ -1,0 +1,170 @@
+/* =====================================================================
+   Client Report — screen + print styles
+   ===================================================================== */
+
+/* Toolbar at the top of Client Report (Print button + future actions) */
+.client-report .action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.client-report .action-bar .toolbar-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.client-report .action-bar .toolbar-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+.client-report .action-bar .toolbar-btn.primary {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+.client-report .action-bar .toolbar-btn.primary:hover {
+  background: #1B5E20;
+}
+
+/* Print-only letterhead at the top of the printout (page 1 only) */
+.client-report .print-header {
+  text-align: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #1f2937;
+}
+.client-report .print-header .company-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.client-report .print-header .report-title {
+  font-size: 16px;
+  margin-top: 4px;
+  color: #374151;
+}
+.client-report .print-header .period-label {
+  font-size: 13px;
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* =====================================================================
+   PRINT STYLES
+   A4 landscape orientation is enforced by the runtime CSS injection in
+   ClientReport.jsx (Print button handler), NOT here. This @media block
+   handles everything else: per-client page breaks, logo sizing, the
+   Firefox last-column fix, table layout.
+   ===================================================================== */
+@media print {
+  /* Card-style wrapper looks like plain paper */
+  .client-report {
+    background: white !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  /* Force page 1 to hold ONLY the summary table. min-height fills page 1
+     so the next content (first client) naturally falls onto page 2.
+     In landscape, A4 height is ~21cm — 18cm leaves room for margins. */
+  .client-report .summary-section {
+    min-height: 18cm !important;
+  }
+
+  /* All per-client expense reports AFTER THE FIRST get a forced page break.
+     The first one naturally lands on page 2 because the summary fills page 1. */
+  .client-report .client-expense-report + .client-expense-report {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+
+  /* Clean per-client section presentation in print */
+  .client-report .client-expense-report {
+    border-top: none !important;
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+  }
+
+  /* Keep each report's header (logo + title) together — don't split */
+  .client-report .client-expense-report-header {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Bigger company logo/mark for the letterhead feel in print */
+  .client-report .rabona-logo {
+    height: 100px !important;
+    width: auto !important;
+  }
+  .client-report .espargos-logo {
+    font-size: 36px !important;
+    line-height: 1 !important;
+  }
+  .client-report .espargos-logo > div {
+    font-size: 14px !important;
+    margin-top: 6px !important;
+  }
+
+  /* Clean tables — no gray fills, just rule lines */
+  .client-report table thead tr,
+  .client-report table tfoot tr,
+  .client-report table tbody tr {
+    background: white !important;
+  }
+  /* CRITICAL: override overflow:auto on any wrapper div. Without this,
+     Firefox print clips content wider than the wrapper — which can hide
+     the rightmost column in print even though it shows fine on screen. */
+  .client-report div,
+  .client-report .summary-section,
+  .client-report .summary-section > div,
+  .client-report .client-expense-report > div {
+    overflow: visible !important;
+    overflow-x: visible !important;
+  }
+
+  .client-report table {
+    border: 1px solid #d1d5db !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: auto !important;
+    font-size: 11px !important;
+    box-sizing: border-box !important;
+  }
+  /* Force every cell to render as a table cell — safety net against any
+     other CSS rule that might be inadvertently hiding/collapsing cells. */
+  .client-report table th,
+  .client-report table td {
+    display: table-cell !important;
+    box-sizing: border-box !important;
+    padding: 5px 6px !important;
+    word-wrap: break-word !important;
+    overflow-wrap: anywhere !important;
+  }
+  .client-report table thead tr,
+  .client-report table tfoot tr {
+    border-top: 1.5px solid #1f2937 !important;
+    border-bottom: 1.5px solid #1f2937 !important;
+  }
+
+  /* Repeat column headings on each page when a table spans multiple pages.
+     NOTE: deliberately NOT setting `display: table-footer-group` on tfoot —
+     Firefox has a known bug where repeated footers can drop the last column. */
+  .client-report thead {
+    display: table-header-group !important;
+  }
+  .client-report tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

@@ -246,94 +246,9 @@ footer {
     width: 100% !important;
   }
 
-  /* Both tables use percentage column widths summing to 100%. Make them full width. */
-  .client-expense-report table,
-  .summary-section table {
-    width: 100% !important;
-    max-width: 100% !important;
-  }
-
-  /* Force page 1 to hold ONLY the summary. min-height fills page 1; the next
-     content (first client) naturally falls onto page 2.
-     In landscape, A4 height is ~21cm, so 18cm leaves room for margins/header. */
-  .summary-section {
-    min-height: 18cm !important;
-  }
-
-  /* All client expense reports EXCEPT THE FIRST get a forced page-break-before.
-     The first one naturally lands on page 2 because the summary fills page 1. */
-  .client-expense-report + .client-expense-report {
-    page-break-before: always !important;
-    break-before: page !important;
-  }
-
-  /* Clean per-client section presentation in print */
-  .client-expense-report {
-    border-top: none !important;
-    padding-top: 0 !important;
-    margin-top: 0 !important;
-  }
-
-  /* Keep each report's header (logo + title) together — don't split */
-  .client-expense-report-header {
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
-  }
-
-  /* Bigger company logo/mark for the letterhead feel in print */
-  .rabona-logo {
-    height: 100px !important;
-    width: auto !important;
-  }
-  .espargos-logo {
-    font-size: 36px !important;
-    line-height: 1 !important;
-  }
-  .espargos-logo > div {
-    font-size: 14px !important;
-    margin-top: 6px !important;
-  }
-
-  /* Clean tables — no gray fills, just rule lines */
-  table thead tr,
-  table tfoot tr,
-  table tbody tr {
-    background: white !important;
-  }
-  table {
-    border: 1px solid #d1d5db !important;
-    width: 100% !important;
-    border-collapse: collapse !important;
-    table-layout: fixed !important;       /* honor the inline col/th widths */
-    font-size: 11px !important;
-  }
-  table thead tr,
-  table tfoot tr {
-    border-top: 1.5px solid #1f2937 !important;
-    border-bottom: 1.5px solid #1f2937 !important;
-  }
-  /* Tight cell padding so all 6 columns fit on the page */
-  table th, table td {
-    padding: 5px 6px !important;
-    word-wrap: break-word !important;
-    overflow-wrap: anywhere !important;
-  }
-  /* Amount column (last) — keep right-aligned and never wrap */
-  .client-expense-report table th:last-child,
-  .client-expense-report table td:last-child {
-    text-align: right !important;
-    white-space: nowrap !important;
-  }
-
-  /* Repeat column headings on each page when a table spans multiple pages */
-  thead {
-    display: table-header-group !important;
-  }
-  tfoot {
-    display: table-footer-group !important;
-  }
-  tr {
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
-  }
+  /* NOTE: Client Report-specific print rules (summary-section min-height,
+     per-client page breaks, logo sizing, table widths, etc.) used to live
+     here but have been moved to ClientReport.css, scoped under .client-report
+     so they don't leak into other tabs' prints. See:
+       src/components/ClientReport/ClientReport.css */
 }
