@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './TravelLog.css'
@@ -232,6 +233,78 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
   const handlePrint = () => printTravelLog()
   const handlePrintShareholder = (code) => printTravelLog(code)
 
+  // ----- Excel Export -----
+  // Multi-sheet workbook:
+  //   - One sheet per shareholder (YK, BK) with their travel periods + expenses
+  //   - Sheets are skipped if the shareholder has no data this month
+  // Filename: e.g. "RabonaHoldings_TravelLog_2026-01.xlsx"
+  const handleExportExcel = () => {
+    const wb = XLSX.utils.book_new()
+
+    for (const s of SHAREHOLDERS) {
+      const myPeriods = periods.filter(p => p.shareholder_code === s.code)
+      const myExpenses = travelExpenses.filter(e => e.shareholder_code === s.code)
+      // Skip empty shareholders so the workbook stays clean
+      if (myPeriods.length === 0 && myExpenses.length === 0) continue
+
+      const rows = []
+      rows.push([`${s.code} TRAVEL PERIODS`])
+      rows.push(['From', 'To', 'Days', 'Destination', 'Reason'])
+      for (const p of myPeriods) {
+        const fromD = p.from_date ? new Date(p.from_date) : null
+        const toD = p.to_date ? new Date(p.to_date) : null
+        const days = (fromD && toD)
+          ? Math.round((toD - fromD) / (1000 * 60 * 60 * 24)) + 1
+          : ''
+        rows.push([
+          p.from_date || '',
+          p.to_date || '',
+          days,
+          p.destination || '',
+          p.reason || '',
+        ])
+      }
+      rows.push([])
+      rows.push([`${s.code} TRAVEL EXPENSES`])
+      rows.push(['Date', 'Reference', 'Sub-Ref', 'Vendor', 'Subcategory', 'Where', 'Who', 'Why', 'Amount', 'Reimbursable', 'Client'])
+      for (const e of myExpenses) {
+        const subRef = e.sub_ref_series
+          ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+          : ''
+        rows.push([
+          e.date || '',
+          e.reference_number || '',
+          subRef,
+          e.vendor || '',
+          e.subcategory_name || '',
+          e.travel_where || '',
+          e.travel_who || '',
+          e.travel_why || '',
+          Number(e.amount || 0),
+          e.is_reimbursable ? 'Yes' : '',
+          e.client_name || '',
+        ])
+      }
+
+      const ws = XLSX.utils.aoa_to_sheet(rows)
+      ws['!cols'] = [
+        { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }, { wch: 18 },
+        { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 18 },
+      ]
+      XLSX.utils.book_append_sheet(wb, ws, `${s.code} Travel`)
+    }
+
+    // If both shareholders had no data, still produce a single empty sheet so the file isn't broken
+    if (wb.SheetNames.length === 0) {
+      const ws = XLSX.utils.aoa_to_sheet([['No travel data for this period']])
+      XLSX.utils.book_append_sheet(wb, ws, 'Empty')
+    }
+
+    const safeCompany = (selectedCompany || 'Company').replace(/\s+/g, '')
+    const periodTag = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+    XLSX.writeFile(wb, `${safeCompany}_TravelLog_${periodTag}.xlsx`)
+  }
+
   return (
     <div className="travel-log" style={{
       background: 'white',
@@ -242,11 +315,13 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       {/* Toolbar — hidden in print. Three print options:
             - Print All: both shareholders, page-break between them
             - Print YK: only YK section (BK hidden via body class)
-            - Print BK: only BK section (YK hidden via body class) */}
+            - Print BK: only BK section (YK hidden via body class)
+          Plus Excel export covering both shareholders. */}
       <div className="action-bar no-print">
         <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print All</button>
         <button onClick={() => handlePrintShareholder('YK')} className="toolbar-btn">🖨 Print YK</button>
         <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
+        <button onClick={handleExportExcel} className="toolbar-btn">📊 Export Excel</button>
       </div>
 
       {/* Unified letterhead — shows on screen AND in print. Replaces the

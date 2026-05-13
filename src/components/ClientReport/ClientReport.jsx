@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { RabonaLogo } from '../../assets/RabonaLogo'
 import { EspargosLogo } from '../../assets/EspargosLogo'
@@ -211,6 +212,71 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
     window.print()
   }
 
+  // ----- Excel Export -----
+  // Multi-sheet workbook:
+  //   - "Summary" sheet — one row per client with reimbursable total +
+  //     three empty columns (Reimbursement Received / Invoice # / Date Paid)
+  //     matching the print layout so the accountant can fill them in.
+  //   - One sheet per active client with their expense line items.
+  // Filename: e.g. "RabonaHoldings_ClientReport_2026-01.xlsx"
+  const handleExportExcel = () => {
+    const wb = XLSX.utils.book_new()
+
+    // ---- Summary sheet ----
+    const summaryRows = [['Client', 'Reimbursable Expenses (Out)', 'Reimbursement Received', 'Invoice #', 'Date Paid']]
+    for (const c of perClientStats) {
+      summaryRows.push([
+        c.name,
+        Number(c.expensesTotal || 0),
+        '', // empty — handwriting / fill-in
+        '',
+        '',
+      ])
+    }
+    summaryRows.push(['TOTAL', Number(totals.expensesTotal || 0), '', '', ''])
+
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
+    wsSummary['!cols'] = [
+      { wch: 22 }, { wch: 24 }, { wch: 24 }, { wch: 16 }, { wch: 14 },
+    ]
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
+
+    // ---- Per-client sheets (active only) ----
+    for (const c of activeClients) {
+      const clientExpenses = monthExpenses.filter(e => (e.client_name || '').trim() === c.name)
+      const rows = []
+      rows.push([`${selectedCompany} — ${c.name} — Expense Report — ${monthLabel}`])
+      rows.push([])
+      rows.push(['Date', 'Reference', 'Sub-Ref', 'Vendor', 'Category', 'Amount'])
+      for (const e of clientExpenses) {
+        const subRef = e.sub_ref_series
+          ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+          : ''
+        rows.push([
+          e.date || '',
+          e.reference_number || '',
+          subRef,
+          e.vendor || '',
+          e.expense_categories?.name || '',
+          Number(e.amount || 0),
+        ])
+      }
+      rows.push(['', '', '', '', 'TOTAL', Number(c.expensesTotal || 0)])
+
+      const ws = XLSX.utils.aoa_to_sheet(rows)
+      ws['!cols'] = [
+        { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 26 }, { wch: 22 }, { wch: 12 },
+      ]
+      // Sheet name limit is 31 chars in Excel — truncate client name if longer
+      const sheetName = c.name.slice(0, 31)
+      XLSX.utils.book_append_sheet(wb, ws, sheetName)
+    }
+
+    const safeCompany = (selectedCompany || 'Company').replace(/\s+/g, '')
+    const periodTag = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+    XLSX.writeFile(wb, `${safeCompany}_ClientReport_${periodTag}.xlsx`)
+  }
+
   return (
     <div className="client-report" style={{
       background: 'white', padding: 20,
@@ -219,6 +285,7 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
       {/* Toolbar — hidden in print */}
       <div className="action-bar no-print">
         <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print</button>
+        <button onClick={handleExportExcel} className="toolbar-btn">📊 Export Excel</button>
       </div>
 
       {/* Unified letterhead — shows on screen AND in print (text left / logo right).

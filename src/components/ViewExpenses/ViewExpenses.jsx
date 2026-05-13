@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
 import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
@@ -384,6 +385,78 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     URL.revokeObjectURL(url)
   }
 
+  // ----- Excel Export -----
+  // Builds an .xlsx workbook in the browser with one sheet of expense rows,
+  // then triggers a download. The Amount column is a real number (not text)
+  // so it can be summed/filtered in Excel/Numbers. Date is ISO format for
+  // sortability — Excel auto-detects it as a date when opened.
+  const handleExportExcel = () => {
+    const headers = [
+      'Account', 'In/Out', 'Main Ref', 'Sub Ref', 'Date',
+      'Vendor', 'Description', 'Category', 'Subcategory',
+      'Amount', 'Status', 'Reimbursable', 'Shareholder', 'Linked', 'Source',
+    ]
+
+    const rows = filteredExpenses.map(e => {
+      const acct = !e.accounts ? 'Cash'
+        : e.accounts.name?.includes('Mastercard') ? 'RMC'
+        : e.accounts.name?.includes('Current') ? 'RCC'
+        : e.accounts.name || ''
+      return [
+        acct,
+        e.direction === 'in' ? 'IN' : 'OUT',
+        renderMainRef(e),
+        renderSubRef(e),
+        e.date || '',                       // ISO date (Excel detects as date)
+        e.vendor || '',
+        e.description || '',
+        e.expense_categories?.name || '',
+        e.subcategory_name || '',
+        Number(e.amount || 0),              // real number (not string)
+        e.status || 'pending',
+        e.is_reimbursable ? 'Yes' : '',
+        e.shareholder_code || '',
+        e.linked_expense_id ? 'Yes' : '',
+        e.bank_transaction_id ? 'Bank' : 'Manual',
+      ]
+    })
+
+    // Create workbook + sheet, set sensible column widths
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    ws['!cols'] = [
+      { wch: 10 }, // Account
+      { wch: 7 },  // In/Out
+      { wch: 11 }, // Main Ref
+      { wch: 9 },  // Sub Ref
+      { wch: 12 }, // Date
+      { wch: 30 }, // Vendor
+      { wch: 30 }, // Description
+      { wch: 22 }, // Category
+      { wch: 22 }, // Subcategory
+      { wch: 11 }, // Amount
+      { wch: 10 }, // Status
+      { wch: 12 }, // Reimbursable
+      { wch: 12 }, // Shareholder
+      { wch: 8 },  // Linked
+      { wch: 8 },  // Source
+    ]
+
+    // Format the Amount column as currency (column J = index 9, 1-based row 2+)
+    const amountColIdx = 9
+    for (let i = 1; i <= rows.length; i++) {
+      const cellRef = XLSX.utils.encode_cell({ c: amountColIdx, r: i })
+      if (ws[cellRef]) ws[cellRef].z = '#,##0.00'
+    }
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Expenses')
+
+    // Filename: e.g. "RabonaHoldings_Expenses_2026-01.xlsx"
+    const safeCompany = (selectedCompany || 'Company').replace(/\s+/g, '')
+    const periodTag = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+    XLSX.writeFile(wb, `${safeCompany}_Expenses_${periodTag}.xlsx`)
+  }
+
   const directionBadge = (dir) =>
     dir === 'in'
       ? <span className="badge badge-in">IN</span>
@@ -564,6 +637,9 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       <div className="action-bar">
         <button className="toolbar-btn primary" onClick={handlePrint}>
           🖨️ Print
+        </button>
+        <button className="toolbar-btn" onClick={handleExportExcel}>
+          📊 Export Excel
         </button>
         <button className="toolbar-btn" onClick={handleExportCSV}>
           📥 Export CSV

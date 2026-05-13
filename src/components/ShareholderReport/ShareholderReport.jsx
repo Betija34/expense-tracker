@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './ShareholderReport.css'
@@ -292,6 +293,96 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
   const handlePrintAll = () => printShareholderReport()
   const handlePrintShareholder = (code) => printShareholderReport(code)
 
+  // ----- Excel Export -----
+  // Multi-sheet workbook: one sheet per shareholder with all sections, plus a
+  // Summary sheet showing each shareholder's net balance.
+  // Filename: e.g. "RabonaHoldings_ShareholderReport_2026-01.xlsx"
+  const handleExportExcel = () => {
+    const wb = XLSX.utils.book_new()
+
+    // Build per-shareholder sheets
+    const summaryRows = [['Shareholder', 'Transfers To (out)', 'Payments on Behalf (out)', 'Transfers From (in)', 'Cash Expenses', 'Allowances', 'Net Balance']]
+    for (const code of SHAREHOLDERS) {
+      const stats = computeStats(code)
+      const rows = []
+      rows.push([`${code} SHAREHOLDER REPORT`])
+      rows.push([])
+
+      // Section helper — writes a section header + table to the rows array
+      const writeSection = (title, list, total) => {
+        rows.push([title])
+        rows.push(['Date', 'Reference', 'Sub-Ref', 'Vendor', 'Category', 'Subcategory', 'Amount'])
+        for (const e of list) {
+          const subRef = e.sub_ref_series
+            ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+            : ''
+          rows.push([
+            e.date || '',
+            e.reference_number || '',
+            subRef,
+            e.vendor || '',
+            e.expense_categories?.name || '',
+            e.subcategory_name || '',
+            Number(e.amount || 0),
+          ])
+        }
+        rows.push(['', '', '', '', '', 'TOTAL', Number(total || 0)])
+        rows.push([])
+      }
+
+      writeSection('1. Transfers TO Shareholder Account', stats.transfersTo, stats.sumTo)
+      writeSection('2. Payments on Behalf of Shareholder', stats.paymentsOnBehalf, stats.sumBehalf)
+      writeSection('3. Transfers FROM Shareholder Account', stats.transfersFrom, stats.sumFrom)
+      writeSection('4. Cash Expenses', stats.cashExpenses, stats.sumCash)
+
+      // Allowances section (hidden for Espargos, same rule as UI)
+      if (selectedCompany !== 'Espargos') {
+        rows.push(['5. Allowances'])
+        rows.push(['Travel Days', 'Daily Rate', 'Total Allowance'])
+        rows.push([stats.travelDays, stats.dailyRate, Number(stats.allowanceTotal || 0)])
+        rows.push([])
+      }
+
+      // Net Balance footer
+      rows.push(['NET BALANCE', '', '', '', '', '', Number(stats.balance || 0)])
+      rows.push([
+        stats.balance >= 0
+          ? `Company owes ${code} (positive balance)`
+          : `${code} owes company (negative balance)`,
+      ])
+
+      const ws = XLSX.utils.aoa_to_sheet(rows)
+      ws['!cols'] = [
+        { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 12 },
+      ]
+      XLSX.utils.book_append_sheet(wb, ws, `${code} Report`)
+
+      // Append a summary row
+      summaryRows.push([
+        code,
+        Number(stats.sumTo || 0),
+        Number(stats.sumBehalf || 0),
+        Number(stats.sumFrom || 0),
+        Number(stats.sumCash || 0),
+        Number(stats.allowanceTotal || 0),
+        Number(stats.balance || 0),
+      ])
+    }
+
+    // Insert summary sheet at position 0
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
+    wsSummary['!cols'] = [
+      { wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+    ]
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
+    // Move Summary to be the first sheet
+    wb.SheetNames = ['Summary', ...wb.SheetNames.filter(n => n !== 'Summary')]
+
+    const safeCompany = (selectedCompany || 'Company').replace(/\s+/g, '')
+    const periodTag = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+    XLSX.writeFile(wb, `${safeCompany}_ShareholderReport_${periodTag}.xlsx`)
+  }
+
   return (
     <div className="shareholder-report" style={{
       background: 'white',
@@ -299,14 +390,12 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
       borderRadius: 8,
       boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
     }}>
-      {/* Toolbar — hidden in print. Three print options matching Travel Log:
-            - Print All: both shareholders, page-break between them
-            - Print YK: only YK block (BK hidden via body class)
-            - Print BK: only BK block (YK hidden via body class) */}
+      {/* Toolbar — hidden in print. Print options + Excel export. */}
       <div className="action-bar no-print">
         <button onClick={handlePrintAll} className="toolbar-btn primary">🖨 Print All</button>
         <button onClick={() => handlePrintShareholder('YK')} className="toolbar-btn">🖨 Print YK</button>
         <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
+        <button onClick={handleExportExcel} className="toolbar-btn">📊 Export Excel</button>
       </div>
 
       {/* Unified letterhead — shows on screen AND in print (text left / logo right). */}
