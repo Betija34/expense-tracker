@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import './Dashboard.css'
 
 /**
  * Dashboard — top-level financial overview for the selected company / month.
@@ -221,15 +222,49 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
   if (loading) return <div className="loading">Loading dashboard…</div>
   if (error) return <div className="error">{error}</div>
 
+  // CSS that overrides the global landscape @page (set in App.css) and forces
+  // A4 portrait for the duration of the print. Injected before window.print()
+  // and removed via the afterprint event. Same pattern as Travel Log + Shareholder Report.
+  const PORTRAIT_PRINT_CSS = `
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 1.5cm 1cm 1.5cm 1cm;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 10px;
+          color: #6b7280;
+        }
+      }
+    }
+  `
+
+  const handlePrint = () => {
+    const styleEl = document.createElement('style')
+    styleEl.textContent = PORTRAIT_PRINT_CSS
+    document.head.appendChild(styleEl)
+    const cleanup = () => {
+      styleEl.remove()
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    window.print()
+  }
+
   return (
-    <div style={{
+    <div className="dashboard" style={{
       background: 'white',
       padding: 20,
       borderRadius: 8,
       boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
     }}>
-      {/* Header */}
-      <div style={{ marginBottom: 16 }}>
+      {/* Toolbar — hidden in print */}
+      <div className="action-bar no-print">
+        <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print</button>
+      </div>
+
+      {/* Screen header — hidden in print (replaced by .print-header letterhead) */}
+      <div className="no-print" style={{ marginBottom: 16 }}>
         <h2 style={{ margin: 0, color: '#2E7D32' }}>
           Dashboard · {selectedCompany}
         </h2>
@@ -238,9 +273,16 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         </p>
       </div>
 
-      {/* Attention bar */}
+      {/* Print-only letterhead — appears only in printed/PDF output */}
+      <div className="print-only print-header">
+        <div className="company-name">{selectedCompany}</div>
+        <div className="report-title">Dashboard Summary</div>
+        <div className="period-label">Period: {monthLabel}</div>
+      </div>
+
+      {/* Attention bar — operational call-to-action, hidden in print */}
       {(stats.pendingExpenses > 0 || pendingBankCount > 0) && (
-        <div style={{
+        <div className="no-print" style={{
           background: '#fef3c7', border: '1px solid #fcd34d',
           borderRadius: 4, padding: 12, marginBottom: 16,
           display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap',
@@ -272,7 +314,7 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
           list deliberately ignores the top-bar Month selector and shows everything
           recent that still needs a counterpart link. */}
       {unlinkedIntercompany.length > 0 && (
-        <div style={{
+        <div className="unlinked-intercompany" style={{
           background: '#fff7ed', border: '1px solid #fdba74',
           borderRadius: 4, padding: 12, marginBottom: 16,
         }}>
@@ -570,7 +612,7 @@ const threeColumnGrid = {
 
 function SectionHeader({ title, subtitle }) {
   return (
-    <div style={{ marginTop: 20, marginBottom: 8 }}>
+    <div className="section-header" style={{ marginTop: 20, marginBottom: 8 }}>
       <div style={{ fontSize: 15, fontWeight: 700, color: '#1f2937' }}>{title}</div>
       {subtitle && (
         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{subtitle}</div>
@@ -581,7 +623,7 @@ function SectionHeader({ title, subtitle }) {
 
 function StatCard({ title, value, accent = '#16a34a', subtitle }) {
   return (
-    <div style={{
+    <div className="stat-card" style={{
       background: 'white',
       border: '1px solid #e5e7eb',
       borderLeft: `4px solid ${accent}`,

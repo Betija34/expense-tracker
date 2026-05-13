@@ -1,0 +1,129 @@
+/* =====================================================================
+   Dashboard — screen + print styles
+   ===================================================================== */
+
+/* Toolbar at the top of Dashboard (Print button) */
+.dashboard .action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.dashboard .action-bar .toolbar-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dashboard .action-bar .toolbar-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+.dashboard .action-bar .toolbar-btn.primary {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+.dashboard .action-bar .toolbar-btn.primary:hover {
+  background: #1B5E20;
+}
+
+/* Print-only letterhead block */
+.dashboard .print-header {
+  text-align: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #1f2937;
+}
+.dashboard .print-header .company-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.dashboard .print-header .report-title {
+  font-size: 16px;
+  margin-top: 4px;
+  color: #374151;
+}
+.dashboard .print-header .period-label {
+  font-size: 13px;
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* =====================================================================
+   PRINT STYLES
+   A4 portrait orientation is enforced by the runtime CSS injection in
+   Dashboard.jsx (Print button handler), NOT here. This @media block
+   handles everything else: chrome hiding, page breaks, card layout.
+   ===================================================================== */
+@media print {
+  /* Card-style wrapper looks like plain paper */
+  .dashboard {
+    background: white !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  /* Stat cards: print-friendly borders, preserve their colored accents */
+  .dashboard .stat-card,
+  .dashboard [class*="card"] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Section headers should stick with their first row of cards */
+  .dashboard .section-header {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Compact card padding so more fits per page */
+  .dashboard .stat-card {
+    padding: 8px !important;
+  }
+
+  /* Tables (e.g. unlinked transfers indicator) — print-friendly */
+  .dashboard table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 11px !important;
+  }
+  .dashboard table thead {
+    display: table-header-group !important;
+  }
+  .dashboard table tr {
+    page-break-inside: avoid !important;
+  }
+  .dashboard table th {
+    background: #f3f4f6 !important;
+    color: #111 !important;
+    border-bottom: 1.5px solid #1f2937 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    padding: 6px !important;
+  }
+  .dashboard table td {
+    border-bottom: 1px solid #e5e7eb !important;
+    padding: 5px 6px !important;
+  }
+
+  /* Hide "Manage links in View Expenses →" link in the unlinked indicator
+     (it's an action link, not informational) */
+  .dashboard .unlinked-intercompany a {
+    display: none !important;
+  }
+}
