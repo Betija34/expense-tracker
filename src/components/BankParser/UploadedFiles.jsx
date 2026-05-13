@@ -1,14 +1,22 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
 
-export function UploadedFiles({ selectedCompany, onRefresh }) {
+// Month-name lookup so we can filter file_name by the currently-selected month.
+// Relies on our enforced filename convention: "<Company-prefix> <MonthName> <Year>.<ext>"
+// e.g. "RCC January 2026.pdf", "Espargos January 2026.png".
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+]
+
+export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, onRefresh }) {
   const [imports, setImports] = useState([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!selectedCompany) return
+    if (!selectedCompany || !selectedMonth || !selectedYear) return
     loadImports()
-  }, [selectedCompany, onRefresh])
+  }, [selectedCompany, selectedMonth, selectedYear, onRefresh])
 
   const loadImports = async () => {
     try {
@@ -23,11 +31,14 @@ export function UploadedFiles({ selectedCompany, onRefresh }) {
 
       if (!company) return
 
-      // Get all imports for this company
+      // Filter by the currently-selected month + year via the filename convention.
+      // Files named "<Prefix> January 2026.<ext>" match when Jan 2026 is selected, etc.
+      const monthName = MONTH_NAMES[selectedMonth - 1]
       const { data: importsData, error } = await supabase
         .from('bank_imports')
         .select('*')
         .eq('company_id', company.id)
+        .ilike('file_name', `%${monthName}%${selectedYear}%`)
         .order('created_at', { ascending: false })
 
       if (error) throw error

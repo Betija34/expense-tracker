@@ -46,6 +46,14 @@ function App() {
     loadCompanies()
   }, [])
 
+  // If the user is on a tab that's hidden for the newly selected company
+  // (Client Report or Travel Log when on Espargos), bounce back to Dashboard.
+  useEffect(() => {
+    if (selectedCompany === 'Espargos' && (currentTab === 'client' || currentTab === 'travel')) {
+      setCurrentTab('dashboard')
+    }
+  }, [selectedCompany, currentTab])
+
   if (loading) {
     return <div className="loading">Loading Rabona Expense Tracker...</div>
   }
@@ -122,18 +130,30 @@ function App() {
           >
             Shareholder Report
           </button>
-          <button
-            className={`tab-button ${currentTab === 'travel' ? 'active' : ''}`}
-            onClick={() => setCurrentTab('travel')}
-          >
-            Travel Log
-          </button>
-          <button
-            className={`tab-button ${currentTab === 'client' ? 'active' : ''}`}
-            onClick={() => setCurrentTab('client')}
-          >
-            Client Report
-          </button>
+          {/* Travel Log tab — hidden for Espargos since shareholders don't currently
+              travel for Espargos. To re-enable, remove the `selectedCompany !== 'Espargos' &&`
+              condition (and similarly the Allowances hide in ShareholderReport.jsx).
+              All travel_periods data stays in the DB regardless of this UI hide. */}
+          {selectedCompany !== 'Espargos' && (
+            <button
+              className={`tab-button ${currentTab === 'travel' ? 'active' : ''}`}
+              onClick={() => setCurrentTab('travel')}
+            >
+              Travel Log
+            </button>
+          )}
+          {/* Client Report tab — hidden for Espargos since it doesn't currently
+              reimburse clients. To re-enable for Espargos later, remove the
+              `selectedCompany !== 'Espargos' &&` condition (and similarly in
+              the Reimbursable Tracking section of Dashboard.jsx). */}
+          {selectedCompany !== 'Espargos' && (
+            <button
+              className={`tab-button ${currentTab === 'client' ? 'active' : ''}`}
+              onClick={() => setCurrentTab('client')}
+            >
+              Client Report
+            </button>
+          )}
         </div>
 
         {/* Tab Content */}
@@ -145,7 +165,13 @@ function App() {
             onSwitchTab={setCurrentTab}
           />
         )}
-        {currentTab === 'bank-parser' && <BankParser selectedCompany={selectedCompany} />}
+        {currentTab === 'bank-parser' && (
+          <BankParser
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+          />
+        )}
         {currentTab === 'add-expense' && (
           <AddExpense
             selectedCompany={selectedCompany}

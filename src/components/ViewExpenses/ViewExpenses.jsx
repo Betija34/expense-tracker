@@ -1,7 +1,15 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
+import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
 import './ViewExpenses.css'
+
+// Categories that support inter-company linking. An expense in either of these
+// can be paired with one in the other company. See LinkInterCompanyModal.jsx.
+const INTERCOMPANY_CATEGORIES = new Set([
+  'Transfers to Connected Accounts',
+  'Intercompany Funding',
+])
 
 /**
  * View Expenses — finalized accounting view of the expenses table.
@@ -23,6 +31,14 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [companyId, setCompanyId] = useState(null)
   const [recategorizing, setRecategorizing] = useState(null) // { transaction, expense }
+  const [linkingExpense, setLinkingExpense] = useState(null) // expense being linked / unlinked
+  // Map of expense.linked_expense_id → { reference_number, company_name } for chip display.
+  const [counterpartMap, setCounterpartMap] = useState(new Map())
+  // Sort state — clickable column headers. Default matches old behavior (date DESC, seq DESC).
+  //   sortBy:  'ref' | 'date' | 'amount' | 'vendor'
+  //   sortDir: 'asc' | 'desc'
+  const [sortBy, setSortBy] = useState('date')
+  const [sortDir, setSortDir] = useState('desc')
 
   // ----- Date range for the selected month -----
   const { startDate, endDate } = useMemo(() => {
@@ -89,6 +105,29 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
 
       setExpenses(expData || [])
       setBankStats({ total, categorized, pending })
+
+      // Load counterpart details for any expenses that have an inter-company link.
+      // We need the linked expense's ref + company name to render a meaningful chip
+      // like "🔗 E26/2/3 (Espargos)" instead of a generic "Linked" badge.
+      const linkedIds = (expData || []).map(e => e.linked_expense_id).filter(Boolean)
+      if (linkedIds.length > 0) {
+        const { data: counterparts, error: cpErr } = await supabase
+          .from('expenses')
+          .select('id, reference_number, companies(name)')
+          .in('id', linkedIds)
+        if (!cpErr) {
+          const map = new Map()
+          for (const cp of (counterparts || [])) {
+            map.set(cp.id, {
+              reference_number: cp.reference_number,
+              company_name: cp.companies?.name || '—',
+            })
+          }
+          setCounterpartMap(map)
+        }
+      } else {
+        setCounterpartMap(new Map())
+      }
     } catch (err) {
       console.error('Error loading expenses:', err)
       setError(err.message || 'Failed to load expenses')
@@ -147,9 +186,10 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     return { rcc, rmc, cash, pending, approved, locked, total: expenses.length }
   }, [expenses])
 
-  // ----- Filtering -----
+  // ----- Filtering + sorting -----
+  // Filter pill state (in/out/pending/etc) narrows rows; sort state (header click) orders them.
   const filteredExpenses = useMemo(() => {
-    return expenses.filter(e => {
+    const filtered = expenses.filter(e => {
       if (filter === 'in') return e.direction === 'in'
       if (filter === 'out') return e.direction === 'out'
       if (filter === 'pending') return e.status === 'pending'
@@ -157,7 +197,41 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       if (filter === 'reimbursable') return e.is_reimbursable === true
       return true
     })
-  }, [expenses, filter])
+
+    // Key extractor per sort column. Numeric where possible, lowercased string otherwise.
+    const keyFn = {
+      ref:    (e) => Number(e.main_ref_seq || 0),
+      date:   (e) => e.date || '',                                  // ISO strings sort lexically = chronologically
+      amount: (e) => Number(e.amount || 0),
+      vendor: (e) => (e.vendor || '').toLowerCase(),
+    }[sortBy] || ((e) => e.main_ref_seq || 0)
+
+    const sign = sortDir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      const ka = keyFn(a), kb = keyFn(b)
+      if (ka < kb) return -1 * sign
+      if (ka > kb) return  1 * sign
+      // Stable tie-breaker: always order by seq desc within ties so split portions
+      // stay adjacent and consistent regardless of primary sort column.
+      return (b.main_ref_seq || 0) - (a.main_ref_seq || 0)
+    })
+  }, [expenses, filter, sortBy, sortDir])
+
+  // Click handler: same column toggles direction; different column starts at desc.
+  const handleSort = (column) => {
+    if (sortBy === column) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(column)
+      setSortDir('desc')
+    }
+  }
+
+  // Small ↑/↓ arrow next to the active column's label
+  const sortArrow = (column) => {
+    if (sortBy !== column) return null
+    return <span style={{ marginLeft: 4 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+  }
 
   // ----- Helpers -----
   const accountBadge = (acct) => {
@@ -355,7 +429,22 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       )
     }
     if (e.shareholder_code) chips.push(<span key="sh" className="flag-chip shareholder">{e.shareholder_code}</span>)
-    if (e.linked_expense_id) chips.push(<span key="lk" className="flag-chip linked">Linked</span>)
+    if (e.linked_expense_id) {
+      // Show the counterpart's ref + company so reconciliation is at-a-glance.
+      const cp = counterpartMap.get(e.linked_expense_id)
+      const label = cp
+        ? `🔗 ${cp.reference_number} (${cp.company_name})`
+        : '🔗 Linked'
+      chips.push(
+        <span
+          key="lk"
+          className="flag-chip linked"
+          title={cp ? `Inter-company link to ${cp.company_name} expense ${cp.reference_number}` : 'Linked to a counterpart expense'}
+        >
+          {label}
+        </span>
+      )
+    }
     if (e.bank_transaction_id) chips.push(<span key="bk" className="flag-chip bank">Bank</span>)
     if (chips.length === 0) return '—'
     return <span className="flag-chips">{chips}</span>
@@ -561,14 +650,38 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                 </th>
                 <th>Account</th>
                 <th>In/Out</th>
-                <th>Main Ref</th>
+                <th
+                  onClick={() => handleSort('ref')}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  title="Click to sort by reference number"
+                >
+                  Main Ref{sortArrow('ref')}
+                </th>
                 <th>Sub Ref</th>
-                <th>Date</th>
-                <th>Vendor</th>
+                <th
+                  onClick={() => handleSort('date')}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  title="Click to sort by date"
+                >
+                  Date{sortArrow('date')}
+                </th>
+                <th
+                  onClick={() => handleSort('vendor')}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  title="Click to sort by vendor"
+                >
+                  Vendor{sortArrow('vendor')}
+                </th>
                 <th>Description</th>
                 <th>Category</th>
                 <th>Subcategory</th>
-                <th>Amount</th>
+                <th
+                  onClick={() => handleSort('amount')}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  title="Click to sort by amount"
+                >
+                  Amount{sortArrow('amount')}
+                </th>
                 <th>Status</th>
                 <th>Flags</th>
                 <th>Actions</th>
@@ -621,6 +734,18 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                           }
                         }}
                       >✏️</button>
+                      {/* Inter-company link button — only shown for the two intercompany
+                          categories ("Transfers to Connected Accounts" outgoing or
+                          "Intercompany Funding" incoming). Click opens LinkInterCompanyModal
+                          which lets the user pair this expense with its counterpart in the
+                          OTHER company (or unlink an existing pair). */}
+                      {INTERCOMPANY_CATEGORIES.has(e.expense_categories?.name) && (
+                        <button
+                          className="action-btn"
+                          title={e.linked_expense_id ? 'Manage inter-company link' : 'Link to counterpart in the other company'}
+                          onClick={() => setLinkingExpense(e)}
+                        >🔗</button>
+                      )}
                       <button
                         className="action-btn danger"
                         title={e.bank_transaction_id ? 'Bank-imported: delete in Bank Parser' : 'Delete'}
@@ -641,9 +766,22 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
         <FinalizeTransaction
           transaction={recategorizing.transaction}
           companyId={companyId}
+          companyName={selectedCompany}
           existingExpense={recategorizing.expense}
           onClose={() => setRecategorizing(null)}
           onSave={() => loadAll()}
+        />
+      )}
+
+      {/* Inter-company link modal — opens when 🔗 button is clicked on an
+          intercompany expense. Handles both initial linking (when unlinked)
+          and viewing/unlinking (when already paired). */}
+      {linkingExpense && (
+        <LinkInterCompanyModal
+          expense={linkingExpense}
+          currentCompany={selectedCompany}
+          onClose={() => setLinkingExpense(null)}
+          onSaved={() => loadAll()}
         />
       )}
     </div>

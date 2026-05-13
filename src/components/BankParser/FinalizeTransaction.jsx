@@ -9,6 +9,7 @@ import {
   isSubRefManual,
   formatMainRef,
   formatSubRef,
+  buildMainRef,
   uuid,
 } from '../../lib/refUtils'
 import './BankParser.css'
@@ -24,7 +25,7 @@ import './BankParser.css'
  *   4. INSERT into expenses
  *   5. UPDATE bank_transactions.status='matched', matched_expense_id = new id
  */
-export function FinalizeTransaction({ transaction, companyId, existingExpense, onClose, onSave }) {
+export function FinalizeTransaction({ transaction, companyId, companyName, existingExpense, onClose, onSave }) {
   const isEditMode = !!existingExpense
   const [categories, setCategories]   = useState([])
   const [subcategories, setSubcats]   = useState([])
@@ -492,8 +493,8 @@ export function FinalizeTransaction({ transaction, companyId, existingExpense, o
         referenceNumber = existingExpense.reference_number
       } else {
         mainSeq = await nextMainRefSeq(companyId, dateParts.year, dateParts.month)
-        const yy = String(dateParts.year).slice(-2)
-        referenceNumber = `${yy}/${dateParts.month}/${mainSeq}`
+        // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
+        referenceNumber = buildMainRef(dateParts.year, dateParts.month, mainSeq, companyName)
       }
 
       // ----- Sub reference -----
@@ -617,7 +618,6 @@ export function FinalizeTransaction({ transaction, companyId, existingExpense, o
       // Allocate consecutive main_ref_seq numbers
       const seqs = await nextMainRefSeqBatch(companyId, dateParts.year, dateParts.month, active.length)
       const splitGroupId = uuid()
-      const yy = String(dateParts.year).slice(-2)
 
       // Build rows
       const rows = []
@@ -648,7 +648,8 @@ export function FinalizeTransaction({ transaction, companyId, existingExpense, o
           currency:           'EUR',
           description:        form.description?.trim() || null,
           vendor:             form.vendor.trim(),
-          reference_number:   `${yy}/${dateParts.month}/${seqs[i]}`,
+          // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
+          reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], companyName),
           expense_type:       'regular',
           direction:          'out',
           main_ref_year:      dateParts.year,

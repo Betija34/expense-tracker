@@ -7,6 +7,7 @@ import {
   nextSubRefSeq,
   decideSubRefSeries,
   isSubRefManual,
+  buildMainRef,
   uuid,
 } from '../../lib/refUtils'
 import '../BankParser/BankParser.css'
@@ -754,8 +755,8 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
         referenceNumber = editingEntry.reference_number
       } else {
         mainSeq = await nextMainRefSeq(companyId, dateParts.year, dateParts.month)
-        const yy = String(dateParts.year).slice(-2)
-        referenceNumber = `${yy}/${dateParts.month}/${mainSeq}`
+        // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
+        referenceNumber = buildMainRef(dateParts.year, dateParts.month, mainSeq, selectedCompany)
       }
 
       // Sub reference: in edit mode keep existing if series & month match, otherwise reassign
@@ -882,7 +883,6 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
       // Allocate consecutive main_ref_seq numbers
       const seqs = await nextMainRefSeqBatch(companyId, dateParts.year, dateParts.month, active.length)
       const splitGroupId = uuid()
-      const yy = String(dateParts.year).slice(-2)
 
       const rows = []
       for (let i = 0; i < active.length; i++) {
@@ -919,7 +919,8 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
           currency:           'EUR',
           description:        form.description?.trim() || null,
           vendor:             form.vendor.trim(),
-          reference_number:   `${yy}/${dateParts.month}/${seqs[i]}`,
+          // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
+          reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], selectedCompany),
           expense_type:       'regular',
           direction:          'out',
           main_ref_year:      dateParts.year,

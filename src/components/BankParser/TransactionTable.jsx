@@ -1,11 +1,21 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
-import { nextMainRefSeq } from '../../lib/refUtils'
+import { nextMainRefSeq, buildMainRef } from '../../lib/refUtils'
 import { EditTransaction } from './EditTransaction'
 import { FinalizeTransaction } from './FinalizeTransaction'
 import './BankParser.css'
 
-export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigger }) {
+// Helper: build a [start, nextMonthStart) date range so we can filter
+// bank_transactions by transaction_date to scope to the selected period.
+function monthRange(month, year) {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`
+  const nextMonth = month === 12 ? 1 : month + 1
+  const nextYear = month === 12 ? year + 1 : year
+  const nextStart = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+  return { start, nextStart }
+}
+
+export function TransactionTable({ selectedCompany, selectedMonth, selectedYear, onStatusChange, refreshTrigger }) {
   const [transactions, setTransactions] = useState([])
   const [companyId, setCompanyId] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -39,10 +49,10 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
   }, [])
 
   useEffect(() => {
-    if (selectedCompany) {
+    if (selectedCompany && selectedMonth && selectedYear) {
       loadTransactions()
     }
-  }, [selectedCompany, refreshTrigger])
+  }, [selectedCompany, selectedMonth, selectedYear, refreshTrigger])
 
   const loadTransactions = async () => {
     try {
@@ -63,11 +73,16 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
       }
       setCompanyId(company.id)
 
-      // Query all transactions for this company
+      // Query transactions for this company SCOPED TO THE SELECTED MONTH/YEAR.
+      // Without this filter, switching the top-bar Month would show transactions
+      // from every month (e.g. January transactions visible under May).
+      const { start, nextStart } = monthRange(selectedMonth, selectedYear)
       const { data, error } = await supabase
         .from('bank_transactions')
         .select('*, accounts(name)')
         .eq('company_id', company.id)
+        .gte('transaction_date', start)
+        .lt('transaction_date', nextStart)
         .order('transaction_date', { ascending: false })
 
       if (error) throw error
@@ -219,8 +234,8 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
           const categoryId = uncategorizedIds[direction]
           const [y, m] = tx.transaction_date.split('-').map(Number)
           const mainSeq = await nextMainRefSeq(companyId, y, m)
-          const yy = String(y).slice(-2)
-          const referenceNumber = `${yy}/${m}/${mainSeq}`
+          // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
+          const referenceNumber = buildMainRef(y, m, mainSeq, selectedCompany)
 
           const { data: inserted, error: insertErr } = await supabase
             .from('expenses')
@@ -568,6 +583,7 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
         <FinalizeTransaction
           transaction={finalizingTransaction}
           companyId={companyId}
+          companyName={selectedCompany}
           onClose={() => setFinalizingTransaction(null)}
           onSave={() => {
             loadTransactions()
@@ -580,6 +596,7 @@ export function TransactionTable({ selectedCompany, onStatusChange, refreshTrigg
         <FinalizeTransaction
           transaction={recategorizing.transaction}
           companyId={companyId}
+          companyName={selectedCompany}
           existingExpense={recategorizing.expense}
           onClose={() => setRecategorizing(null)}
           onSave={() => {

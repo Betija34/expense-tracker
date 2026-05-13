@@ -30,8 +30,11 @@ const SHAREHOLDERS = ['YK', 'BK']
 export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear, onSwitchTab }) {
   const [companyId, setCompanyId] = useState(null)
   const [expenses, setExpenses] = useState([])
-  // allowances[code] = { id, travel_days, daily_rate } or null if no row yet
+  // allowances[code] = { id, daily_rate } or null if no row yet.
+  // Note: travel_days is no longer stored here — it's derived from travel_periods (Travel Log).
+  // The shareholder_allowances row is now only used to remember the daily_rate per month.
   const [allowances, setAllowances] = useState({ YK: null, BK: null })
+  const [travelPeriods, setTravelPeriods] = useState([])     // all travel periods this month for this company
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [allowancesSaving, setAllowancesSaving] = useState({ YK: false, BK: false })
@@ -66,7 +69,7 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
         if (cancelled) return
         setExpenses(exps || [])
 
-        // Allowance rows for both shareholders
+        // Allowance rows for both shareholders (we now only use daily_rate from these)
         const { data: allowanceRows, error: allowErr } = await supabase
           .from('shareholder_allowances')
           .select('*')
@@ -81,6 +84,23 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
           allowMap[r.shareholder_code] = r
         }
         setAllowances(allowMap)
+
+        // Travel periods whose from_date falls within the selected month — used to
+        // compute Allowances Travel Days automatically (replaces the old manual input).
+        // Same logic as the Travel Log tab.
+        const lastDay = new Date(selectedYear, selectedMonth, 0).getDate()
+        const monthStart = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`
+        const monthEnd = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+        const { data: periodRows, error: periodErr } = await supabase
+          .from('travel_periods')
+          .select('*')
+          .eq('company_id', comp.id)
+          .gte('from_date', monthStart)
+          .lte('from_date', monthEnd)
+          .order('from_date')
+        if (periodErr) throw periodErr
+        if (cancelled) return
+        setTravelPeriods(periodRows || [])
       } catch (e) {
         console.error('ShareholderReport load error:', e)
         if (!cancelled) setError(e.message || 'Failed to load shareholder report')
@@ -93,7 +113,8 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
   }, [selectedCompany, selectedMonth, selectedYear])
 
   // -------------------------------------------------------------
-  // Save allowance change for a shareholder (upserts the row)
+  // Save daily rate change for a shareholder (upserts the row).
+  // Travel days are no longer saved here — they come from travel_periods.
   // -------------------------------------------------------------
   const updateAllowance = async (code, patch) => {
     if (!companyId) return
@@ -105,6 +126,8 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
         shareholder_code: code,
         year: selectedYear,
         month: selectedMonth,
+        // Keep the schema column populated with whatever the derived value is at save
+        // time (mainly for backward-compat / SQL queries that read the column directly).
         travel_days: patch.travel_days ?? existing?.travel_days ?? 0,
         daily_rate:  patch.daily_rate  ?? existing?.daily_rate  ?? 150,
         notes:       patch.notes       ?? existing?.notes       ?? null,
@@ -123,6 +146,31 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
     } finally {
       setAllowancesSaving(s => ({ ...s, [code]: false }))
     }
+  }
+
+  // -------------------------------------------------------------
+  // Compute unique in-month travel days for a given shareholder.
+  // Same algorithm as Travel Log: clamp each period to the selected month,
+  // collect every covered ISO date into a Set, return the set size.
+  // -------------------------------------------------------------
+  const computeTravelDays = (code) => {
+    const lastDay = new Date(selectedYear, selectedMonth, 0).getDate()
+    const mm = String(selectedMonth).padStart(2, '0')
+    const monthStart = `${selectedYear}-${mm}-01`
+    const monthEnd = `${selectedYear}-${mm}-${String(lastDay).padStart(2, '0')}`
+    const periods = travelPeriods.filter(p => p.shareholder_code === code)
+    const uniqueDays = new Set()
+    for (const p of periods) {
+      const clampStart = p.from_date < monthStart ? monthStart : p.from_date
+      const clampEnd   = p.to_date   > monthEnd   ? monthEnd   : p.to_date
+      const cur = new Date(clampStart + 'T00:00:00')
+      const end = new Date(clampEnd + 'T00:00:00')
+      while (cur <= end) {
+        uniqueDays.add(cur.toISOString().slice(0, 10))
+        cur.setDate(cur.getDate() + 1)
+      }
+    }
+    return { travelDays: uniqueDays.size, periodCount: periods.length }
   }
 
   // -------------------------------------------------------------
@@ -163,9 +211,10 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
       e.expense_categories?.name !== 'Shareholder Funding'
     )
 
-    // Allowances
+    // Allowances — travel_days is now AUTO-DERIVED from the Travel Log (travel_periods),
+    // not stored manually. daily_rate is still per-shareholder per-month in shareholder_allowances.
     const allowance = allowances[code]
-    const travelDays = allowance?.travel_days || 0
+    const { travelDays, periodCount } = computeTravelDays(code)
     const dailyRate  = Number(allowance?.daily_rate) || 150
     const allowanceTotal = travelDays * dailyRate
 
@@ -188,7 +237,7 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
       cashExpenses, sumCash,
       otherBankOutgoing, sumOtherOut,
       otherIncoming, sumOtherIn,
-      travelDays, dailyRate, allowanceTotal,
+      travelDays, periodCount, dailyRate, allowanceTotal,
       balance,
     }
   }
@@ -226,6 +275,7 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
           stats={computeStats(code)}
           allowance={allowances[code]}
           saving={allowancesSaving[code]}
+          companyName={selectedCompany}
           onUpdateAllowance={(patch) => updateAllowance(code, patch)}
           onSwitchTab={onSwitchTab}
         />
@@ -261,7 +311,7 @@ const fmtDate = (iso) => {
 // =============================================================
 // One shareholder's full block
 // =============================================================
-function ShareholderBlock({ code, stats, allowance, saving, onUpdateAllowance, onSwitchTab }) {
+function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdateAllowance, onSwitchTab }) {
   return (
     <div id={`sh-${code}`} style={{
       marginTop: 24, paddingTop: 16, borderTop: '2px solid #e5e7eb',
@@ -304,17 +354,25 @@ function ShareholderBlock({ code, stats, allowance, saving, onUpdateAllowance, o
         amountSign="positive-in"
       />
 
-      {/* Section 4 — Allowances (editable) */}
-      <AllowanceSection
-        number="4"
-        code={code}
-        allowance={allowance}
-        saving={saving}
-        onUpdate={onUpdateAllowance}
-        total={stats.allowanceTotal}
-        travelDays={stats.travelDays}
-        dailyRate={stats.dailyRate}
-      />
+      {/* Section 4 — Allowances. Travel Days now derived from Travel Log;
+          only Daily Rate is editable.
+          Hidden for Espargos because shareholders don't travel from Espargos
+          (matches the Travel Log tab hide in App.jsx). To re-enable, remove
+          the `companyName !== 'Espargos' &&` condition. */}
+      {companyName !== 'Espargos' && (
+        <AllowanceSection
+          number="4"
+          code={code}
+          allowance={allowance}
+          saving={saving}
+          onUpdate={onUpdateAllowance}
+          total={stats.allowanceTotal}
+          travelDays={stats.travelDays}
+          periodCount={stats.periodCount}
+          dailyRate={stats.dailyRate}
+          onSwitchTab={onSwitchTab}
+        />
+      )}
 
       {/* Section 5 */}
       <SectionWithTable
@@ -348,7 +406,7 @@ function ShareholderBlock({ code, stats, allowance, saving, onUpdateAllowance, o
       )}
 
       {/* Net Balance */}
-      <NetBalanceCard code={code} stats={stats} />
+      <NetBalanceCard code={code} stats={stats} companyName={companyName} />
     </div>
   )
 }
@@ -426,24 +484,21 @@ function SectionWithTable({ number, title, rows, total, totalColor, totalLabel, 
 }
 
 // =============================================================
-// Allowance section — editable
+// Allowance section — Travel Days auto-derived from Travel Log;
+// Daily Rate editable per month (saved to shareholder_allowances).
 // =============================================================
-function AllowanceSection({ number, code, allowance, saving, onUpdate, total, travelDays, dailyRate }) {
-  const [daysInput, setDaysInput] = useState(String(travelDays || 0))
+function AllowanceSection({ number, code, allowance, saving, onUpdate, total, travelDays, periodCount, dailyRate, onSwitchTab }) {
   const [rateInput, setRateInput] = useState(String(dailyRate || 150))
 
-  // Sync inputs when allowance changes from outside
+  // Sync rate input when allowance changes from outside
   useEffect(() => {
-    setDaysInput(String(travelDays || 0))
     setRateInput(String(dailyRate || 150))
-  }, [travelDays, dailyRate])
+  }, [dailyRate])
 
-  const commit = () => {
-    const days = parseInt(daysInput) || 0
+  const commitRate = () => {
     const rate = parseFloat(rateInput) || 150
-    // Only call update if values changed
-    if (days !== (allowance?.travel_days || 0) || rate !== Number(allowance?.daily_rate || 150)) {
-      onUpdate({ travel_days: days, daily_rate: rate })
+    if (rate !== Number(allowance?.daily_rate || 150)) {
+      onUpdate({ daily_rate: rate })
     }
   }
 
@@ -463,27 +518,25 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
           display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12,
           alignItems: 'end',
         }}>
+          {/* Travel Days — read-only, auto-derived from Travel Log */}
           <div>
             <label style={{ fontSize: 12, color: '#3730a3', display: 'block', marginBottom: 4 }}>
-              Travel Days
+              Travel Days <span style={{ fontWeight: 400, color: '#6366f1' }}>(from Travel Log)</span>
             </label>
-            <input
-              type="number"
-              min={0}
-              max={31}
-              value={daysInput}
-              onChange={(e) => setDaysInput(e.target.value)}
-              onBlur={commit}
-              style={{
-                width: '100%', padding: '6px 8px',
-                border: '1px solid #c7d2fe', borderRadius: 4,
-                fontSize: 14,
-              }}
-            />
+            <div style={{
+              padding: '6px 10px', fontSize: 18, fontWeight: 700,
+              color: '#1f2937', background: 'white',
+              border: '1px solid #c7d2fe', borderRadius: 4,
+              textAlign: 'center',
+            }}>
+              {travelDays}
+            </div>
           </div>
+
+          {/* Daily Rate — editable */}
           <div>
             <label style={{ fontSize: 12, color: '#3730a3', display: 'block', marginBottom: 4 }}>
-              Daily Rate (€)
+              Daily Rate (€) <span style={{ fontWeight: 400, color: '#6366f1' }}>(editable)</span>
             </label>
             <input
               type="number"
@@ -491,7 +544,7 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
               step="0.01"
               value={rateInput}
               onChange={(e) => setRateInput(e.target.value)}
-              onBlur={commit}
+              onBlur={commitRate}
               style={{
                 width: '100%', padding: '6px 8px',
                 border: '1px solid #c7d2fe', borderRadius: 4,
@@ -499,6 +552,8 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
               }}
             />
           </div>
+
+          {/* Total Allowance — computed */}
           <div>
             <label style={{ fontSize: 12, color: '#3730a3', display: 'block', marginBottom: 4 }}>
               Total Allowance
@@ -511,8 +566,23 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
             </div>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: '#4338ca', marginTop: 8 }}>
-          {saving ? '💾 Saving…' : 'Auto-saves on blur. Will be auto-populated from Travel Log (Part 6) once that\'s built.'}
+
+        {/* Helper line — explain where the days come from + offer a link */}
+        <div style={{ fontSize: 11, color: '#4338ca', marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <span>
+            {saving
+              ? '💾 Saving daily rate…'
+              : <>Travel days = unique in-month dates across {periodCount} {code} travel period{periodCount === 1 ? '' : 's'} (clamped to month).</>}
+          </span>
+          {onSwitchTab && (
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); onSwitchTab('travel') }}
+              style={{ color: '#185FA5', textDecoration: 'underline', whiteSpace: 'nowrap' }}
+            >
+              Edit travel periods in Travel Log →
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -522,7 +592,7 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
 // =============================================================
 // Net Balance card
 // =============================================================
-function NetBalanceCard({ code, stats }) {
+function NetBalanceCard({ code, stats, companyName }) {
   const isPositive = stats.balance >= 0
   return (
     <div style={{
@@ -538,15 +608,30 @@ function NetBalanceCard({ code, stats }) {
         Net Balance for {code}
       </div>
       <div style={{
-        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13,
+        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 13,
       }}>
-        <BreakdownRow label="Transfers to Shareholder" value={-stats.sumTo} />
-        <BreakdownRow label="Payments on Behalf"        value={-stats.sumBehalf} />
-        <BreakdownRow label="Transfers from Shareholder" value={stats.sumFrom} />
-        <BreakdownRow label="Allowances"                 value={stats.allowanceTotal} />
-        <BreakdownRow label="Cash Expenses (out of pocket)" value={stats.sumCash} />
-        {stats.sumOtherOut > 0 && <BreakdownRow label="Other bank outgoing tagged" value={-stats.sumOtherOut} />}
-        {stats.sumOtherIn > 0 && <BreakdownRow label="Other incoming tagged" value={stats.sumOtherIn} />}
+        {/* LEFT — items that REDUCE what the company owes the shareholder
+            (company paid out to / on behalf of shareholder) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <BreakdownRow label="Transfers to Shareholder" value={-stats.sumTo} />
+          <BreakdownRow label="Payments on Behalf"        value={-stats.sumBehalf} />
+          {stats.sumOtherOut > 0 && (
+            <BreakdownRow label="Other bank outgoing tagged" value={-stats.sumOtherOut} />
+          )}
+        </div>
+
+        {/* RIGHT — items that INCREASE what the company owes the shareholder
+            (shareholder gave money to the company or paid out of pocket) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <BreakdownRow label="Transfers from Shareholder" value={stats.sumFrom} />
+          <BreakdownRow label="Cash Expenses (out of pocket)" value={stats.sumCash} />
+          {companyName !== 'Espargos' && (
+            <BreakdownRow label="Allowances" value={stats.allowanceTotal} />
+          )}
+          {stats.sumOtherIn > 0 && (
+            <BreakdownRow label="Other incoming tagged" value={stats.sumOtherIn} />
+          )}
+        </div>
       </div>
       <div style={{
         marginTop: 12, paddingTop: 10,

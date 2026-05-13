@@ -1,31 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { supabase } from '../../supabaseClient'
 import Tesseract from 'tesseract.js'
 import './BankParser.css'
 
-// Month-name lookup for the pre-upload Layer 0 check.
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-]
-
-export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUploadSuccess }) {
+export function FileUpload({ selectedCompany, onUploadSuccess }) {
   const [files, setFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
   const [processingStatus, setProcessingStatus] = useState('')
-
-  // Clear the pending-upload buffer (and any leftover messages) whenever the
-  // top-bar context changes. Without this, a file you dragged in while on
-  // "Espargos January 2026" would stay listed even after you switch to February,
-  // which is confusing because that file no longer belongs to the current period.
-  useEffect(() => {
-    setFiles([])
-    setError(null)
-    setSuccess(null)
-    setProcessingStatus('')
-  }, [selectedCompany, selectedMonth, selectedYear])
 
   const handleDragOver = (e) => {
     e.preventDefault()
@@ -70,25 +53,6 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
 
   const removeFile = (index) => {
     setFiles(prev => prev.filter((_, i) => i !== index))
-  }
-
-  // Detect company from filename (Layer 1 of the double-filter company check).
-  //
-  // This is the FAST pre-OCR check — it just looks at the filename, so we can
-  // reject a wrong-company upload BEFORE running expensive OCR. Layer 2 (the
-  // account-number check inside extractAccountNumber) runs after OCR as the
-  // authoritative confirmation.
-  //
-  // Filename conventions:
-  //   - Rabona:   "RCC January 2026.pdf", "RMC January 2026.pdf", "Rabona ..."
-  //   - Espargos: "Espargos January 2026.pdf"
-  //
-  // Returns: 'Rabona Holdings' | 'Espargos' | null (no clear signal)
-  const detectCompanyFromFilename = (filename) => {
-    const name = filename.toLowerCase()
-    if (/espargos/.test(name)) return 'Espargos'
-    if (/^(rcc|rmc|rabona)/.test(name)) return 'Rabona Holdings'
-    return null
   }
 
   // Extract month from filename
@@ -140,28 +104,23 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
   }
 
   // Extract account number from OCR text (appears at top of statement)
-  // Returns { accountNumber, accountType, company } or { accountNumber: null, accountType: 'Unknown', company: null }
-  //
-  // To add a new account: append to accountMappings with format:
-  //   '<account_number>': { type: '<Current Account|Mastercard|...>', company: '<Rabona Holdings|Espargos>' }
+  // Returns { accountNumber, accountType } or { accountNumber: null, accountType: 'Unknown' }
   const extractAccountNumber = (text) => {
+    // Account numbers for Rabona accounts
     const accountMappings = {
-      // Rabona Holdings
-      '357032438089': { type: 'Current Account', company: 'Rabona Holdings' },  // RCC
-      '357535881125': { type: 'Mastercard',      company: 'Rabona Holdings' },  // RMC
-      // Espargos
-      '357035271533': { type: 'Current Account', company: 'Espargos' },         // Espargos's single bank account
+      '357032438089': 'Current Account',  // RCC
+      '357535881125': 'Mastercard'         // RMC
     }
 
     // Try to find any known account number in the text
-    for (const [accountNum, info] of Object.entries(accountMappings)) {
+    for (const [accountNum, accountType] of Object.entries(accountMappings)) {
       if (text.includes(accountNum)) {
-        return { accountNumber: accountNum, accountType: info.type, company: info.company }
+        return { accountNumber: accountNum, accountType }
       }
     }
 
     // If no account number found, return unknown
-    return { accountNumber: null, accountType: 'Unknown', company: null }
+    return { accountNumber: null, accountType: 'Unknown' }
   }
 
   // Extract transactions from OCR text
@@ -178,10 +137,15 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
       /(\d{2}-\d{2}-\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
     ]
 
+    console.log('📋 Extracting transactions from text. First 500 chars:', text.substring(0, 500))
+
     for (const pattern of patterns) {
       let match
+      let patternMatches = 0
       while ((match = pattern.exec(text)) !== null) {
+        patternMatches++
         const [, dateStr, vendor, amountStr] = match
+        console.log(`  Match ${patternMatches}: Date=${dateStr}, Vendor="${vendor}", Amount=${amountStr}`)
         if (vendor && vendor.trim().length > 0) {
           // Parse European number format: 8.000,00 → 8000.00
           const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
@@ -206,6 +170,14 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
           })
         }
       }
+      if (patternMatches > 0) {
+        console.log(`✅ Pattern matched ${patternMatches} transactions`)
+      }
+    }
+
+    console.log(`✅ Total extracted: ${transactions.length} transactions`)
+    if (transactions.length > 0) {
+      console.log('First transaction:', transactions[0])
     }
 
     return transactions
@@ -226,21 +198,16 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
           )
 
           const text = result.data.text
+          console.log('🔍 OCR extracted text (first 1000 chars):', text.substring(0, 1000))
+          console.log('📏 Total text length:', text.length)
+
           const transactions = extractTransactions(text)
-          const { accountNumber, accountType, company: detectedCompany } = extractAccountNumber(text)
+          const { accountNumber, accountType } = extractAccountNumber(text)
+
+          console.log(`📝 File: ${file.name} | Transactions: ${transactions.length} | Account: ${accountType}`)
 
           if (!accountNumber) {
-            throw new Error('Could not identify account number in statement. Ensure this is a valid Rabona Holdings or Espargos bank statement.')
-          }
-
-          // Warn (but don't block) if the detected statement company doesn't match
-          // the currently-selected company in the top bar. This catches the common
-          // mistake of uploading an Espargos statement while viewing Rabona (or vice versa).
-          if (detectedCompany && selectedCompany && detectedCompany !== selectedCompany) {
-            throw new Error(
-              `This appears to be a ${detectedCompany} statement, but you have "${selectedCompany}" selected at the top. ` +
-              `Switch the company selector to ${detectedCompany} and re-upload.`
-            )
+            throw new Error('Could not identify account number in statement. Ensure this is a valid Rabona bank statement.')
           }
 
           resolve({
@@ -249,7 +216,6 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
             transactions: transactions,
             accountNumber: accountNumber,
             accountType: accountType,
-            company: detectedCompany,
             transactionCount: transactions.length
           })
         } catch (err) {
@@ -300,43 +266,6 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
         try {
           setProcessingStatus(`Processing ${file.name}...`)
 
-          // === LAYER 0: FILENAME-BASED MONTH/YEAR CHECK (pre-OCR, fast) ===
-          // Hard block: the filename's month + year MUST match the top-bar selector.
-          // This prevents the confusing case where you upload "Espargos January 2026.png"
-          // while the top bar is on May 2026 — the data would land correctly (Jan dates)
-          // but be invisible until you switch the selector to January. Force the match
-          // up front so what you upload is what you see.
-          const filenameMonthYear = extractMonthFromFilename(file.name)
-          if (filenameMonthYear) {
-            if (filenameMonthYear.month !== selectedMonth || filenameMonthYear.year !== selectedYear) {
-              const selectedMonthName = MONTH_NAMES[selectedMonth - 1]
-              uploadErrors.push(
-                `❌ ${file.name} — Filename indicates ${filenameMonthYear.name.charAt(0).toUpperCase() + filenameMonthYear.name.slice(1)} ${filenameMonthYear.year}, ` +
-                `but the top-bar selector is set to ${selectedMonthName} ${selectedYear}. ` +
-                `Switch the Month/Year selector to ${filenameMonthYear.name.charAt(0).toUpperCase() + filenameMonthYear.name.slice(1)} ${filenameMonthYear.year} and re-upload.`
-              )
-              continue
-            }
-          }
-          // If filename has no month/year (e.g. a screenshot like "Screenshot 2026-01-15.png"),
-          // we fall through. The post-OCR date-validation step still verifies that
-          // transaction dates match the filename month — and if the filename has no month,
-          // dates are validated against the OCR'd contents only.
-
-          // === LAYER 1: FILENAME-BASED COMPANY CHECK (pre-OCR, fast) ===
-          // Reject the file before running expensive OCR if the filename clearly
-          // indicates the wrong company. (Layer 2 — the account-number check
-          // inside processImageWithOCR — runs after OCR as authoritative confirmation.)
-          const filenameCompany = detectCompanyFromFilename(file.name)
-          if (filenameCompany && filenameCompany !== selectedCompany) {
-            uploadErrors.push(
-              `❌ ${file.name} — Filename indicates a ${filenameCompany} statement, ` +
-              `but you have "${selectedCompany}" selected at the top. ` +
-              `Switch the company selector to ${filenameCompany} and re-upload.`
-            )
-            continue
-          }
-
           // CHECK FOR DUPLICATES - reject if file already uploaded
           const { data: existingFile } = await supabase
             .from('bank_imports')
@@ -384,6 +313,7 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
               })
             fileData.transactions = transactions
             fileData.transactionCount = transactions.length
+            console.log(`📄 CSV File: ${file.name} | Found ${transactions.length} transactions`)
           }
 
           // Validate transaction dates match filename month
@@ -463,10 +393,8 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
 
       setProcessingStatus('')
       setSuccess(`✅ Successfully uploaded ${successfulUploads} file(s) with ${totalTransactionsProcessed} transactions!`)
-      // Clear the pending-upload buffer — the file is in the system now, and the
-      // "Uploaded Files" section below shows what was just imported. Keeping the
-      // file listed here was confusing (looked like it was waiting to upload).
-      setFiles([])
+      // DON'T clear files - keep them visible so user can add more or see what was uploaded
+      // setFiles([])
 
       // Trigger callback to refresh (pass company name since we don't have single bankImportId anymore)
       if (onUploadSuccess) {

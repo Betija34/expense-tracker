@@ -267,10 +267,18 @@ footer {
     break-inside: avoid !important;
   }
 
-  /* Bigger Rabona logo for the letterhead feel in print */
+  /* Bigger company logo/mark for the letterhead feel in print */
   .rabona-logo {
     height: 100px !important;
     width: auto !important;
+  }
+  .espargos-logo {
+    font-size: 36px !important;
+    line-height: 1 !important;
+  }
+  .espargos-logo > div {
+    font-size: 14px !important;
+    margin-top: 6px !important;
   }
 
   /* Clean tables — no gray fills, just rule lines */

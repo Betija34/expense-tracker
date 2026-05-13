@@ -6,15 +6,25 @@ import { TransactionTable } from './TransactionTable'
 import { UploadedFiles } from './UploadedFiles'
 import './BankParser.css'
 
-export function BankParser({ selectedCompany }) {
+// Helper: build a [start, nextMonthStart) date range for the selected month + year
+// so the same filter can be used across Supabase queries (.gte / .lt).
+function monthRange(month, year) {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`
+  const nextMonth = month === 12 ? 1 : month + 1
+  const nextYear = month === 12 ? year + 1 : year
+  const nextStart = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+  return { start, nextStart }
+}
+
+export function BankParser({ selectedCompany, selectedMonth, selectedYear }) {
   const [stats, setStats] = useState({ totalTransactions: 0, editedCount: 0, finalizedCount: 0 })
   const [refreshTrigger, setRefreshTrigger] = useState(0)
 
   useEffect(() => {
-    if (selectedCompany) {
+    if (selectedCompany && selectedMonth && selectedYear) {
       loadStats()
     }
-  }, [selectedCompany, refreshTrigger])
+  }, [selectedCompany, selectedMonth, selectedYear, refreshTrigger])
 
   const loadStats = async () => {
     try {
@@ -27,11 +37,14 @@ export function BankParser({ selectedCompany }) {
 
       if (!company) return
 
-      // Query all transactions for this company
+      // Query transactions for this company SCOPED TO THE SELECTED MONTH/YEAR
+      const { start, nextStart } = monthRange(selectedMonth, selectedYear)
       const { data: transactions, error } = await supabase
         .from('bank_transactions')
         .select('*')
         .eq('company_id', company.id)
+        .gte('transaction_date', start)
+        .lt('transaction_date', nextStart)
 
       if (error) throw error
 
@@ -66,6 +79,8 @@ export function BankParser({ selectedCompany }) {
         {/* File Upload Section */}
         <FileUpload
           selectedCompany={selectedCompany}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
           onUploadSuccess={handleUploadSuccess}
         />
 
@@ -74,6 +89,8 @@ export function BankParser({ selectedCompany }) {
         {/* Uploaded Files Section - Moved up for better UX */}
         <UploadedFiles
           selectedCompany={selectedCompany}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
           onRefresh={handleImportRefresh}
         />
 
@@ -90,6 +107,8 @@ export function BankParser({ selectedCompany }) {
         {/* Transactions Section */}
         <TransactionTable
           selectedCompany={selectedCompany}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
           onStatusChange={loadStats}
           refreshTrigger={refreshTrigger}
         />

@@ -38,6 +38,7 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
   const [otherCompanyName, setOtherCompanyName] = useState('')
   const [expenses, setExpenses] = useState([])
   const [pendingBankCount, setPendingBankCount] = useState(0)
+  const [unlinkedIntercompany, setUnlinkedIntercompany] = useState([]) // recent intercompany transfers awaiting a counterpart pair
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -85,6 +86,29 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         if (bankErr) throw bankErr
         if (cancelled) return
         setPendingBankCount(bankCount || 0)
+
+        // Inter-company transfers awaiting their counterpart pair (last 90 days).
+        // A transfer made on Jan 31 might not have its Espargos receipt entered
+        // until Feb 2-3, so we always show recent unlinked transfers here as a
+        // standing "watch list" regardless of the top-bar month selector.
+        const ninetyDaysAgo = new Date()
+        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90)
+        const ninetyDaysAgoIso = ninetyDaysAgo.toISOString().slice(0, 10)
+        const { data: unlinkedRows, error: unlinkErr } = await supabase
+          .from('expenses')
+          .select('id, reference_number, vendor, amount, date, direction, expense_categories(name)')
+          .eq('company_id', currentCompany.id)
+          .is('linked_expense_id', null)
+          .gte('date', ninetyDaysAgoIso)
+          .order('date', { ascending: false })
+        if (unlinkErr) throw unlinkErr
+        if (cancelled) return
+        // Filter client-side to the two intercompany categories. Cheap given small row count.
+        const unlinkedFiltered = (unlinkedRows || []).filter(r => {
+          const name = r.expense_categories?.name
+          return name === 'Transfers to Connected Accounts' || name === 'Intercompany Funding'
+        })
+        setUnlinkedIntercompany(unlinkedFiltered)
       } catch (e) {
         console.error('Dashboard load error:', e)
         if (!cancelled) setError(e.message || 'Failed to load dashboard')
@@ -243,6 +267,61 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         </div>
       )}
 
+      {/* Unlinked inter-company transfers — last 90 days across all months.
+          A transfer often crosses months (sent Jan 31, received Feb 2), so this
+          list deliberately ignores the top-bar Month selector and shows everything
+          recent that still needs a counterpart link. */}
+      {unlinkedIntercompany.length > 0 && (
+        <div style={{
+          background: '#fff7ed', border: '1px solid #fdba74',
+          borderRadius: 4, padding: 12, marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <strong style={{ color: '#9a3412' }}>
+              🔗 {unlinkedIntercompany.length} inter-company transfer{unlinkedIntercompany.length === 1 ? '' : 's'} awaiting counterpart pair
+            </strong>
+            <span style={{ fontSize: 12, color: '#9a3412' }}>(last 90 days, all months)</span>
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); onSwitchTab && onSwitchTab('view-expenses') }}
+              style={{ marginLeft: 'auto', color: '#9a3412', textDecoration: 'underline', fontSize: 13 }}
+            >
+              Manage links in View Expenses →
+            </a>
+          </div>
+          <div style={{ fontSize: 13, color: '#9a3412', marginBottom: 8 }}>
+            These transfers don't have their counterpart in {otherCompanyName} linked yet. Once the matching entry exists, click 🔗 on the row in View Expenses to pair them.
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', borderBottom: '1px solid #fdba74' }}>
+                <th style={{ padding: '6px 4px' }}>Date</th>
+                <th style={{ padding: '6px 4px' }}>Ref</th>
+                <th style={{ padding: '6px 4px' }}>Direction</th>
+                <th style={{ padding: '6px 4px' }}>Vendor / Description</th>
+                <th style={{ padding: '6px 4px', textAlign: 'right' }}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unlinkedIntercompany.map(r => {
+                const [y, m, d] = r.date.split('-')
+                return (
+                  <tr key={r.id} style={{ borderBottom: '1px solid #fed7aa' }}>
+                    <td style={{ padding: '5px 4px' }}>{`${d}/${m}/${y}`}</td>
+                    <td style={{ padding: '5px 4px', fontFamily: 'monospace' }}>{r.reference_number}</td>
+                    <td style={{ padding: '5px 4px' }}>{r.direction === 'in' ? '↓ Incoming' : '↑ Outgoing'}</td>
+                    <td style={{ padding: '5px 4px' }}>{r.vendor || '—'}</td>
+                    <td style={{ padding: '5px 4px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      €{Number(r.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* Row 1: Period totals — Inwards (bank) and Outwards (bank + cash combined) */}
       <SectionHeader title="Period totals" subtitle="Total money in and out for the month. Cash is included in Outwards." />
       <div style={twoColumnGrid}>
@@ -315,26 +394,31 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         highlightExclusions
       />
 
-      {/* Internal Account Movements */}
-      <SectionHeader title="Internal Account Movements" subtitle="Money moved between Rabona's own accounts (RMC ↔ RCC)" />
-      <div style={threeColumnGrid}>
-        <StatCard
-          title="Mastercard → Current"
-          value={fmt(stats.mcToCurrent)}
-          accent="#185FA5"
-        />
-        <StatCard
-          title="Current → Mastercard"
-          value={fmt(stats.currentToMc)}
-          accent="#993556"
-        />
-        <StatCard
-          title="Net Internal Movement"
-          value={fmt(stats.netInternal)}
-          accent="#374151"
-          subtitle="Positive = more to Mastercard"
-        />
-      </div>
+      {/* Internal Account Movements — only relevant for companies with multiple
+          bank accounts. Espargos has a single account, so we hide this section. */}
+      {selectedCompany !== 'Espargos' && (
+        <>
+          <SectionHeader title="Internal Account Movements" subtitle={`Money moved between ${selectedCompany}'s own accounts (RMC ↔ RCC)`} />
+          <div style={threeColumnGrid}>
+            <StatCard
+              title="Mastercard → Current"
+              value={fmt(stats.mcToCurrent)}
+              accent="#185FA5"
+            />
+            <StatCard
+              title="Current → Mastercard"
+              value={fmt(stats.currentToMc)}
+              accent="#993556"
+            />
+            <StatCard
+              title="Net Internal Movement"
+              value={fmt(stats.netInternal)}
+              accent="#374151"
+              subtitle="Positive = more to Mastercard"
+            />
+          </div>
+        </>
+      )}
 
       {/* Shareholder Movements */}
       <SectionHeader title="Shareholder Movements" subtitle="Tracks each shareholder's position with the company this month" />
@@ -366,46 +450,53 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         </div>
       ))}
 
-      {/* Reimbursable Tracking */}
-      <SectionHeader title="Reimbursable Tracking" subtitle="Expenses paid for clients — what's owed back" />
-      <div style={threeColumnGrid}>
-        <StatCard
-          title="Reimbursable Expenses (out)"
-          value={fmt(stats.reimbursableOutstanding)}
-          accent="#7c2d12"
-          subtitle="Outgoing payments marked reimbursable"
-        />
-        <StatCard
-          title="Reimbursements Received (in)"
-          value={fmt(stats.reimbursementsReceived)}
-          accent="#16a34a"
-          subtitle="Client Reimbursement incoming"
-        />
-        <StatCard
-          title="Net Owed by Clients"
-          value={fmt(stats.reimbursableOutstanding - stats.reimbursementsReceived)}
-          accent={stats.reimbursableOutstanding - stats.reimbursementsReceived > 0 ? '#7c2d12' : '#16a34a'}
-          subtitle="Reimbursable − received this month"
-        />
-      </div>
-      {stats.reimbByClientList.length > 0 && (
-        <div style={{
-          marginTop: 8, background: '#fffbeb', border: '1px solid #fde68a',
-          borderRadius: 4, padding: 12,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#92400e', marginBottom: 6 }}>
-            Reimbursable by client / project (this month):
+      {/* Reimbursable Tracking — only for companies that do client reimbursement.
+          Espargos doesn't reimburse client expenses (as of now), so we hide this
+          section. Code and data structures stay intact; just remove the conditional
+          here later if Espargos starts doing reimbursements. */}
+      {selectedCompany !== 'Espargos' && (
+        <>
+          <SectionHeader title="Reimbursable Tracking" subtitle="Expenses paid for clients — what's owed back" />
+          <div style={threeColumnGrid}>
+            <StatCard
+              title="Reimbursable Expenses (out)"
+              value={fmt(stats.reimbursableOutstanding)}
+              accent="#7c2d12"
+              subtitle="Outgoing payments marked reimbursable"
+            />
+            <StatCard
+              title="Reimbursements Received (in)"
+              value={fmt(stats.reimbursementsReceived)}
+              accent="#16a34a"
+              subtitle="Client Reimbursement incoming"
+            />
+            <StatCard
+              title="Net Owed by Clients"
+              value={fmt(stats.reimbursableOutstanding - stats.reimbursementsReceived)}
+              accent={stats.reimbursableOutstanding - stats.reimbursementsReceived > 0 ? '#7c2d12' : '#16a34a'}
+              subtitle="Reimbursable − received this month"
+            />
           </div>
-          {stats.reimbByClientList.map(({ client, amount }) => (
-            <div key={client} style={{
-              display: 'flex', justifyContent: 'space-between',
-              fontSize: 13, padding: '2px 0', color: '#78350f',
+          {stats.reimbByClientList.length > 0 && (
+            <div style={{
+              marginTop: 8, background: '#fffbeb', border: '1px solid #fde68a',
+              borderRadius: 4, padding: 12,
             }}>
-              <span>{client}</span>
-              <strong>{fmt(amount)}</strong>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#92400e', marginBottom: 6 }}>
+                Reimbursable by client / project (this month):
+              </div>
+              {stats.reimbByClientList.map(({ client, amount }) => (
+                <div key={client} style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 13, padding: '2px 0', color: '#78350f',
+                }}>
+                  <span>{client}</span>
+                  <strong>{fmt(amount)}</strong>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {/* Inter-Company Transfers */}

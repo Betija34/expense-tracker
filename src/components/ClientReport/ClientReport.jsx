@@ -323,10 +323,28 @@ function ClientExpenseReport({ client, monthYearLabel, companyName }) {
             From: <strong>{companyName}</strong>
           </div>
         </div>
-        {/* Logo (Rabona for Rabona Holdings; nothing for Espargos until that logo exists) */}
+        {/* Company logo / mark in top-right.
+            Rabona Holdings = inlined SVG logo.
+            Espargos = styled text placeholder until an Espargos SVG is provided. */}
         {companyName === 'Rabona Holdings' && (
           <div style={{ flexShrink: 0 }}>
-            <RabonaLogo height={56} />
+            <RabonaLogo height={56} className="rabona-logo" />
+          </div>
+        )}
+        {companyName === 'Espargos' && (
+          <div style={{
+            flexShrink: 0,
+            fontSize: 22,
+            fontWeight: 700,
+            letterSpacing: '0.18em',
+            color: '#1d1d1b',
+            textAlign: 'right',
+            lineHeight: 1.1,
+          }} className="espargos-logo">
+            ESPARGOS
+            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: '0.15em', color: '#6b7280', marginTop: 4 }}>
+              HOLDINGS
+            </div>
           </div>
         )}
       </div>

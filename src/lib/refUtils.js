@@ -32,11 +32,36 @@ export function parseISODate(iso) {
   return { year: y, month: m, day: d }
 }
 
-/** Formats main reference for display: 26/1/4 (no leading zeros). */
-export function formatMainRef({ main_ref_year, main_ref_month, main_ref_seq }) {
+/**
+ * Returns the company-specific reference prefix.
+ *   - Espargos          → "E"   (e.g. E26/1/4)
+ *   - Rabona Holdings   → ""    (e.g. 26/1/4)
+ *
+ * Centralised here so we only need to add new prefixes in one place if more
+ * companies are introduced. Used by every reference_number construction site
+ * (AddExpense, FinalizeTransaction, Bulk Approve in TransactionTable).
+ */
+export function companyRefPrefix(companyName) {
+  if (companyName === 'Espargos') return 'E'
+  return ''
+}
+
+/**
+ * Builds a reference_number string from year/month/seq + optional company.
+ *   buildMainRef(2026, 1, 4)              →  "26/1/4"             (Rabona / default)
+ *   buildMainRef(2026, 1, 4, 'Espargos')  →  "E26/1/4"
+ * Used at INSERT time to populate expenses.reference_number.
+ */
+export function buildMainRef(year, month, seq, companyName) {
+  const yy = String(year).slice(-2)
+  const prefix = companyRefPrefix(companyName)
+  return `${prefix}${yy}/${month}/${seq}`
+}
+
+/** Formats main reference for display: 26/1/4 or E26/1/4 (no leading zeros). */
+export function formatMainRef({ main_ref_year, main_ref_month, main_ref_seq }, companyName) {
   if (!main_ref_year || !main_ref_month || !main_ref_seq) return ''
-  const yy = String(main_ref_year).slice(-2)
-  return `${yy}/${main_ref_month}/${main_ref_seq}`
+  return buildMainRef(main_ref_year, main_ref_month, main_ref_seq, companyName)
 }
 
 /** Formats sub reference for display: T1/4 (no leading zeros). */
