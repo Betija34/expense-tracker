@@ -344,6 +344,31 @@ These are deliberate stubs to address in future sessions:
    - **Plan when re-tackled**: Test in Chrome directly to isolate whether it's Firefox-specific. If so, consider rendering the printable view in a new window with simpler markup, or using a PDF generation library (e.g., jsPDF) for export instead of relying on browser print
    - Current state of print CSS is preserved in `src/App.css` under `@media print`
 
+6. **Print / Save as PDF for ALL report tabs** (not just Client Report)
+   - User wants printable output on every report-style tab: Dashboard, View Expenses, Shareholder Report, Travel Log, Bank Parser, plus the Client Report
+   - Each tab should have a clean print-friendly version + Print/Save as PDF button
+   - Will probably need to solve the Client Report print bug (#5) first OR pivot to a PDF generation library so we don't fight browser print quirks across multiple tabs
+   - Tracked as Task #17
+
+7. **Espargos company setup** — clone of Rabona structure
+   - Once Rabona is fully locked, replicate for the Espargos company:
+     - Same 11+6 categories, same Sub-Ref logic (T/R/S), same Main Ref format
+     - Reference number sequences are already independent per company (the schema and `nextMainRefSeq` already filter by company_id)
+     - Espargos logo (user to provide SVG) — will be added as `src/assets/EspargosLogo.jsx`, mirrored on the Client Report
+     - Espargos bank accounts (RCC + RMC) need to be created in the `accounts` table in Supabase
+   - The data model already supports two companies — work is mainly visual differentiation + verifying every tab respects the company selector
+   - Tracked as Task #18
+
+8. **Inter-company linking — Rabona ↔ Espargos transfers auto-pair**
+   - When a transfer goes between Rabona and Espargos, both sides need to be linked so the user can trace the matching entry on the other side
+   - Mechanism candidates:
+     1. Use the existing `linked_expense_id` column (V2 migration already added it) — store the counterpart's id on each side
+     2. Provide a "Link to counterpart" UI in View Expenses or Bank Parser to manually pair
+     3. Auto-detect: on Finalize, check the other company's bank txs for a matching amount/date within ±7 days and offer to auto-link
+   - Once linked: both expenses get a chip "↔ Linked to {other_company}'s 26/X/Y" with click-through; Dashboard's Inter-Company Transfers card can show matched/unmatched count
+   - Related to Follow-up #2 (Inter-Company Reimbursements)
+   - Tracked as Task #19
+
 ---
 
 ## How to Resume Tomorrow
