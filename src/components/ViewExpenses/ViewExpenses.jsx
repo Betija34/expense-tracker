@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
 import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
+import { EditManualExpenseModal } from './EditManualExpenseModal'
 import './ViewExpenses.css'
 
 // Categories that support transfer linking (the 🔗 button appears on these rows).
@@ -35,6 +36,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
   const [companyId, setCompanyId] = useState(null)
   const [recategorizing, setRecategorizing] = useState(null) // { transaction, expense }
   const [linkingExpense, setLinkingExpense] = useState(null) // expense being linked / unlinked
+  const [editingManual, setEditingManual] = useState(null)   // manual expense being edited
   // Map of expense.linked_expense_id → { reference_number, company_name } for chip display.
   const [counterpartMap, setCounterpartMap] = useState(new Map())
   // Sort state — clickable column headers. Default matches old behavior (date DESC, seq DESC).
@@ -274,6 +276,63 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
   // ----- Print -----
   const handlePrint = () => {
     window.print()
+  }
+
+  // ----- Delete a manual expense -----
+  // Handles three cases:
+  //   1. Bank-imported expense → blocked (delete in Bank Parser instead, so the
+  //      bank_transactions side stays consistent)
+  //   2. Single (non-split) manual expense → simple confirm + delete
+  //   3. Split portion → ask whether to delete just this portion or all siblings
+  const handleDelete = async (expense) => {
+    if (expense.bank_transaction_id) {
+      alert('Bank-imported expenses are deleted via Bank Parser (so the bank transaction status stays consistent).')
+      return
+    }
+
+    // Split portion case
+    if (expense.is_split && expense.split_group_id) {
+      const siblings = splitGroupMap.get(expense.split_group_id) || []
+      const choice = window.prompt(
+        `This is part of a split group with ${siblings.length} portion(s).\n\n` +
+        `Type "this" to delete just this portion (refs: ${expense.reference_number}).\n` +
+        `Type "all" to delete the entire split group (refs: ${siblings.map(s => s.reference_number).join(', ')}).\n` +
+        `Type anything else (or leave blank) to cancel.`
+      )
+      if (choice === 'this') {
+        try {
+          const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
+          if (error) throw error
+          loadAll()
+        } catch (err) {
+          alert('Delete failed: ' + (err.message || err))
+        }
+      } else if (choice === 'all') {
+        try {
+          const { error } = await supabase
+            .from('expenses')
+            .delete()
+            .eq('split_group_id', expense.split_group_id)
+          if (error) throw error
+          loadAll()
+        } catch (err) {
+          alert('Delete failed: ' + (err.message || err))
+        }
+      }
+      return
+    }
+
+    // Simple single-expense case
+    if (!window.confirm(`Delete expense ${expense.reference_number || ''}?\n\n${expense.vendor || '—'} · €${Number(expense.amount || 0).toFixed(2)}\n\nThis cannot be undone.`)) {
+      return
+    }
+    try {
+      const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
+      if (error) throw error
+      loadAll()
+    } catch (err) {
+      alert('Delete failed: ' + (err.message || err))
+    }
   }
 
   // ----- CSV Export -----
@@ -734,7 +793,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                         title={e.bank_transaction_id ? 'Re-categorize this bank-imported expense' : 'Edit'}
                         onClick={async () => {
                           if (e.bank_transaction_id) {
-                            // Fetch the source bank transaction, then open Re-categorize modal in place
+                            // Bank-imported → open Re-categorize modal (FinalizeTransaction in edit mode)
                             const { data: bankTx, error: btxErr } = await supabase
                               .from('bank_transactions')
                               .select('*, accounts(name)')
@@ -746,7 +805,8 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                             }
                             setRecategorizing({ transaction: bankTx, expense: e })
                           } else {
-                            alert('Edit action for manual expenses coming in next step.')
+                            // Manual cash expense → open the dedicated edit modal
+                            setEditingManual(e)
                           }
                         }}
                       >✏️</button>
@@ -766,7 +826,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                         className="action-btn danger"
                         title={e.bank_transaction_id ? 'Bank-imported: delete in Bank Parser' : 'Delete'}
                         disabled={!!e.bank_transaction_id}
-                        onClick={() => alert('Delete action coming in next step.')}
+                        onClick={() => handleDelete(e)}
                       >🗑️</button>
                     </div>
                   </td>
@@ -797,6 +857,17 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
           expense={linkingExpense}
           currentCompany={selectedCompany}
           onClose={() => setLinkingExpense(null)}
+          onSaved={() => loadAll()}
+        />
+      )}
+
+      {/* Edit modal for MANUAL (non-bank-imported) expenses. Opens when ✏️ is
+          clicked on a row that has no bank_transaction_id. Bank-imported rows
+          go through the Re-categorize / FinalizeTransaction modal instead. */}
+      {editingManual && (
+        <EditManualExpenseModal
+          expense={editingManual}
+          onClose={() => setEditingManual(null)}
           onSaved={() => loadAll()}
         />
       )}

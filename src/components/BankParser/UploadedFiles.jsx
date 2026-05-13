@@ -51,31 +51,107 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
     }
   }
 
-  const handleDelete = async (importId) => {
-    if (!window.confirm('Delete this import and all its transactions?')) return
-
+  // Full-cascade delete of a bank import.
+  //
+  // The schema has a CIRCULAR FK between bank_transactions and expenses:
+  //   expenses.bank_transaction_id → bank_transactions.id
+  //   bank_transactions.matched_expense_id → expenses.id
+  //
+  // To break the cycle we have to NULL out one side BEFORE deleting either.
+  // We null bank_transactions.matched_expense_id first, then we can safely
+  // delete expenses, then bank_transactions, then the bank_imports row.
+  //
+  // Plus: for any deleted expense that was paired with a counterpart elsewhere
+  // (inter-company or intra-company linking), we clear the counterpart's
+  // linked_expense_id so we don't leave dangling references.
+  const handleDelete = async (importId, importFileName) => {
     try {
-      // Delete transactions first
-      await supabase
+      // Step 1: bank transactions in this import
+      const { data: bankTxs, error: btxErr } = await supabase
         .from('bank_transactions')
-        .delete()
+        .select('id')
         .eq('bank_import_id', importId)
+      if (btxErr) throw btxErr
+      const bankTxIds = (bankTxs || []).map(t => t.id)
 
-      // Delete import
-      const { error } = await supabase
+      // Step 2: expenses created from those transactions
+      let expIds = []
+      let counterpartIdsToClear = []
+      if (bankTxIds.length > 0) {
+        const { data: exps, error: expErr } = await supabase
+          .from('expenses')
+          .select('id, linked_expense_id')
+          .in('bank_transaction_id', bankTxIds)
+        if (expErr) throw expErr
+        expIds = (exps || []).map(e => e.id)
+        counterpartIdsToClear = (exps || [])
+          .map(e => e.linked_expense_id)
+          .filter(Boolean)
+      }
+
+      // Confirm with the user — show concrete counts so they know what gets removed
+      const summary =
+        `Delete this entire import?\n\n` +
+        `  File: ${importFileName || 'unnamed'}\n` +
+        `  Bank transactions: ${bankTxIds.length}\n` +
+        `  Expenses created from them: ${expIds.length}\n` +
+        (counterpartIdsToClear.length > 0
+          ? `  Linked counterparts to unlink: ${counterpartIdsToClear.length}\n`
+          : '') +
+        `\nThis cannot be undone.`
+      if (!window.confirm(summary)) return
+
+      // Step 3 (CIRCULAR-FK BREAKER): NULL out matched_expense_id on all bank
+      // transactions in this import. Without this, deleting expenses fails with
+      // bank_transactions_matched_expense_id_fkey because bank_transactions
+      // still references them.
+      if (bankTxIds.length > 0) {
+        const { error: nullErr } = await supabase
+          .from('bank_transactions')
+          .update({ matched_expense_id: null })
+          .in('id', bankTxIds)
+        if (nullErr) throw nullErr
+      }
+
+      // Step 4: clear linked_expense_id on counterparts so we don't leave dangling links
+      if (counterpartIdsToClear.length > 0) {
+        const { error: unlinkErr } = await supabase
+          .from('expenses')
+          .update({ linked_expense_id: null })
+          .in('id', counterpartIdsToClear)
+        if (unlinkErr) throw unlinkErr
+      }
+
+      // Step 5: delete expenses
+      if (expIds.length > 0) {
+        const { error: expDelErr } = await supabase
+          .from('expenses')
+          .delete()
+          .in('id', expIds)
+        if (expDelErr) throw expDelErr
+      }
+
+      // Step 6: delete bank_transactions
+      if (bankTxIds.length > 0) {
+        const { error: btxDelErr } = await supabase
+          .from('bank_transactions')
+          .delete()
+          .eq('bank_import_id', importId)
+        if (btxDelErr) throw btxDelErr
+      }
+
+      // Step 7: delete bank_imports row
+      const { error: impErr } = await supabase
         .from('bank_imports')
         .delete()
         .eq('id', importId)
-
-      if (error) throw error
+      if (impErr) throw impErr
 
       setImports(prev => prev.filter(i => i.id !== importId))
-
-      // Trigger refresh in parent component
       if (onRefresh) onRefresh()
     } catch (err) {
       console.error('Failed to delete import:', err)
-      alert('Failed to delete import')
+      alert('Failed to delete import: ' + (err.message || err))
     }
   }
 
@@ -118,7 +194,7 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
                   </td>
                   <td className="action">
                     <button
-                      onClick={() => handleDelete(imp.id)}
+                      onClick={() => handleDelete(imp.id, imp.file_name)}
                       className="btn-delete"
                       title="Delete this import"
                     >
