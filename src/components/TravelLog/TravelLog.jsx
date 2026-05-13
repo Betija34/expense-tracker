@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './TravelLog.css'
 
 /**
@@ -248,20 +249,14 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
       </div>
 
-      {/* Screen header — hidden in print (replaced by .print-header letterhead below) */}
-      <div className="no-print" style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, color: '#1f2937' }}>Travel Log Management</h2>
-        <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
-          Track and document all travel periods and expenses for each shareholder · {monthLabel} · {selectedCompany}
-        </p>
-      </div>
-
-      {/* Print-only letterhead — only appears in printed/PDF output */}
-      <div className="print-only print-header">
-        <div className="company-name">{selectedCompany}</div>
-        <div className="report-title">Travel Log Report</div>
-        <div className="period-label">Period: {monthLabel}</div>
-      </div>
+      {/* Unified letterhead — shows on screen AND in print. Replaces the
+          previous separate h2 + print-letterhead pair so the text-left /
+          logo-right layout is consistent everywhere. */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle="Travel Log Report"
+        periodLabel={`Period: ${monthLabel}`}
+      />
 
       {/* Two shareholder sections */}
       {SHAREHOLDERS.map(s => (

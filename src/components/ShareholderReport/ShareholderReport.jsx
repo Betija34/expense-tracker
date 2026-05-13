@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './ShareholderReport.css'
 
 /**
@@ -308,26 +309,22 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
         <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
       </div>
 
-      {/* Screen header — hidden in print (replaced by the .print-header letterhead) */}
+      {/* Unified letterhead — shows on screen AND in print (text left / logo right). */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle="Shareholder Report"
+        periodLabel={`Period: ${monthLabel}`}
+      />
+
+      {/* Helper note + jump-to anchors — only useful on screen, hidden in print */}
       <div className="no-print" style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, color: '#2E7D32' }}>
-          Shareholder Report · {selectedCompany}
-        </h2>
-        <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
-          Period: {monthLabel} · Net balance per shareholder: positive = company owes shareholder, negative = shareholder owes company
+        <p style={{ color: '#6b7280', fontSize: 13, margin: '0 0 8px' }}>
+          Net balance per shareholder: positive = company owes shareholder, negative = shareholder owes company
         </p>
-        {/* Quick anchor links (only useful on screen, hidden in print via CSS) */}
-        <div style={{ marginTop: 8, display: 'flex', gap: 12, fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
           <a href="#sh-YK" style={anchorLink}>Jump to YK ↓</a>
           <a href="#sh-BK" style={anchorLink}>Jump to BK ↓</a>
         </div>
-      </div>
-
-      {/* Print-only letterhead — appears only in printed/PDF output */}
-      <div className="print-only print-header">
-        <div className="company-name">{selectedCompany}</div>
-        <div className="report-title">Shareholder Report</div>
-        <div className="period-label">Period: {monthLabel}</div>
       </div>
 
       {SHAREHOLDERS.map(code => (

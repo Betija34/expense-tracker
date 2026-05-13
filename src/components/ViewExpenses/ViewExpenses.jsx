@@ -3,6 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
 import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
 import { EditManualExpenseModal } from './EditManualExpenseModal'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './ViewExpenses.css'
 
 // Categories that support transfer linking (the 🔗 button appears on these rows).
@@ -547,9 +548,17 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     bankStats.pending === 0 ? 'recon-banner success' : 'recon-banner warning'
 
   // ----- Render -----
+  // Period label for the print letterhead (e.g. "01/2026")
+  const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
+
   return (
     <div className="view-expenses">
-      <h2>View Expenses — {selectedCompany}</h2>
+      {/* Unified letterhead — shows on screen AND in print (text left / logo right). */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle="Expenses Report"
+        periodLabel={`Period: ${monthLabel}`}
+      />
 
       {/* Action Bar: Print + Export */}
       <div className="action-bar">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './Dashboard.css'
 
 /**
@@ -270,22 +271,12 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print</button>
       </div>
 
-      {/* Screen header — hidden in print (replaced by .print-header letterhead) */}
-      <div className="no-print" style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, color: '#2E7D32' }}>
-          Dashboard · {selectedCompany}
-        </h2>
-        <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
-          {monthLabel} · Use the month/year selector at the top of the page to view a different period.
-        </p>
-      </div>
-
-      {/* Print-only letterhead — appears only in printed/PDF output */}
-      <div className="print-only print-header">
-        <div className="company-name">{selectedCompany}</div>
-        <div className="report-title">Dashboard Summary</div>
-        <div className="period-label">Period: {monthLabel}</div>
-      </div>
+      {/* Unified letterhead — shows on screen AND in print (text left / logo right). */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle="Dashboard Summary"
+        periodLabel={`Period: ${monthLabel}`}
+      />
 
       {/* Attention bar — operational call-to-action, hidden in print */}
       {(stats.pendingExpenses > 0 || pendingBankCount > 0) && (

@@ -1,0 +1,66 @@
+/* =====================================================================
+   PrintLetterhead — shared letterhead block for all report tabs in print.
+   Hidden on screen via .print-only (defined in App.css); visible in print.
+   ===================================================================== */
+
+.print-letterhead {
+  display: flex;
+  /* Logo sits in the top-RIGHT corner; report meta (company / title / period)
+     fills the left side. The flex children are still in DOM order
+     (logo first, meta second) but flex-direction: row-reverse renders them
+     right-to-left visually. */
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #1f2937;
+}
+
+.print-letterhead-logo {
+  flex: 0 0 auto;
+}
+
+.print-letterhead-meta {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.print-letterhead-meta .company-name {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.1;
+}
+
+.print-letterhead-meta .report-title {
+  font-size: 16px;
+  margin-top: 4px;
+  color: #374151;
+}
+
+.print-letterhead-meta .period-label {
+  font-size: 13px;
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* Logo sizing — both companies use real image logos (Rabona inline SVG,
+   Espargos JPG asset). Same rule applies on screen + in print: logo height
+   roughly 2x the heading text block. The print version is bigger (180px) for
+   a strong letterhead feel; screen is moderate (90px) to fit naturally in the
+   page header without dominating. */
+.print-letterhead .rabona-logo,
+.print-letterhead .espargos-logo {
+  height: 90px !important;
+  width: auto !important;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+@media print {
+  .print-letterhead .rabona-logo,
+  .print-letterhead .espargos-logo {
+    height: 180px !important;
+  }
+}

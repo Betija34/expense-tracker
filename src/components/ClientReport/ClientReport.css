@@ -2,6 +2,27 @@
    Client Report — screen + print styles
    ===================================================================== */
 
+/* Empty cells in the summary table that are meant to be filled by hand
+   on the printout (Reimbursement Received / Invoice # / Date Paid).
+   On screen: subtle light-gray border, just enough to show "this is a box
+   for later". In print: clear empty box with visible borders so the user
+   has a defined space to write in. */
+.client-report .handwriting-cell {
+  background: #fafafa;
+  border-left: 1px dashed #e5e7eb;
+  min-width: 90px;
+}
+.client-report .handwriting-cell:first-of-type {
+  border-left: 1px dashed #d1d5db;
+}
+@media print {
+  .client-report .handwriting-cell {
+    background: white !important;
+    border: 1px solid #9ca3af !important;
+    min-height: 22px;
+  }
+}
+
 /* Toolbar at the top of Client Report (Print button + future actions) */
 .client-report .action-bar {
   display: flex;
@@ -102,18 +123,14 @@
     break-inside: avoid !important;
   }
 
-  /* Bigger company logo/mark for the letterhead feel in print */
-  .client-report .rabona-logo {
-    height: 100px !important;
-    width: auto !important;
-  }
+  /* Bigger company logo/mark for the letterhead feel in print.
+     Both companies use real image logos now (inline SVG for Rabona, JPG asset
+     for Espargos) — same sizing applies to both. Matches the PrintLetterhead
+     180px for consistency across summary page + per-client pages. */
+  .client-report .rabona-logo,
   .client-report .espargos-logo {
-    font-size: 36px !important;
-    line-height: 1 !important;
-  }
-  .client-report .espargos-logo > div {
-    font-size: 14px !important;
-    margin-top: 6px !important;
+    height: 180px !important;
+    width: auto !important;
   }
 
   /* Clean tables — no gray fills, just rule lines */

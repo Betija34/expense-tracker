@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { RabonaLogo } from '../../assets/RabonaLogo'
+import { EspargosLogo } from '../../assets/EspargosLogo'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './ClientReport.css'
 
 /**
@@ -219,22 +221,13 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
         <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print</button>
       </div>
 
-      {/* Screen header — hidden in print (replaced by .print-header letterhead) */}
-      <div style={{ marginBottom: 16 }} className="report-page-header no-print">
-        <h2 style={{ margin: 0, color: '#2E7D32' }}>
-          Client Report · {selectedCompany}
-        </h2>
-        <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
-          Period: {monthLabel} · Reimbursable activity per client (strict month scope).
-        </p>
-      </div>
-
-      {/* Print-only letterhead — appears only in printed/PDF output */}
-      <div className="print-only print-header">
-        <div className="company-name">{selectedCompany}</div>
-        <div className="report-title">Client Report</div>
-        <div className="period-label">Period: {monthLabel}</div>
-      </div>
+      {/* Unified letterhead — shows on screen AND in print (text left / logo right).
+          Per-client pages below have their own logo+title block in print. */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle="Client Report"
+        periodLabel={`Period: ${monthLabel}`}
+      />
 
       {/* Summary table — appears on page 1 of the printout */}
       <div className="summary-section">
@@ -252,25 +245,28 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
               the per-client expense table for the Firefox print bug rationale.
               No overflowX:auto wrapper either — that was causing Firefox print
               to clip the rightmost column. */}
-          <table style={tableStyle}>
+          {/* Summary table — restructured per Betija's spec:
+              The "Reimbursements Received (In)" and "Net (This Month)" columns
+              were removed because reimbursements arrive on a different timeline
+              (often 2-3 months after the expenses are invoiced). They were
+              replaced with three EMPTY cells per row — Reimbursement Received /
+              Invoice # / Date Paid — for handwritten paper-trail filling on the
+              printed report. On screen the empty cells are subtle (light gray
+              borders, no fill) so they don't distract; in print they appear as
+              visible empty boxes for the user to write in. */}
+          <table style={tableStyle} className="client-summary-table">
             <thead>
               <tr style={thRow}>
                 <th style={th}>Client</th>
                 <th style={{ ...th, textAlign: 'right' }}>Reimbursable Expenses (Out)</th>
-                <th style={{ ...th, textAlign: 'right' }}>Reimbursements Received (In)</th>
-                <th style={{ ...th, textAlign: 'right' }}>Net (This Month)</th>
+                <th style={{ ...th, textAlign: 'center' }}>Reimbursement Received</th>
+                <th style={{ ...th, textAlign: 'center' }}>Invoice #</th>
+                <th style={{ ...th, textAlign: 'center' }}>Date Paid</th>
               </tr>
             </thead>
             <tbody>
               {perClientStats.map(c => {
                 const isInactive = !c.hasActivity
-                const netStyle = isInactive
-                  ? { color: '#9ca3af' }
-                  : c.net > 0
-                    ? { color: '#7c2d12', fontWeight: 700 }   // client owes us
-                    : c.net < 0
-                      ? { color: '#15803d', fontWeight: 700 } // they paid back more than incurred
-                      : { color: '#374151' }
                 return (
                   <tr key={c.name} style={{
                     borderBottom: '1px solid #f3f4f6',
@@ -284,12 +280,12 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
                     <td style={{ ...td, textAlign: 'right', color: c.expensesTotal > 0 ? '#dc2626' : '#9ca3af' }}>
                       {fmt(c.expensesTotal)}
                     </td>
-                    <td style={{ ...td, textAlign: 'right', color: c.receivedTotal > 0 ? '#16a34a' : '#9ca3af' }}>
-                      {fmt(c.receivedTotal)}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right', ...netStyle }}>
-                      {fmt(c.net)}
-                    </td>
+                    {/* Three empty cells for the paper trail. The className
+                        "handwriting-cell" controls styling — subtle on screen,
+                        visible-empty-box in print. */}
+                    <td className="handwriting-cell" style={td}></td>
+                    <td className="handwriting-cell" style={td}></td>
+                    <td className="handwriting-cell" style={td}></td>
                   </tr>
                 )
               })}
@@ -300,15 +296,10 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>
                   {fmt(totals.expensesTotal)}
                 </td>
-                <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>
-                  {fmt(totals.receivedTotal)}
-                </td>
-                <td style={{
-                  ...td, textAlign: 'right', fontWeight: 700,
-                  color: totals.net > 0 ? '#7c2d12' : totals.net < 0 ? '#15803d' : '#374151',
-                }}>
-                  {fmt(totals.net)}
-                </td>
+                {/* No totals for the handwriting columns — they're intentionally blank */}
+                <td className="handwriting-cell" style={td}></td>
+                <td className="handwriting-cell" style={td}></td>
+                <td className="handwriting-cell" style={td}></td>
               </tr>
             </tfoot>
           </table>
@@ -377,19 +368,8 @@ function ClientExpenseReport({ client, monthYearLabel, companyName }) {
           </div>
         )}
         {companyName === 'Espargos' && (
-          <div style={{
-            flexShrink: 0,
-            fontSize: 22,
-            fontWeight: 700,
-            letterSpacing: '0.18em',
-            color: '#1d1d1b',
-            textAlign: 'right',
-            lineHeight: 1.1,
-          }} className="espargos-logo">
-            ESPARGOS
-            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: '0.15em', color: '#6b7280', marginTop: 4 }}>
-              HOLDINGS
-            </div>
+          <div style={{ flexShrink: 0 }}>
+            <EspargosLogo height={56} className="espargos-logo" />
           </div>
         )}
       </div>
