@@ -4,11 +4,14 @@ import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
 import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
 import './ViewExpenses.css'
 
-// Categories that support inter-company linking. An expense in either of these
-// can be paired with one in the other company. See LinkInterCompanyModal.jsx.
-const INTERCOMPANY_CATEGORIES = new Set([
+// Categories that support transfer linking (the 🔗 button appears on these rows).
+// LinkInterCompanyModal handles both link modes:
+//   - inter-company: Rabona ↔ Espargos pairs (Transfers to Connected Accounts / Intercompany Funding)
+//   - intra-company: account-to-account within same company (Movement Between Accounts)
+const LINKABLE_CATEGORIES = new Set([
   'Transfers to Connected Accounts',
   'Intercompany Funding',
+  'Movement Between Accounts',
 ])
 
 /**
@@ -106,21 +109,28 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       setExpenses(expData || [])
       setBankStats({ total, categorized, pending })
 
-      // Load counterpart details for any expenses that have an inter-company link.
-      // We need the linked expense's ref + company name to render a meaningful chip
-      // like "🔗 E26/2/3 (Espargos)" instead of a generic "Linked" badge.
+      // Load counterpart details for any expenses that have a transfer link.
+      // We need the linked expense's ref + (company name OR account name) to render
+      // a meaningful chip like "🔗 E26/2/3 (Espargos)" for inter-company or
+      // "🔗 26/1/52 (Mastercard)" for intra-company account-to-account.
       const linkedIds = (expData || []).map(e => e.linked_expense_id).filter(Boolean)
       if (linkedIds.length > 0) {
         const { data: counterparts, error: cpErr } = await supabase
           .from('expenses')
-          .select('id, reference_number, companies(name)')
+          .select('id, reference_number, company_id, account_id, companies(name), accounts(name), expense_categories(name)')
           .in('id', linkedIds)
         if (!cpErr) {
           const map = new Map()
           for (const cp of (counterparts || [])) {
+            // Distinguish link kind based on counterpart's category:
+            // intra-company links sit on "Movement Between Accounts" on both sides;
+            // inter-company links sit on Transfers to Connected Accounts / Intercompany Funding.
+            const isIntra = cp.expense_categories?.name === 'Movement Between Accounts'
             map.set(cp.id, {
               reference_number: cp.reference_number,
               company_name: cp.companies?.name || '—',
+              account_name: cp.accounts?.name || null,
+              is_intra: isIntra,
             })
           }
           setCounterpartMap(map)
@@ -430,17 +440,23 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     }
     if (e.shareholder_code) chips.push(<span key="sh" className="flag-chip shareholder">{e.shareholder_code}</span>)
     if (e.linked_expense_id) {
-      // Show the counterpart's ref + company so reconciliation is at-a-glance.
+      // Show the counterpart's ref so reconciliation is at-a-glance.
+      // For inter-company: show counterpart's company name. For intra-company
+      // (account-to-account within same company): show counterpart's account name.
       const cp = counterpartMap.get(e.linked_expense_id)
-      const label = cp
-        ? `🔗 ${cp.reference_number} (${cp.company_name})`
-        : '🔗 Linked'
+      let label = '🔗 Linked'
+      let title = 'Linked to a counterpart expense'
+      if (cp) {
+        if (cp.is_intra) {
+          label = `🔗 ${cp.reference_number} (${cp.account_name || 'Other account'})`
+          title = `Account-to-account link to ${cp.account_name || 'another account'} expense ${cp.reference_number}`
+        } else {
+          label = `🔗 ${cp.reference_number} (${cp.company_name})`
+          title = `Inter-company link to ${cp.company_name} expense ${cp.reference_number}`
+        }
+      }
       chips.push(
-        <span
-          key="lk"
-          className="flag-chip linked"
-          title={cp ? `Inter-company link to ${cp.company_name} expense ${cp.reference_number}` : 'Linked to a counterpart expense'}
-        >
+        <span key="lk" className="flag-chip linked" title={title}>
           {label}
         </span>
       )
@@ -734,15 +750,15 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                           }
                         }}
                       >✏️</button>
-                      {/* Inter-company link button — only shown for the two intercompany
-                          categories ("Transfers to Connected Accounts" outgoing or
-                          "Intercompany Funding" incoming). Click opens LinkInterCompanyModal
-                          which lets the user pair this expense with its counterpart in the
-                          OTHER company (or unlink an existing pair). */}
-                      {INTERCOMPANY_CATEGORIES.has(e.expense_categories?.name) && (
+                      {/* Transfer-link button — shows on rows in the linkable categories.
+                          The modal auto-detects the mode (inter-company vs intra-company)
+                          based on the row's category and shows the right candidates:
+                            - Transfers to Connected Accounts / Intercompany Funding → other company
+                            - Movement Between Accounts → other account in same company */}
+                      {LINKABLE_CATEGORIES.has(e.expense_categories?.name) && (
                         <button
                           className="action-btn"
-                          title={e.linked_expense_id ? 'Manage inter-company link' : 'Link to counterpart in the other company'}
+                          title={e.linked_expense_id ? 'Manage transfer link' : 'Link to counterpart'}
                           onClick={() => setLinkingExpense(e)}
                         >🔗</button>
                       )}
