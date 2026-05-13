@@ -1,0 +1,166 @@
+/* =====================================================================
+   Shareholder Report — screen + print styles
+   ===================================================================== */
+
+/* Toolbar at the top (Print buttons + future actions) */
+.shareholder-report .action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.shareholder-report .action-bar .toolbar-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.shareholder-report .action-bar .toolbar-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+.shareholder-report .action-bar .toolbar-btn.primary {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+.shareholder-report .action-bar .toolbar-btn.primary:hover {
+  background: #1B5E20;
+}
+
+/* Print-only letterhead block */
+.shareholder-report .print-header {
+  text-align: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #1f2937;
+}
+.shareholder-report .print-header .company-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.shareholder-report .print-header .report-title {
+  font-size: 16px;
+  margin-top: 4px;
+  color: #374151;
+}
+.shareholder-report .print-header .period-label {
+  font-size: 13px;
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* =====================================================================
+   PRINT STYLES
+   A4 portrait orientation is enforced by the runtime CSS injection in
+   ShareholderReport.jsx (Print button handler), NOT here. This @media
+   block handles everything else: chrome hiding, page breaks, etc.
+   ===================================================================== */
+@media print {
+  /* Card-style wrapper looks like plain paper */
+  .shareholder-report {
+    background: white !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  /* Force a fresh page between shareholder blocks (YK on page N, BK on N+1) */
+  .shareholder-report .shareholder-block {
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+  .shareholder-report .shareholder-block:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  /* Per-shareholder print mode: hide the OTHER shareholder when the body
+     has the print-only-XX class (set by Print YK / Print BK buttons). */
+  body.print-only-YK .shareholder-report .shareholder-block[data-code="BK"],
+  body.print-only-BK .shareholder-report .shareholder-block[data-code="YK"] {
+    display: none !important;
+  }
+  /* In single-shareholder mode, the visible block becomes effectively the
+     last one — clear the trailing page break to avoid a blank trailing page. */
+  body.print-only-YK .shareholder-report .shareholder-block[data-code="YK"],
+  body.print-only-BK .shareholder-report .shareholder-block[data-code="BK"] {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  /* Hide anchor links (Jump to YK / Jump to BK) — not useful in print */
+  .shareholder-report a[href^="#sh-"] {
+    display: none !important;
+  }
+
+  /* Editable input fields (Allowances daily rate, etc.) render as plain
+     text in print — no borders, no background, no spinner buttons. */
+  .shareholder-report input[type="text"],
+  .shareholder-report input[type="number"],
+  .shareholder-report textarea {
+    border: none !important;
+    background: transparent !important;
+    padding: 2px 0 !important;
+    -moz-appearance: textfield !important;
+    appearance: textfield !important;
+  }
+  .shareholder-report input[type="number"]::-webkit-outer-spin-button,
+  .shareholder-report input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none !important;
+    margin: 0 !important;
+  }
+
+  /* Tables: print-friendly */
+  .shareholder-report table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 11px !important;
+  }
+  .shareholder-report table thead {
+    display: table-header-group !important;
+  }
+  .shareholder-report table tr {
+    page-break-inside: avoid !important;
+  }
+  .shareholder-report table th {
+    background: #f3f4f6 !important;
+    color: #111 !important;
+    border-bottom: 1.5px solid #1f2937 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    padding: 6px !important;
+  }
+  .shareholder-report table td {
+    border-bottom: 1px solid #e5e7eb !important;
+    padding: 5px 6px !important;
+  }
+
+  /* Preserve colors on key UI elements (Net Balance card columns, etc.) */
+  .shareholder-report .net-balance-card,
+  .shareholder-report .shareholder-block {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Keep the Net Balance card together — don't split its left/right columns */
+  .shareholder-report .net-balance-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Keep the Allowance section together as a self-contained box */
+  .shareholder-report .allowance-section {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

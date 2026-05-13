@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import './ShareholderReport.css'
 
 /**
  * Shareholder Report — per-shareholder ledger for the selected company / month.
@@ -247,25 +248,86 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
 
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
 
+  // CSS that overrides the global landscape @page (set in App.css) and forces
+  // A4 portrait for the duration of the print. Injected before window.print()
+  // and removed via the afterprint event. Same robust pattern used in Travel Log.
+  const PORTRAIT_PRINT_CSS = `
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 1.5cm 1cm 1.5cm 1cm;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 10px;
+          color: #6b7280;
+        }
+      }
+    }
+  `
+
+  // Single helper handling all three print modes (All / YK only / BK only).
+  const printShareholderReport = (onlyShareholder = null) => {
+    const cleanups = []
+
+    const styleEl = document.createElement('style')
+    styleEl.textContent = PORTRAIT_PRINT_CSS
+    document.head.appendChild(styleEl)
+    cleanups.push(() => styleEl.remove())
+
+    if (onlyShareholder) {
+      const cls = `print-only-${onlyShareholder}`
+      document.body.classList.add(cls)
+      cleanups.push(() => document.body.classList.remove(cls))
+    }
+
+    const cleanup = () => {
+      cleanups.forEach(fn => fn())
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    window.print()
+  }
+
+  const handlePrintAll = () => printShareholderReport()
+  const handlePrintShareholder = (code) => printShareholderReport(code)
+
   return (
-    <div style={{
+    <div className="shareholder-report" style={{
       background: 'white',
       padding: 20,
       borderRadius: 8,
       boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
     }}>
-      <div style={{ marginBottom: 16 }}>
+      {/* Toolbar — hidden in print. Three print options matching Travel Log:
+            - Print All: both shareholders, page-break between them
+            - Print YK: only YK block (BK hidden via body class)
+            - Print BK: only BK block (YK hidden via body class) */}
+      <div className="action-bar no-print">
+        <button onClick={handlePrintAll} className="toolbar-btn primary">🖨 Print All</button>
+        <button onClick={() => handlePrintShareholder('YK')} className="toolbar-btn">🖨 Print YK</button>
+        <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
+      </div>
+
+      {/* Screen header — hidden in print (replaced by the .print-header letterhead) */}
+      <div className="no-print" style={{ marginBottom: 16 }}>
         <h2 style={{ margin: 0, color: '#2E7D32' }}>
           Shareholder Report · {selectedCompany}
         </h2>
         <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
           Period: {monthLabel} · Net balance per shareholder: positive = company owes shareholder, negative = shareholder owes company
         </p>
-        {/* Quick anchor links */}
+        {/* Quick anchor links (only useful on screen, hidden in print via CSS) */}
         <div style={{ marginTop: 8, display: 'flex', gap: 12, fontSize: 13 }}>
           <a href="#sh-YK" style={anchorLink}>Jump to YK ↓</a>
           <a href="#sh-BK" style={anchorLink}>Jump to BK ↓</a>
         </div>
+      </div>
+
+      {/* Print-only letterhead — appears only in printed/PDF output */}
+      <div className="print-only print-header">
+        <div className="company-name">{selectedCompany}</div>
+        <div className="report-title">Shareholder Report</div>
+        <div className="period-label">Period: {monthLabel}</div>
       </div>
 
       {SHAREHOLDERS.map(code => (
@@ -313,9 +375,14 @@ const fmtDate = (iso) => {
 // =============================================================
 function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdateAllowance, onSwitchTab }) {
   return (
-    <div id={`sh-${code}`} style={{
-      marginTop: 24, paddingTop: 16, borderTop: '2px solid #e5e7eb',
-    }}>
+    <div
+      id={`sh-${code}`}
+      className="shareholder-block"
+      data-code={code}
+      style={{
+        marginTop: 24, paddingTop: 16, borderTop: '2px solid #e5e7eb',
+      }}
+    >
       <h3 style={{ margin: 0, color: '#3730a3', fontSize: 18 }}>
         {code} Shareholder Report
       </h3>
@@ -503,7 +570,7 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
   }
 
   return (
-    <div style={{ marginTop: 16 }}>
+    <div className="allowance-section" style={{ marginTop: 16 }}>
       <div style={{
         fontSize: 14, fontWeight: 600, color: '#1f2937',
         marginBottom: 6,
@@ -595,7 +662,7 @@ function AllowanceSection({ number, code, allowance, saving, onUpdate, total, tr
 function NetBalanceCard({ code, stats, companyName }) {
   const isPositive = stats.balance >= 0
   return (
-    <div style={{
+    <div className="net-balance-card" style={{
       marginTop: 16,
       background: isPositive ? '#f0fdf4' : '#fef2f2',
       border: `2px solid ${isPositive ? '#86efac' : '#fca5a5'}`,
