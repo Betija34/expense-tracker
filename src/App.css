@@ -160,6 +160,14 @@ footer {
   color: #c62828;
 }
 
+/* Utility class: hide on screen, show only when printing.
+   Use for letterheads / report titles that should appear in printouts but
+   not clutter the on-screen UI. The matching show-in-print rule lives inside
+   the @media print block below. */
+.print-only {
+  display: none;
+}
+
 @media (max-width: 768px) {
   .top-bar {
     flex-direction: column;
@@ -214,6 +222,11 @@ footer {
   /* Hide any interactive elements marked no-print */
   .no-print {
     display: none !important;
+  }
+
+  /* Show print-only elements (letterheads, report titles) that are hidden on screen */
+  .print-only {
+    display: block !important;
   }
 
   /* Force full-width content with no padding/margins from outer containers */

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import './TravelLog.css'
 
 /**
  * Travel Log Management
@@ -174,19 +175,92 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
 
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
 
+  // CSS that overrides the global landscape @page (set in App.css) and forces
+  // A4 portrait for the duration of the print. Injected dynamically right
+  // before window.print() and removed afterward via the afterprint event.
+  //
+  // Why this approach (instead of just CSS): the named-page method (@page
+  // travel-portrait + page: travel-portrait on .travel-log) doesn't reliably
+  // apply across page breaks in all browsers — some trailing pages after
+  // page-break-after revert to the global landscape default. Injecting a
+  // global @page override at print time guarantees every page is portrait.
+  const TRAVEL_PORTRAIT_CSS = `
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 1.5cm 1cm 1.5cm 1cm;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 10px;
+          color: #6b7280;
+        }
+      }
+    }
+  `
+
+  // Single helper that handles all three print modes (All / YK only / BK only).
+  // Composes the per-shareholder body class with the portrait @page override
+  // and registers a single afterprint cleanup that undoes everything.
+  const printTravelLog = (onlyShareholder = null) => {
+    const cleanups = []
+
+    // 1. Inject the portrait @page override
+    const styleEl = document.createElement('style')
+    styleEl.textContent = TRAVEL_PORTRAIT_CSS
+    document.head.appendChild(styleEl)
+    cleanups.push(() => styleEl.remove())
+
+    // 2. If filtering to one shareholder, add the body class that hides the other
+    if (onlyShareholder) {
+      const cls = `print-only-${onlyShareholder}`
+      document.body.classList.add(cls)
+      cleanups.push(() => document.body.classList.remove(cls))
+    }
+
+    // 3. Run all cleanups after print
+    const cleanup = () => {
+      cleanups.forEach(fn => fn())
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+
+    // 4. Open the browser print dialog
+    window.print()
+  }
+
+  const handlePrint = () => printTravelLog()
+  const handlePrintShareholder = (code) => printTravelLog(code)
+
   return (
-    <div style={{
+    <div className="travel-log" style={{
       background: 'white',
       padding: 20,
       borderRadius: 8,
       boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
     }}>
-      {/* Header */}
-      <div style={{ marginBottom: 16 }}>
+      {/* Toolbar — hidden in print. Three print options:
+            - Print All: both shareholders, page-break between them
+            - Print YK: only YK section (BK hidden via body class)
+            - Print BK: only BK section (YK hidden via body class) */}
+      <div className="action-bar no-print">
+        <button onClick={handlePrint} className="toolbar-btn primary">🖨 Print All</button>
+        <button onClick={() => handlePrintShareholder('YK')} className="toolbar-btn">🖨 Print YK</button>
+        <button onClick={() => handlePrintShareholder('BK')} className="toolbar-btn">🖨 Print BK</button>
+      </div>
+
+      {/* Screen header — hidden in print (replaced by .print-header letterhead below) */}
+      <div className="no-print" style={{ marginBottom: 16 }}>
         <h2 style={{ margin: 0, color: '#1f2937' }}>Travel Log Management</h2>
         <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
           Track and document all travel periods and expenses for each shareholder · {monthLabel} · {selectedCompany}
         </p>
+      </div>
+
+      {/* Print-only letterhead — only appears in printed/PDF output */}
+      <div className="print-only print-header">
+        <div className="company-name">{selectedCompany}</div>
+        <div className="report-title">Travel Log Report</div>
+        <div className="period-label">Period: {monthLabel}</div>
       </div>
 
       {/* Two shareholder sections */}
@@ -279,13 +353,17 @@ function ShareholderTravelSection({
   }, [periods, travelExpenses, selectedMonth, selectedYear])
 
   return (
-    <div style={{
-      marginTop: 20,
-      border: `2px solid ${color}`,
-      borderRadius: 6,
-      padding: 14,
-      background: bgLight,
-    }}>
+    <div
+      className="shareholder-section"
+      data-code={code}
+      style={{
+        marginTop: 20,
+        border: `2px solid ${color}`,
+        borderRadius: 6,
+        padding: 14,
+        background: bgLight,
+      }}
+    >
       <h3 style={{ margin: 0, color, fontSize: 18 }}>
         {code} Travel Log
       </h3>
@@ -308,6 +386,7 @@ function ShareholderTravelSection({
           </div>
           <button
             onClick={onAddPeriod}
+            className="no-print"
             style={{
               background: color, color: 'white', border: 'none',
               borderRadius: 4, padding: '6px 12px', fontSize: 13,
@@ -512,7 +591,7 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
             {days}
           </div>
         </div>
-        <div>
+        <div className="no-print">
           <label style={lblStyle}>Actions</label>
           <button
             onClick={onDelete}
@@ -612,7 +691,7 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
   }
 
   return (
-    <div style={{
+    <div className="travel-expense-card" style={{
       background: '#fef3c7', border: '1px solid #fde68a',
       borderLeft: '4px solid #f59e0b',
       borderRadius: 4, padding: 10, marginBottom: 8,

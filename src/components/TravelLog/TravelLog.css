@@ -1,0 +1,163 @@
+/* =====================================================================
+   Travel Log — screen + print styles
+   ===================================================================== */
+
+/* Toolbar at the top of Travel Log (Print button + future actions) */
+.travel-log .action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.travel-log .action-bar .toolbar-btn {
+  padding: 8px 14px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.travel-log .action-bar .toolbar-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+.travel-log .action-bar .toolbar-btn.primary {
+  background: #2E7D32;
+  color: white;
+  border-color: #2E7D32;
+}
+.travel-log .action-bar .toolbar-btn.primary:hover {
+  background: #1B5E20;
+}
+
+/* Print-only letterhead block (company name + title + period) */
+.travel-log .print-header {
+  text-align: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #1f2937;
+}
+.travel-log .print-header .company-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.travel-log .print-header .report-title {
+  font-size: 16px;
+  margin-top: 4px;
+  color: #374151;
+}
+.travel-log .print-header .period-label {
+  font-size: 13px;
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* =====================================================================
+   PRINT STYLES — A4 portrait orientation is enforced by the runtime CSS
+   injection in TravelLog.jsx (the Print button handler), NOT here. That
+   approach is more reliable than the named-page CSS technique, which
+   doesn't honor `page:` consistently across page breaks in all browsers.
+   This @media block handles everything else: chrome hiding, page breaks,
+   table styles, etc.
+   ===================================================================== */
+@media print {
+  /* The outer card-style wrapper should look like plain paper in print */
+  .travel-log {
+    background: white !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  /* Force a fresh page between shareholders. Belt-and-suspenders approach:
+     break AFTER every section, then suppress the trailing break on the last
+     one so we don't end up with a blank trailing page. */
+  .travel-log .shareholder-section {
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: auto !important;
+  }
+  .travel-log .shareholder-section:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  /* Per-shareholder print mode: hide the OTHER shareholder when the body
+     has the print-only-XX class (set by Print YK / Print BK buttons). */
+  body.print-only-YK .travel-log .shareholder-section[data-code="BK"],
+  body.print-only-BK .travel-log .shareholder-section[data-code="YK"] {
+    display: none !important;
+  }
+  /* When in single-shareholder mode, the visible section is the last child
+     so it shouldn't break after — clear the rule above. */
+  body.print-only-YK .travel-log .shareholder-section[data-code="YK"],
+  body.print-only-BK .travel-log .shareholder-section[data-code="BK"] {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  /* Keep each travel expense card on a single page. If there's not enough
+     space for the full card (top row + metadata sub-card), push the whole
+     card to the next page rather than splitting it in half. */
+  .travel-log .travel-expense-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Each travel period block (header + period info + its expenses) is also
+     kept together where possible — but allows splits if one period has too
+     many expenses to fit on a single page. */
+  .travel-log .period-block {
+    break-inside: auto !important;
+  }
+
+  /* Editable input fields (where/who/why on expense cards) — render as
+     plain text in print, no borders or background. */
+  .travel-log input[type="text"],
+  .travel-log textarea {
+    border: none !important;
+    background: transparent !important;
+    padding: 2px 0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Tables: print-friendly borders, no shadow, full width, tight spacing */
+  .travel-log table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 11px !important;
+    page-break-inside: auto !important;
+  }
+  .travel-log table thead {
+    display: table-header-group !important;
+  }
+  .travel-log table tr {
+    page-break-inside: avoid !important;
+  }
+  .travel-log table th {
+    background: #f3f4f6 !important;
+    color: #111 !important;
+    border-bottom: 1.5px solid #1f2937 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    padding: 6px !important;
+  }
+  .travel-log table td {
+    border-bottom: 1px solid #e5e7eb !important;
+    padding: 5px 6px !important;
+  }
+
+  /* Preserve shareholder color accents in print (YK green, BK orange) */
+  .travel-log .shareholder-section {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
