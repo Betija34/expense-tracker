@@ -59,27 +59,43 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     shareholder_code:  isEditMode ? (existingExpense.shareholder_code || '') : '',
     manual_sub_ref_month: isEditMode && existingExpense.sub_ref_series === 'S' ? String(existingExpense.sub_ref_month || '') : '',
     manual_sub_ref_seq:   isEditMode && existingExpense.sub_ref_series === 'S' ? String(existingExpense.sub_ref_seq || '') : '',
+    // Invoice number(s) for incoming Client Payment / Reimbursement. Free-text,
+    // supports multiple values (comma-separated) when one transfer settles
+    // multiple invoices of the same category.
+    invoice_number:    isEditMode ? (existingExpense.invoice_number || '') : '',
   })
 
   // -------------------------------------------------------------
-  // Split mode: 4 portion slots — Company / YK / BK / Client
+  // Split mode
+  //   OUTGOING: 4 portion slots (Company / YK / BK / Client) — full reimbursable split
+  //   INCOMING: 2 portion slots (Client Payment / Client Reimbursement) — separate
+  //             revenue from reimbursement (they roll up differently in reporting).
+  //             A single client per transfer; each portion records its own invoice #(s).
   // -------------------------------------------------------------
   const [isSplit, setIsSplit] = useState(false)
-  const PORTION_TYPES = [
-    { key: 'company', label: 'Company portion',     accent: '#185FA5' },
-    { key: 'yk',      label: 'YK shareholder portion', accent: '#3C3489' },
-    { key: 'bk',      label: 'BK shareholder portion', accent: '#3C3489' },
-    { key: 'client',  label: 'Client portion (reimbursable)', accent: '#993556' },
+  const OUTGOING_PORTION_TYPES = [
+    { key: 'company', label: 'Company portion',                accent: '#185FA5' },
+    { key: 'yk',      label: 'YK shareholder portion',         accent: '#3C3489' },
+    { key: 'bk',      label: 'BK shareholder portion',         accent: '#3C3489' },
+    { key: 'client',  label: 'Client portion (reimbursable)',  accent: '#993556' },
   ]
+  const INCOMING_PORTION_TYPES = [
+    // categoryName tells the save logic which category id to look up at save time.
+    { key: 'payment',       label: 'Client Payment portion',       accent: '#15803d', categoryName: 'Client Payment' },
+    { key: 'reimbursement', label: 'Client Reimbursement portion', accent: '#1d4ed8', categoryName: 'Client Reimbursement' },
+  ]
+  const PORTION_TYPES = direction === 'in' ? INCOMING_PORTION_TYPES : OUTGOING_PORTION_TYPES
+
   const initialPortions = PORTION_TYPES.reduce((acc, t) => ({
     ...acc,
     [t.key]: {
       amount: '',
-      category_id: '',
+      category_id: '',         // outgoing portions: user-picked; incoming: auto-resolved from t.categoryName
       subcategory_id: '',
       subcategory_name: '',
       client_name: '',
       custom_client_name: '',
+      invoice_number: '',      // NEW: for incoming portions only
     }
   }), {})
   const [portions, setPortions] = useState(initialPortions)
@@ -547,6 +563,9 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         shareholder_code:   form.shareholder_code || null,
         bank_transaction_id: transaction.id,
         status:             'pending',
+        // Invoice number(s) for incoming Client Payment / Client Reimbursement.
+        // Free-text, may contain comma-separated values for multi-invoice transfers.
+        invoice_number:     form.invoice_number?.trim() || null,
       }
 
       if (isEditMode) {
@@ -596,17 +615,25 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     if (active.length < 2) {
       setSaveError('Split needs at least 2 portions. Use single mode for a single-portion expense.'); return
     }
-    // Per-portion validation
-    for (const t of active) {
-      const p = portions[t.key]
-      if (!p.category_id)  { setSaveError(`${t.label}: category is required`); return }
-      const portionSubs = allSubcats.filter(s => s.category_id === p.category_id)
-      if (portionSubs.length > 0 && !p.subcategory_id) {
-        setSaveError(`${t.label}: subcategory is required`); return
-      }
-      if (t.key === 'client') {
-        const clientFinal = p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name
-        if (!clientFinal) { setSaveError('Client portion: please select a client/project'); return }
+    // Per-portion validation differs by direction:
+    //   OUTGOING: each portion has its own category + (per-portion) client picker
+    //   INCOMING: categories are auto-resolved by portion type, client is shared at modal level
+    if (direction === 'in') {
+      const clientFinal = form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name
+      if (!clientFinal) { setSaveError('Client / project is required for incoming split'); return }
+      // Invoice numbers are OPTIONAL per portion (free-text paper trail)
+    } else {
+      for (const t of active) {
+        const p = portions[t.key]
+        if (!p.category_id)  { setSaveError(`${t.label}: category is required`); return }
+        const portionSubs = allSubcats.filter(s => s.category_id === p.category_id)
+        if (portionSubs.length > 0 && !p.subcategory_id) {
+          setSaveError(`${t.label}: subcategory is required`); return
+        }
+        if (t.key === 'client') {
+          const clientFinal = p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name
+          if (!clientFinal) { setSaveError('Client portion: please select a client/project'); return }
+        }
       }
     }
 
@@ -619,57 +646,107 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       const seqs = await nextMainRefSeqBatch(companyId, dateParts.year, dateParts.month, active.length)
       const splitGroupId = uuid()
 
+      // For INCOMING split: shared client + resolve category ids by name once upfront.
+      const sharedClientFinal = direction === 'in'
+        ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
+        : null
+      const categoryByName = direction === 'in'
+        ? Object.fromEntries(categories.map(c => [c.name, c]))
+        : null
+
       // Build rows
       const rows = []
       for (let i = 0; i < active.length; i++) {
         const t = active[i]
         const p = portions[t.key]
-        const cat = categories.find(c => c.id === p.category_id)
-        const isReimbursable = t.key === 'client'
-        const clientFinal = t.key === 'client'
-          ? (p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name)
-          : null
-        const shareholderCode = t.key === 'yk' ? 'YK' : (t.key === 'bk' ? 'BK' : null)
 
-        // Sub-ref logic (auto only in split mode for v1 — no manual S entry per portion)
-        let subSeries = decideSubRefSeries(cat, isReimbursable)
-        let subMonth = null, subSeq = null
-        if (subSeries) {
-          subMonth = dateParts.month
-          subSeq = await nextSubRefSeq(companyId, subSeries, subMonth)
+        if (direction === 'in') {
+          // === INCOMING portion (Client Payment / Client Reimbursement) ===
+          const cat = categoryByName[t.categoryName]
+          if (!cat) {
+            throw new Error(`Category "${t.categoryName}" not found in the system. Ensure incoming categories are seeded.`)
+          }
+          rows.push({
+            company_id:         companyId,
+            category_id:        cat.id,
+            account_id:         transaction.account_id,
+            date:               transaction.transaction_date,
+            amount:             parseFloat(p.amount),
+            currency:           'EUR',
+            description:        form.description?.trim() || null,
+            vendor:             form.vendor.trim(),
+            reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], companyName),
+            expense_type:       'income',
+            direction:          'in',
+            main_ref_year:      dateParts.year,
+            main_ref_month:     dateParts.month,
+            main_ref_seq:       seqs[i],
+            // No sub-references for incoming portions (per spec).
+            sub_ref_series:     null,
+            sub_ref_month:      null,
+            sub_ref_seq:        null,
+            subcategory_id:     null,
+            subcategory_name:   null,
+            is_reimbursable:    false,
+            requires_reimbursement: false,
+            client_name:        sharedClientFinal,
+            shareholder_code:   null,
+            bank_transaction_id: transaction.id,
+            is_split:           true,
+            split_group_id:     splitGroupId,
+            split_portion_index: i + 1,
+            status:             'pending',
+            // Invoice number(s) for THIS portion — comma-separated free-text.
+            invoice_number:     p.invoice_number?.trim() || null,
+          })
+        } else {
+          // === OUTGOING portion (Company / YK / BK / Client) — existing logic ===
+          const cat = categories.find(c => c.id === p.category_id)
+          const isReimbursable = t.key === 'client'
+          const clientFinal = t.key === 'client'
+            ? (p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name)
+            : null
+          const shareholderCode = t.key === 'yk' ? 'YK' : (t.key === 'bk' ? 'BK' : null)
+
+          // Sub-ref logic (auto only in split mode for v1 — no manual S entry per portion)
+          let subSeries = decideSubRefSeries(cat, isReimbursable)
+          let subMonth = null, subSeq = null
+          if (subSeries) {
+            subMonth = dateParts.month
+            subSeq = await nextSubRefSeq(companyId, subSeries, subMonth)
+          }
+
+          rows.push({
+            company_id:         companyId,
+            category_id:        p.category_id,
+            account_id:         transaction.account_id,
+            date:               transaction.transaction_date,
+            amount:             parseFloat(p.amount),
+            currency:           'EUR',
+            description:        form.description?.trim() || null,
+            vendor:             form.vendor.trim(),
+            reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], companyName),
+            expense_type:       'regular',
+            direction:          'out',
+            main_ref_year:      dateParts.year,
+            main_ref_month:     dateParts.month,
+            main_ref_seq:       seqs[i],
+            sub_ref_series:     subSeries,
+            sub_ref_month:      subMonth,
+            sub_ref_seq:        subSeq,
+            subcategory_id:     p.subcategory_id || null,
+            subcategory_name:   p.subcategory_name || null,
+            is_reimbursable:    isReimbursable,
+            requires_reimbursement: isReimbursable,
+            client_name:        clientFinal,
+            shareholder_code:   shareholderCode,
+            bank_transaction_id: transaction.id,
+            is_split:           true,
+            split_group_id:     splitGroupId,
+            split_portion_index: i + 1,
+            status:             'pending',
+          })
         }
-
-        rows.push({
-          company_id:         companyId,
-          category_id:        p.category_id,
-          account_id:         transaction.account_id,
-          date:               transaction.transaction_date,
-          amount:             parseFloat(p.amount),
-          currency:           'EUR',
-          description:        form.description?.trim() || null,
-          vendor:             form.vendor.trim(),
-          // Company-aware reference: "26/1/4" for Rabona, "E26/1/4" for Espargos.
-          reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], companyName),
-          expense_type:       'regular',
-          direction:          'out',
-          main_ref_year:      dateParts.year,
-          main_ref_month:     dateParts.month,
-          main_ref_seq:       seqs[i],
-          sub_ref_series:     subSeries,
-          sub_ref_month:      subMonth,
-          sub_ref_seq:        subSeq,
-          subcategory_id:     p.subcategory_id || null,
-          subcategory_name:   p.subcategory_name || null,
-          is_reimbursable:    isReimbursable,
-          requires_reimbursement: isReimbursable,
-          client_name:        clientFinal,
-          shareholder_code:   shareholderCode,
-          bank_transaction_id: transaction.id,
-          is_split:           true,
-          split_group_id:     splitGroupId,
-          split_portion_index: i + 1,
-          status:             'pending',
-        })
       }
 
       // Insert all portions
@@ -755,8 +832,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             </div>
           </div>
 
-          {/* Split mode toggle — outgoing only, create mode only (v1) */}
-          {!isEditMode && direction === 'out' && (
+          {/* Split mode toggle — available for BOTH outgoing AND incoming in create mode.
+              Outgoing splits: 4 portion types (Company / YK / BK / Client).
+              Incoming splits: 2 portion types (Client Payment / Client Reimbursement),
+                               same client across both portions, separate invoice numbers. */}
+          {!isEditMode && (
             <div className="form-group" style={{
               background: '#eef2ff', border: '1px solid #c7d2fe',
               borderRadius: 4, padding: 10
@@ -767,12 +847,44 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                   checked={isSplit}
                   onChange={(e) => setIsSplit(e.target.checked)}
                 />
-                <span style={{ fontWeight: 500 }}>Split this expense across portions</span>
+                <span style={{ fontWeight: 500 }}>
+                  {direction === 'in'
+                    ? 'Split this payment (Client Payment + Reimbursement from same client)'
+                    : 'Split this expense across portions'}
+                </span>
               </label>
               {isSplit && (
                 <small style={{ color: '#4338ca', fontSize: 12, marginTop: 4, display: 'block' }}>
                   Each filled portion creates its own expense row with a consecutive main reference number, linked together.
                 </small>
+              )}
+            </div>
+          )}
+
+          {/* INCOMING SPLIT — shared client picker (one client per transfer) */}
+          {isSplit && direction === 'in' && (
+            <div className="form-group">
+              <label>Client / project * <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(shared across both portions)</span></label>
+              <select
+                value={form.client_name}
+                onChange={(e) => setForm({ ...form, client_name: e.target.value, custom_client_name: '' })}
+                className="form-input"
+              >
+                <option value="">— Select client —</option>
+                {clientList.map(c => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+                <option value="Other">Other (custom)</option>
+              </select>
+              {form.client_name === 'Other' && (
+                <input
+                  type="text"
+                  placeholder="Custom client name"
+                  value={form.custom_client_name}
+                  onChange={(e) => setForm({ ...form, custom_client_name: e.target.value })}
+                  className="form-input"
+                  style={{ marginTop: 6 }}
+                />
               )}
             </div>
           )}
@@ -787,6 +899,9 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                   : categories
                 const portionSubs = allSubcats.filter(s => s.category_id === p.category_id)
                 const isActive = (parseFloat(p.amount) || 0) > 0
+                // For incoming portions, the category is auto-resolved (Client Payment / Reimbursement)
+                // and the UI doesn't need a category dropdown — just amount + invoice number.
+                const isIncomingPortion = direction === 'in'
                 return (
                   <div key={t.key} style={{
                     border: `0.5px solid ${isActive ? '#9ca3af' : '#e5e7eb'}`,
@@ -809,65 +924,87 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                       className="form-input"
                       style={{ marginBottom: 6 }}
                     />
-                    <label style={{ fontSize: 11, color: '#6b7280' }}>Category *</label>
-                    <select
-                      value={p.category_id}
-                      onChange={(e) => updatePortion(t.key, {
-                        category_id: e.target.value,
-                        subcategory_id: '', subcategory_name: '',
-                      })}
-                      className="form-input"
-                      style={{ marginBottom: 6 }}
-                    >
-                      <option value="">— Select —</option>
-                      {portionCats.map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                    {portionSubs.length > 0 && (
+
+                    {/* INCOMING: just an invoice # field, no category dropdown */}
+                    {isIncomingPortion && (
                       <>
-                        <label style={{ fontSize: 11, color: '#6b7280' }}>Subcategory *</label>
+                        <label style={{ fontSize: 11, color: '#6b7280' }}>
+                          Invoice #(s) <span style={{ color: '#9ca3af', fontWeight: 400 }}>(comma-separated for multiple)</span>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="INV-001 or INV-001, INV-002"
+                          value={p.invoice_number}
+                          onChange={(e) => updatePortion(t.key, { invoice_number: e.target.value })}
+                          className="form-input"
+                        />
+                      </>
+                    )}
+
+                    {/* OUTGOING: full category + subcategory + per-portion client picker */}
+                    {!isIncomingPortion && (
+                      <>
+                        <label style={{ fontSize: 11, color: '#6b7280' }}>Category *</label>
                         <select
-                          value={p.subcategory_id}
-                          onChange={(e) => {
-                            const sub = portionSubs.find(s => s.id === e.target.value)
-                            updatePortion(t.key, {
-                              subcategory_id: e.target.value,
-                              subcategory_name: sub ? sub.name : '',
-                            })
-                          }}
+                          value={p.category_id}
+                          onChange={(e) => updatePortion(t.key, {
+                            category_id: e.target.value,
+                            subcategory_id: '', subcategory_name: '',
+                          })}
                           className="form-input"
                           style={{ marginBottom: 6 }}
                         >
                           <option value="">— Select —</option>
-                          {portionSubs.map(s => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
+                          {portionCats.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
                           ))}
                         </select>
-                      </>
-                    )}
-                    {t.key === 'client' && isActive && (
-                      <>
-                        <label style={{ fontSize: 11, color: '#6b7280' }}>Client / project *</label>
-                        <select
-                          value={p.client_name}
-                          onChange={(e) => updatePortion('client', { client_name: e.target.value, custom_client_name: '' })}
-                          className="form-input"
-                          style={{ marginBottom: 4 }}
-                        >
-                          <option value="">— Select client —</option>
-                          {clientList.map(c => (
-                            <option key={c.name} value={c.name}>{c.name}</option>
-                          ))}
-                        </select>
-                        {p.client_name === 'Other' && (
-                          <input
-                            type="text"
-                            placeholder="Custom client name"
-                            value={p.custom_client_name}
-                            onChange={(e) => updatePortion('client', { custom_client_name: e.target.value })}
-                            className="form-input"
-                          />
+                        {portionSubs.length > 0 && (
+                          <>
+                            <label style={{ fontSize: 11, color: '#6b7280' }}>Subcategory *</label>
+                            <select
+                              value={p.subcategory_id}
+                              onChange={(e) => {
+                                const sub = portionSubs.find(s => s.id === e.target.value)
+                                updatePortion(t.key, {
+                                  subcategory_id: e.target.value,
+                                  subcategory_name: sub ? sub.name : '',
+                                })
+                              }}
+                              className="form-input"
+                              style={{ marginBottom: 6 }}
+                            >
+                              <option value="">— Select —</option>
+                              {portionSubs.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
+                          </>
+                        )}
+                        {t.key === 'client' && isActive && (
+                          <>
+                            <label style={{ fontSize: 11, color: '#6b7280' }}>Client / project *</label>
+                            <select
+                              value={p.client_name}
+                              onChange={(e) => updatePortion('client', { client_name: e.target.value, custom_client_name: '' })}
+                              className="form-input"
+                              style={{ marginBottom: 4 }}
+                            >
+                              <option value="">— Select client —</option>
+                              {clientList.map(c => (
+                                <option key={c.name} value={c.name}>{c.name}</option>
+                              ))}
+                            </select>
+                            {p.client_name === 'Other' && (
+                              <input
+                                type="text"
+                                placeholder="Custom client name"
+                                value={p.custom_client_name}
+                                onChange={(e) => updatePortion('client', { custom_client_name: e.target.value })}
+                                className="form-input"
+                              />
+                            )}
+                          </>
                         )}
                       </>
                     )}
@@ -929,6 +1066,31 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
               </select>
             </div>
           )}
+
+          {/* Invoice number(s) — shown ONLY for incoming Client Payment or Client
+              Reimbursement in single mode. Free-text, supports comma-separated
+              values when one transfer settles multiple invoices of same category. */}
+          {!isSplit && direction === 'in' && (() => {
+            const selectedCat = categories.find(c => c.id === form.category_id)
+            const needsInvoice = selectedCat && (
+              selectedCat.name === 'Client Payment' || selectedCat.name === 'Client Reimbursement'
+            )
+            if (!needsInvoice) return null
+            return (
+              <div className="form-group">
+                <label>
+                  Invoice #(s) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(comma-separated for multiple)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="INV-001 or INV-001, INV-002"
+                  value={form.invoice_number}
+                  onChange={(e) => setForm({ ...form, invoice_number: e.target.value })}
+                  className="form-input"
+                />
+              </div>
+            )
+          })()}
 
           {/* Shareholder tag (only for categories that need it) */}
           {!isSplit && selectedCategory?.needs_shareholder_tag && (
