@@ -63,9 +63,14 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompany, selectedMonth, selectedYear])
 
-  const loadAll = async () => {
+  // loadAll
+  //   silent: when true, skips the loading-flag toggle so the table doesn't
+  //   unmount/remount and the scroll position stays where the user left it.
+  //   Use silent: true after any save/approve/delete; use a plain loadAll()
+  //   only on first mount / context change (when we want the spinner).
+  const loadAll = async ({ silent = false } = {}) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       setError(null)
 
       const { data: company, error: companyErr } = await supabase
@@ -146,7 +151,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       console.error('Error loading expenses:', err)
       setError(err.message || 'Failed to load expenses')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -305,7 +310,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
         try {
           const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
           if (error) throw error
-          loadAll()
+          loadAll({ silent: true })
         } catch (err) {
           alert('Delete failed: ' + (err.message || err))
         }
@@ -316,7 +321,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
             .delete()
             .eq('split_group_id', expense.split_group_id)
           if (error) throw error
-          loadAll()
+          loadAll({ silent: true })
         } catch (err) {
           alert('Delete failed: ' + (err.message || err))
         }
@@ -331,7 +336,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     try {
       const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
       if (error) throw error
-      loadAll()
+      loadAll({ silent: true })
     } catch (err) {
       alert('Delete failed: ' + (err.message || err))
     }
@@ -494,7 +499,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       alert('Failed to update status: ' + error.message)
       return
     }
-    loadAll()
+    loadAll({ silent: true })
   }
 
   // Bulk approve all selected pending expenses
@@ -516,7 +521,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       return
     }
     setSelectedIds(new Set())
-    loadAll()
+    loadAll({ silent: true })
   }
 
   const formatDate = (iso) => {
@@ -930,7 +935,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
           companyName={selectedCompany}
           existingExpense={recategorizing.expense}
           onClose={() => setRecategorizing(null)}
-          onSave={() => loadAll()}
+          onSave={() => loadAll({ silent: true })}
         />
       )}
 
@@ -942,7 +947,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
           expense={linkingExpense}
           currentCompany={selectedCompany}
           onClose={() => setLinkingExpense(null)}
-          onSaved={() => loadAll()}
+          onSaved={() => loadAll({ silent: true })}
         />
       )}
 
@@ -962,7 +967,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
             if (updatedRow) {
               setExpenses(prev => prev.map(e => e.id === updatedRow.id ? updatedRow : e))
             } else {
-              loadAll()
+              loadAll({ silent: true })
             }
           }}
         />
