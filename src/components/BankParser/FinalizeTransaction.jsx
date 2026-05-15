@@ -102,7 +102,12 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       subcategory_name: '',
       client_name: '',
       custom_client_name: '',
-      invoice_number: '',      // NEW: for incoming portions only
+      invoice_number: '',      // for incoming portions only
+      // Optional shareholder tag for the Company portion when it's a Travel
+      // Expense. Lets a company-paid trip show up in the right person's
+      // Travel Log section. Ignored for YK/BK/Client slots (their shareholder
+      // is already implicit from the slot itself).
+      shareholder_code: '',
     }
   }), {})
   const [portions, setPortions] = useState(initialPortions)
@@ -160,7 +165,16 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           // Safer: use split_portion_index (1-based) — payment=1, reimbursement=2.
           slotKey = (s.split_portion_index || 0) === 2 ? 'reimbursement' : 'payment'
         } else {
+          // OUTGOING slot routing:
+          //   1. Travel Expenses (sub_ref_series 'T') always goes to the
+          //      Company slot — the shareholder_code (if any) becomes the
+          //      optional "who traveled" tag on the Company portion form.
+          //   2. Otherwise route by shareholder_code (Personal Expenses of
+          //      Shareholders → YK or BK slot).
+          //   3. Otherwise reimbursable → Client slot.
+          //   4. Default → Company slot.
           slotKey =
+            s.sub_ref_series === 'T' ? 'company' :
             s.shareholder_code === 'YK' ? 'yk' :
             s.shareholder_code === 'BK' ? 'bk' :
             s.is_reimbursable ? 'client' :
@@ -176,6 +190,10 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           client_name:        clientInPredefined ? s.client_name : (s.client_name ? 'Other' : ''),
           custom_client_name: !clientInPredefined && s.client_name ? s.client_name : '',
           invoice_number:     s.invoice_number || '',
+          // Preserve the shareholder_code on the Company portion so a Travel
+          // Expense for a specific shareholder keeps its travel-log routing
+          // on re-edit. Other slots already imply their shareholder.
+          shareholder_code:   slotKey === 'company' ? (s.shareholder_code || '') : '',
         }
       }
       setPortions(newPortions)
@@ -745,6 +763,40 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       const seqs = await nextMainRefSeqBatch(companyId, dateParts.year, dateParts.month, active.length)
       const splitGroupId = uuid()
 
+      // SUB-REF PRESERVATION (edit-mode split only):
+      // When the user re-edits an existing split group, we DELETE the old
+      // expense rows and INSERT new ones. Without intervention each new row
+      // gets a fresh sub_ref_seq, leaving GAPS in the T3/x or R3/x numbering
+      // for every previously-issued sub-ref. To preserve those numbers we
+      // build a (slot → old sub_ref) map from the doomed siblings, then reuse
+      // each old sub_ref on the new portion that lands in the same slot AND
+      // keeps the same series (e.g. Travel → Travel).
+      const oldSubRefsBySlot = new Map()
+      if (isEditMode && isExistingSplit) {
+        for (const s of groupSiblings) {
+          // Mirror the slot-routing used in the prefill effect above so old
+          // and new use the same buckets.
+          let slot
+          if (direction === 'in') {
+            slot = (s.split_portion_index || 0) === 2 ? 'reimbursement' : 'payment'
+          } else {
+            slot =
+              s.sub_ref_series === 'T' ? 'company' :
+              s.shareholder_code === 'YK' ? 'yk' :
+              s.shareholder_code === 'BK' ? 'bk' :
+              s.is_reimbursable ? 'client' :
+              'company'
+          }
+          if (s.sub_ref_series && s.sub_ref_seq) {
+            oldSubRefsBySlot.set(slot, {
+              series: s.sub_ref_series,
+              month:  s.sub_ref_month,
+              seq:    s.sub_ref_seq,
+            })
+          }
+        }
+      }
+
       // For INCOMING split: shared client + resolve category ids by name once upfront.
       const sharedClientFinal = direction === 'in'
         ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
@@ -805,14 +857,35 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           const clientFinal = t.key === 'client'
             ? (p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name)
             : null
-          const shareholderCode = t.key === 'yk' ? 'YK' : (t.key === 'bk' ? 'BK' : null)
+          // Shareholder code per slot:
+          //   • YK slot → 'YK' (fixed)
+          //   • BK slot → 'BK' (fixed)
+          //   • Company slot → user-picked optional tag (lets a company-paid
+          //     trip route to the right person's Travel Log section). Most
+          //     useful for Travel Expenses; harmless if blank for other
+          //     company-paid categories.
+          //   • Client slot → null (reimbursable client portion is its own tag)
+          const shareholderCode =
+            t.key === 'yk' ? 'YK' :
+            t.key === 'bk' ? 'BK' :
+            t.key === 'company' ? (p.shareholder_code || null) :
+            null
 
-          // Sub-ref logic (auto only in split mode for v1 — no manual S entry per portion)
+          // Sub-ref logic (auto only in split mode for v1 — no manual S entry per portion).
+          // For edit-mode split saves, reuse the previous sub-ref number when
+          // the same slot still produces the same series, so T3/5..T3/10 etc.
+          // don't get burned to gaps every time the user adjusts the split.
           let subSeries = decideSubRefSeries(cat, isReimbursable)
           let subMonth = null, subSeq = null
           if (subSeries) {
-            subMonth = dateParts.month
-            subSeq = await nextSubRefSeq(companyId, subSeries, subMonth)
+            const oldRef = oldSubRefsBySlot.get(t.key)
+            if (oldRef && oldRef.series === subSeries && oldRef.month === dateParts.month) {
+              subMonth = oldRef.month
+              subSeq   = oldRef.seq
+            } else {
+              subMonth = dateParts.month
+              subSeq   = await nextSubRefSeq(companyId, subSeries, subMonth)
+            }
           }
 
           rows.push({
@@ -1134,6 +1207,33 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                             </select>
                           </>
                         )}
+                        {t.key === 'company' && isActive && (() => {
+                          // Optional shareholder picker — only shown when the
+                          // Company portion's chosen category is Travel
+                          // Expenses (sub_ref_series 'T'). Picking YK or BK
+                          // here routes the trip to that shareholder's Travel
+                          // Log section without making them pay for it.
+                          const portionCat = categories.find(c => c.id === p.category_id)
+                          const isTravel = portionCat?.sub_ref_series === 'T'
+                          if (!isTravel) return null
+                          return (
+                            <>
+                              <label style={{ fontSize: 11, color: '#6b7280' }}>
+                                Shareholder <span style={{ color: '#9ca3af' }}>(optional — for Travel Log routing)</span>
+                              </label>
+                              <select
+                                value={p.shareholder_code || ''}
+                                onChange={(e) => updatePortion('company', { shareholder_code: e.target.value })}
+                                className="form-input"
+                                style={{ marginBottom: 6 }}
+                              >
+                                <option value="">— None (company-only) —</option>
+                                <option value="YK">YK</option>
+                                <option value="BK">BK</option>
+                              </select>
+                            </>
+                          )
+                        })()}
                         {t.key === 'client' && isActive && (
                           <>
                             <label style={{ fontSize: 11, color: '#6b7280' }}>Client / project *</label>
@@ -1245,16 +1345,25 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             )
           })()}
 
-          {/* Shareholder tag (only for categories that need it) */}
-          {!isSplit && selectedCategory?.needs_shareholder_tag && (
+          {/* Shareholder tag — visible for:
+              • categories with needs_shareholder_tag = TRUE (required, e.g.
+                Personal Expenses of Shareholders)
+              • Travel Expenses (sub_ref_series = 'T') — OPTIONAL, lets the
+                user route the trip to the right person's Travel Log section.
+              Leaving it blank means "company travel, not shareholder-specific".  */}
+          {!isSplit && (selectedCategory?.needs_shareholder_tag || selectedCategory?.sub_ref_series === 'T') && (
             <div className="form-group">
-              <label>Shareholder *</label>
+              <label>
+                Shareholder {selectedCategory?.needs_shareholder_tag
+                  ? '*'
+                  : <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — assign to YK or BK so it appears under them in Travel Log)</span>}
+              </label>
               <select
                 value={form.shareholder_code}
                 onChange={(e) => setForm({ ...form, shareholder_code: e.target.value })}
                 className="form-input"
               >
-                <option value="">— Select shareholder —</option>
+                <option value="">— {selectedCategory?.needs_shareholder_tag ? 'Select shareholder' : 'None (company)'} —</option>
                 <option value="YK">YK</option>
                 <option value="BK">BK</option>
               </select>
