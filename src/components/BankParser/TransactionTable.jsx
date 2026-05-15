@@ -528,6 +528,39 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
                           ✓
                         </button>
                       )}
+                      {transaction.status !== 'matched' && (
+                        <button
+                          onClick={async () => {
+                            // Row-level delete for PENDING bank transactions only.
+                            // Useful when OCR captures a duplicate or garbage row —
+                            // the user can remove it without deleting the whole file.
+                            // Matched rows go through the View Expenses delete flow
+                            // (which un-matches the bank tx first).
+                            if (!window.confirm(
+                              `Delete this bank transaction?\n\n` +
+                              `${transaction.description}\n` +
+                              `€${Math.abs(transaction.amount).toFixed(2)} · ${transaction.transaction_date}\n\n` +
+                              `This row will be removed from the Bank Parser. The source uploaded file is unaffected.\n\n` +
+                              `This cannot be undone.`
+                            )) return
+                            try {
+                              const { error } = await supabase
+                                .from('bank_transactions')
+                                .delete()
+                                .eq('id', transaction.id)
+                              if (error) throw error
+                              loadTransactions()
+                            } catch (err) {
+                              alert('Delete failed: ' + (err.message || err))
+                            }
+                          }}
+                          className="btn-edit"
+                          title="Delete this row (only available before finalizing)"
+                          style={{ background: '#dc2626', color: 'white', borderColor: '#dc2626' }}
+                        >
+                          🗑
+                        </button>
+                      )}
                       {transaction.status === 'matched' && (() => {
                         const exps = expensesMap.get(transaction.id) || []
                         const needsCat = exps.some(isUncategorized)

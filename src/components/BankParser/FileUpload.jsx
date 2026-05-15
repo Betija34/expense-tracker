@@ -168,44 +168,112 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
   const extractTransactions = (text) => {
     const transactions = []
 
-    // Match patterns for bank statement format:
-    // DD/MM/YYYY  Description  Amount(EUR)
-    // Amount format: European (comma as decimal, dot as thousands: 8.000,00)
-    const patterns = [
-      // Pattern 1: DD/MM/YYYY with European number format (8.000,00)
+    // Helper: ISO date from DD/MM/YYYY or DD-MM-YYYY
+    const toISODate = (dateStr) => {
+      const [day, month, year] = dateStr.includes('/') ? dateStr.split('/') : dateStr.split('-')
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+
+    // Helper: dedup check between Pattern 1/2 and Pattern 3.
+    // We KEY on date + abs(amount) + vendor-prefix. The amount key is critical:
+    // two legitimate transactions on the same day with the same vendor (e.g.
+    // two Wolt Greece orders on 19/03) MUST NOT be deduped — they have
+    // different amounts. Without the amount in the key, the second would be
+    // silently dropped.
+    const alreadyCaptured = (date, vendor, amount) => {
+      const prefix = vendor.trim().toLowerCase().substring(0, 15)
+      const targetAmount = Math.abs(amount).toFixed(2)
+      return transactions.some(t =>
+        t.date === date &&
+        Math.abs(t.amount).toFixed(2) === targetAmount &&
+        t.vendor.toLowerCase().startsWith(prefix)
+      )
+    }
+
+    // Helper: keyword-based direction detection. OCR frequently drops minus
+    // signs and there's no reliable visual cue (color) in the text — so we
+    // look for direction-indicating words in the description.
+    //   • "deposit", "refund", "credit", "received", "transfer from" → INCOMING
+    //   • everything else → OUTGOING (safer default for card/account flows)
+    // User can always flip via Edit Transaction in Bank Parser before
+    // finalizing if a row is mis-classified.
+    const detectDirection = (vendor) => {
+      const v = vendor.toLowerCase()
+      const incomingMarkers = /\b(deposit|refund|received|credit\s|transfer from|incoming|payment in)\b/i
+      return incomingMarkers.test(v) ? 'credit' : 'debit'
+    }
+
+    // ---------- Pattern 1 & 2: European decimal format (preferred) ----------
+    // DD/MM/YYYY or DD-MM-YYYY + description + amount like 8.000,00 or -35,45.
+    // Used when OCR preserves the comma decimal.
+    const decimalPatterns = [
       /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
-      // Pattern 2: DD-MM-YYYY with European number format
       /(\d{2}-\d{2}-\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
     ]
-
-    for (const pattern of patterns) {
+    for (const pattern of decimalPatterns) {
       let match
       while ((match = pattern.exec(text)) !== null) {
         const [, dateStr, vendor, amountStr] = match
-        if (vendor && vendor.trim().length > 0) {
-          // Parse European number format: 8.000,00 → 8000.00
-          const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
-
-          // Convert DD/MM/YYYY or DD-MM-YYYY to ISO 8601 format (YYYY-MM-DD)
-          let isoDate
-          if (dateStr.includes('/')) {
-            const [day, month, year] = dateStr.split('/')
-            isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-          } else {
-            const [day, month, year] = dateStr.split('-')
-            isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-          }
-
-          transactions.push({
-            date: isoDate,
-            vendor: vendor.trim(),
-            amount: parsedAmount,
-            currency: 'EUR',
-            type: parsedAmount < 0 ? 'debit' : 'credit',
-            status: 'pending'
-          })
-        }
+        if (!vendor || vendor.trim().length === 0) continue
+        const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
+        const isoDate = toISODate(dateStr)
+        if (alreadyCaptured(isoDate, vendor, parsedAmount)) continue
+        // Apply keyword-based direction (overrides OCR'd sign which is often
+        // dropped). If the keyword detection says outgoing but the OCR'd sign
+        // was already negative, both agree — leave it. If they disagree,
+        // trust the keyword.
+        const dir = detectDirection(vendor)
+        const signedAmount = dir === 'credit'
+          ? Math.abs(parsedAmount)
+          : -Math.abs(parsedAmount)
+        transactions.push({
+          date: isoDate,
+          vendor: vendor.trim(),
+          amount: signedAmount,
+          currency: 'EUR',
+          type: dir,
+          status: 'pending',
+        })
       }
+    }
+
+    // ---------- Pattern 3: decimal-stripped fallback ----------
+    // When OCR drops the comma decimal (and often the negative sign), each
+    // row in the source statement comes out like:
+    //   11/03/2026 GT GET TAXI SYSTEMS LT TEL AVIV-JAF ISR 125.60... N/A 3545
+    //                                                                ↑
+    //                                       trailing integer = amount × 100
+    // We rely on the "N/A" reference-number column as an anchor: any integer
+    // right after "N/A" is the amount with the last 2 digits being cents.
+    //
+    // The negative lookahead (?!,\d) prevents this pattern from grabbing the
+    // INTEGER PART of a comma-decimal amount. E.g. for "N/A 101,80" we do NOT
+    // want to match "101" and treat it as 1.01 cents — Pattern 1 already
+    // captured the full 101,80 → 101.80 from that same line. Without this
+    // guard, Pattern 3 produces a phantom €1.01 row alongside the real €101.80.
+    //
+    // Direction comes from the keyword detector — "Cash deposit" lines come
+    // out as credit (incoming), everything else defaults to debit.
+    const integerAmountPattern = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+N\/A\s+(\d+)(?!,\d)\b/gi
+    let m3
+    while ((m3 = integerAmountPattern.exec(text)) !== null) {
+      const [, dateStr, vendor, intStr] = m3
+      if (!vendor || vendor.trim().length === 0) continue
+      const intNum = parseInt(intStr, 10)
+      if (Number.isNaN(intNum)) continue
+      const absAmount = intNum / 100
+      const isoDate = toISODate(dateStr)
+      if (alreadyCaptured(isoDate, vendor, absAmount)) continue
+      const dir = detectDirection(vendor)
+      const signedAmount = dir === 'credit' ? absAmount : -absAmount
+      transactions.push({
+        date: isoDate,
+        vendor: vendor.trim(),
+        amount: signedAmount,
+        currency: 'EUR',
+        type: dir,
+        status: 'pending',
+      })
     }
 
     return transactions
@@ -228,6 +296,22 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
           const text = result.data.text
           const transactions = extractTransactions(text)
           const { accountNumber, accountType, company: detectedCompany } = extractAccountNumber(text)
+
+          // DEBUG: always dump the raw OCR'd text + extracted transaction list +
+          // partial date/amount matches. Lets us spot missing rows (e.g. when
+          // Tesseract drops a transaction line entirely or in a format the regex
+          // doesn't catch) without re-instrumenting the code.
+          console.warn(`📋 OCR debug for "${file.name}" — extracted ${transactions.length} transactions.`)
+          console.log('--- Raw OCR text ---')
+          console.log(text)
+          console.log('--- Extracted transactions ---')
+          console.table(transactions.map(t => ({ date: t.date, vendor: t.vendor?.substring(0, 40), amount: t.amount })))
+          const dateMatches = text.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}/g) || []
+          const amountEU    = text.match(/[-]?[\d.]+,\d{2}/g) || []
+          const amountUS    = text.match(/[-]?[\d,]+\.\d{2}/g) || []
+          console.warn(`Dates in text: ${dateMatches.length}`, dateMatches.slice(0, 12))
+          console.warn(`Euro-format amounts (1.234,56) in text: ${amountEU.length}`, amountEU.slice(0, 12))
+          console.warn(`US-format amounts (1,234.56) in text: ${amountUS.length}`, amountUS.slice(0, 12))
 
           if (!accountNumber) {
             throw new Error('Could not identify account number in statement. Ensure this is a valid Rabona Holdings or Espargos bank statement.')

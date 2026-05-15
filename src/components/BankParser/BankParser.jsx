@@ -92,6 +92,7 @@ export function BankParser({ selectedCompany, selectedMonth, selectedYear }) {
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           onRefresh={handleImportRefresh}
+          refreshTrigger={refreshTrigger}
         />
 
         <hr className="section-divider" />
@@ -109,7 +110,10 @@ export function BankParser({ selectedCompany, selectedMonth, selectedYear }) {
           selectedCompany={selectedCompany}
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
-          onStatusChange={loadStats}
+          // Bump refreshTrigger on any internal mutation so UploadedFiles
+          // (live transaction count) and BankParserStats both stay in sync
+          // with row-level edits / deletes / finalize.
+          onStatusChange={() => setRefreshTrigger(prev => prev + 1)}
           refreshTrigger={refreshTrigger}
         />
       </div>

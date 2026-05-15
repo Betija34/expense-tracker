@@ -18,13 +18,22 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
   }
 
+  // Amount is always displayed/edited as POSITIVE in the form. The SIGN is
+  // derived from transaction_type at save time: credit → +amount, debit → -amount.
   const [formData, setFormData] = useState({
-    amount: transaction.amount,
-    transaction_date: isoToDisplay(transaction.transaction_date),
-    description: transaction.description
+    amount:             Math.abs(Number(transaction.amount) || 0),
+    transaction_date:   isoToDisplay(transaction.transaction_date),
+    description:        transaction.description,
+    transaction_type:   transaction.transaction_type || 'debit',  // 'credit' = in, 'debit' = out
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  // Lock direction editing for already-finalized transactions — flipping the
+  // direction would leave the linked expense pointing at the old direction's
+  // category, creating inconsistent data. The user should use Re-categorize
+  // (or delete the expense first) for matched rows.
+  const directionLocked = transaction.status === 'matched'
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -54,12 +63,20 @@ export function EditTransaction({ transaction, onClose, onSave }) {
       // Convert DD/MM/YYYY to ISO format for storage
       const isoDate = displayToIso(formData.transaction_date)
 
+      // Apply the direction's sign convention: credit → positive, debit → negative.
+      // Math.abs guards against an already-signed value being entered.
+      const positiveAmount = Math.abs(formData.amount)
+      const signedAmount = formData.transaction_type === 'credit'
+        ? positiveAmount
+        : -positiveAmount
+
       const { error: updateError } = await supabase
         .from('bank_transactions')
         .update({
-          amount: formData.amount,
+          amount: signedAmount,
           transaction_date: isoDate,
           description: formData.description,
+          transaction_type: formData.transaction_type,
           updated_at: new Date().toISOString()
         })
         .eq('id', transaction.id)
@@ -126,14 +143,22 @@ export function EditTransaction({ transaction, onClose, onSave }) {
           </div>
 
           <div className="form-group">
-            <label>Transaction Type</label>
-            <input
-              type="text"
-              value={transaction.transaction_type === 'credit' ? 'Incoming (Credit)' : 'Outgoing (Debit)'}
+            <label>Direction {directionLocked && <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(locked — already finalized)</span>}</label>
+            <select
+              name="transaction_type"
+              value={formData.transaction_type}
+              onChange={handleChange}
               className="form-input"
-              disabled
-              readOnly
-            />
+              disabled={directionLocked}
+            >
+              <option value="debit">➖ Outgoing (Debit)</option>
+              <option value="credit">➕ Incoming (Credit)</option>
+            </select>
+            {!directionLocked && (
+              <small style={{ color: '#6b7280', fontSize: 12, marginTop: 4, display: 'block' }}>
+                Flip this if the OCR captured the wrong direction.
+              </small>
+            )}
           </div>
 
           <div className="form-group">

@@ -9,14 +9,18 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ]
 
-export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, onRefresh }) {
+export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, onRefresh, refreshTrigger }) {
   const [imports, setImports] = useState([])
   const [loading, setLoading] = useState(false)
 
+  // refreshTrigger is bumped by BankParser whenever a transaction is edited,
+  // deleted, or finalized — that keeps the live transaction counts on each
+  // file in sync without us having to maintain a separate counter.
   useEffect(() => {
     if (!selectedCompany || !selectedMonth || !selectedYear) return
     loadImports()
-  }, [selectedCompany, selectedMonth, selectedYear, onRefresh])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompany, selectedMonth, selectedYear, onRefresh, refreshTrigger])
 
   const loadImports = async () => {
     try {
@@ -33,17 +37,29 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
 
       // Filter by the currently-selected month + year via the filename convention.
       // Files named "<Prefix> January 2026.<ext>" match when Jan 2026 is selected, etc.
+      //
+      // We pull bank_transactions(count) alongside each import so the displayed
+      // count reflects LIVE state, not the stored transaction_count snapshot.
+      // This way row-level deletes in the Bank Parser (or any other path)
+      // immediately update the file's transaction count without us having to
+      // maintain a separate counter.
       const monthName = MONTH_NAMES[selectedMonth - 1]
       const { data: importsData, error } = await supabase
         .from('bank_imports')
-        .select('*')
+        .select('*, bank_transactions(count)')
         .eq('company_id', company.id)
         .ilike('file_name', `%${monthName}%${selectedYear}%`)
         .order('created_at', { ascending: false })
 
       if (error) throw error
 
-      setImports(importsData || [])
+      // Flatten the live count onto the import row as `live_transaction_count`
+      // so the existing render code can be updated minimally.
+      const enriched = (importsData || []).map(imp => ({
+        ...imp,
+        live_transaction_count: imp.bank_transactions?.[0]?.count ?? imp.transaction_count ?? 0,
+      }))
+      setImports(enriched)
     } catch (err) {
       console.error('Failed to load imports:', err)
     } finally {
@@ -201,7 +217,7 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
                   <td className="date">
                     {new Date(imp.import_date).toLocaleDateString()}
                   </td>
-                  <td className="transactions">{imp.transaction_count}</td>
+                  <td className="transactions">{imp.live_transaction_count}</td>
                   <td className="status">
                     <span className={`status-badge ${imp.status}`}>
                       {imp.status === 'completed' ? '✓' : '⏳'} {imp.status}
