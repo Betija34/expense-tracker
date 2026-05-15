@@ -12,8 +12,11 @@ This is the permanent record of Day 6 of the Rabona Holdings + Espargos expense 
 | `f2cd980` | Fix View Expenses: preserve scroll position on save + pre-fill category/subcategory on edit |
 | `8f0bdd0` | V10/V11/V12 migrations: Bank Transfer Fees + Loan Repayments + Car Insurance |
 | `1120e31` | Re-edit split groups + delete bank-imported expenses from View Expenses |
+| `6b778a1` | Day 6 session summary (intermediate) |
+| `68506f8` | Bank Parser: OCR fallback + smart direction + dedup + flip direction + row delete + live count |
+| _(final)_ | Travel Expenses optional shareholder + split company portion + sub-ref preservation |
 
-All four commits are on `origin/main`. Local `main` is in sync. Working tree is clean.
+All commits on `origin/main`. Local `main` is in sync. Working tree is clean.
 
 ---
 
@@ -93,6 +96,30 @@ All idempotent (`ON CONFLICT DO NOTHING` / `DO UPDATE SET`), safe to re-run.
 - `DATABASE_SCHEMA_V2_MIGRATION.sql` through `DATABASE_SCHEMA_V12_MIGRATION.sql`
 
 **No code changes were needed in the frontend for the new categories/subcategories** — they load dynamically from the database, so both Rabona and Espargos see them automatically.
+
+---
+
+### 7. Bank Parser — OCR resilience pass
+While importing real Mastercard and Current Account statements (RMC and RCC) for March 2026, six different OCR-related friction points surfaced. Each fixed in turn while testing:
+
+- **Decimal-stripped amount fallback (Pattern 3).** Tesseract sometimes drops the comma decimal when reading the amount column, producing lines like `... N/A 3545 Vv` instead of `... -35,45 Vv`. Pattern 3 anchors on the `N/A` reference-number column and treats the trailing integer as `amount × 100`. This recovered 10 transactions on a file that previously imported 0.
+- **Smart direction detection.** Tesseract also drops minus signs unreliably. Instead of trusting the OCR'd sign, the parser now reads keywords in the description: `deposit / refund / received / transfer from / incoming / payment in` → credit (incoming). Anything else defaults to debit (outgoing). Cash deposit lines on the RCC statement that were being captured as outgoing are now correctly inbound.
+- **Smarter dedup.** Old dedup keyed on date + vendor-prefix-15-chars only, which incorrectly merged two legitimate Wolt Greece transactions on the same day (different amounts). New dedup keys on date + amount + vendor-prefix, so same-vendor different-amount rows are both captured.
+- **Negative lookahead in Pattern 3.** Without it, Pattern 3 would also match the prefix of comma-decimal amounts (e.g. `N/A 101,80` → captured 101 → €1.01 phantom). The `(?!,\d)` lookahead skips comma-decimal lines so Pattern 1 owns them.
+- **Editable direction in Edit Transaction modal.** "Transaction Type" was a read-only display. Now it's a dropdown — flip Outgoing ↔ Incoming with one click for any row that hasn't been finalized. Locked once status = matched (would create inconsistent expense state).
+- **Row-level delete for pending bank transactions.** Red 🗑 button next to ✎ and ✓ — confirms with description + amount + date, deletes only the bank_transaction row (file remains intact). Pending only; matched rows route through the View Expenses delete flow.
+- **Live transaction count in Uploaded Files.** Count was a stored `bank_imports.transaction_count` that drifted when a row was deleted from the table. Now uses `bank_transactions(count)` via Supabase relation aggregate — always exact, no possibility of drift.
+- **Always-on OCR debug logging.** `console.warn` dumps the raw OCR text, extracted transaction table, and counts of detected dates / euro-format amounts / US-format amounts on every upload. Lets us diagnose any future quirks from one screenshot of DevTools.
+
+### 8. Travel Expenses — optional shareholder routing
+Travel Expenses didn't expose a shareholder picker before. That meant a flight booked under the company couldn't be routed to the right person's Travel Log section without splitting it. Fixed in three places:
+
+- **Single-mode edit (Re-categorize + Edit Manual Expense)** — the shareholder picker now appears when the category is Travel Expenses (`sub_ref_series = 'T'`), shown as OPTIONAL (label says "for Travel Log routing"). For Personal Expenses of Shareholders it stays REQUIRED with the asterisk.
+- **Split-mode Company portion** — when the Company portion's category is Travel Expenses, a per-portion shareholder picker appears under the subcategory. This is the new path the user reached for from the AEGEAN €1007.68 case: company pays for a YK trip → tag the Company portion with YK → it shows up in YK's Travel Log section.
+- **Split re-edit routing** — pre-fill logic was updated so Travel Expenses always land in the Company slot (with the shareholder_code preserved as a tag). This keeps the mental model clean: YK/BK slots are "Personal Expenses of Shareholders", Company slot is "Travel + optional traveler tag".
+
+### 9. Sub-reference preservation across split re-edits
+When re-editing an existing split group, the save logic deletes the old rows and inserts new ones, which used to allocate fresh sub-ref numbers every time. A user editing a Travel split would burn T3/5–T3/10 to gaps and get T3/11+ as replacements. The fix builds a map of `(slot → old sub_ref)` from the doomed siblings and reuses each number when the new portion lands in the same slot AND keeps the same series. T3/x numbers are now stable across repeated saves.
 
 ---
 
