@@ -336,16 +336,22 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
                 </div>
               )}
 
-              {/* Shareholder tag (for categories that need it) */}
-              {selectedCategory?.needs_shareholder_tag && (
+              {/* Shareholder tag — required for Personal Expenses of Shareholders,
+                  optional for Travel Expenses (so the trip routes to the right
+                  person's section in Travel Log). Leave blank for company travel. */}
+              {(selectedCategory?.needs_shareholder_tag || selectedCategory?.sub_ref_series === 'T') && (
                 <div className="form-group">
-                  <label>Shareholder *</label>
+                  <label>
+                    Shareholder {selectedCategory?.needs_shareholder_tag
+                      ? '*'
+                      : <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — assign to YK or BK so it appears under them in Travel Log)</span>}
+                  </label>
                   <select
                     value={form.shareholder_code}
                     onChange={(e) => setForm({ ...form, shareholder_code: e.target.value })}
                     className="form-input"
                   >
-                    <option value="">— Select shareholder —</option>
+                    <option value="">— {selectedCategory?.needs_shareholder_tag ? 'Select shareholder' : 'None (company)'} —</option>
                     <option value="YK">YK</option>
                     <option value="BK">BK</option>
                   </select>
