@@ -953,7 +953,18 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
         <EditManualExpenseModal
           expense={editingManual}
           onClose={() => setEditingManual(null)}
-          onSaved={() => loadAll()}
+          onSaved={(updatedRow) => {
+            // Update only the edited row in place so the table doesn't
+            // re-render from scratch and the scroll position stays put
+            // on the row the user just finished editing.
+            // If the modal couldn't refetch the row (rare), fall back
+            // to a full reload so we don't end up with stale data.
+            if (updatedRow) {
+              setExpenses(prev => prev.map(e => e.id === updatedRow.id ? updatedRow : e))
+            } else {
+              loadAll()
+            }
+          }}
         />
       )}
     </div>

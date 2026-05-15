@@ -33,7 +33,13 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
-  // Pre-fill form from the expense being edited
+  // Pre-fill form from the expense being edited.
+  // Fallbacks: if the FK column is null but the join brought back a parent
+  // row, use that. Defensive for old rows that may have inconsistent data.
+  const initialCategoryId =
+    expense.category_id ||
+    expense.expense_categories?.id ||
+    ''
   const initialClient = expense.client_name && PREDEFINED_CLIENTS.includes(expense.client_name)
     ? expense.client_name
     : (expense.client_name ? 'Other' : '')
@@ -45,7 +51,7 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
     vendor:            expense.vendor || '',
     description:       expense.description || '',
     amount:            String(expense.amount || ''),
-    category_id:       expense.category_id || '',
+    category_id:       initialCategoryId,
     subcategory_id:    expense.subcategory_id || '',
     subcategory_name:  expense.subcategory_name || '',
     shareholder_code:  expense.shareholder_code || '',
@@ -54,7 +60,10 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
     custom_client_name: initialCustomClient,
   })
 
-  // Load categories + subcategories — only direction='out' since manual expenses are outgoing-only
+  // Load ALL categories + subcategories.
+  // We don't filter by direction here so any expense's saved category is
+  // always present in the dropdown (otherwise the select shows blank and
+  // the user has to re-pick something that was already correct).
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -62,17 +71,16 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
         setLoading(true); setError(null)
         const { data: cats, error: catErr } = await supabase
           .from('expense_categories')
-          .select('id, name, direction, needs_shareholder_tag, sub_ref_series, sub_ref_manual')
-          .eq('direction', 'out')
-          .order('name')
+          .select('id, name, direction, needs_shareholder_tag, sub_ref_series, sub_ref_manual, sort_order')
+          .order('sort_order')
         if (catErr) throw catErr
         if (cancelled) return
         setCategories(cats || [])
 
         const { data: subs, error: subErr } = await supabase
           .from('expense_subcategories')
-          .select('id, name, category_id')
-          .order('name')
+          .select('id, name, category_id, sort_order')
+          .order('sort_order')
         if (subErr) throw subErr
         if (!cancelled) setAllSubcategories(subs || [])
       } catch (err) {
@@ -84,6 +92,23 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
     load()
     return () => { cancelled = true }
   }, [])
+
+  // Once subcategories are loaded, recover subcategory_id when an older row
+  // saved only subcategory_name. This way the dropdown reflects the saved
+  // value instead of appearing blank.
+  useEffect(() => {
+    if (loading) return
+    if (form.subcategory_id) return                   // already set — nothing to do
+    if (!form.subcategory_name) return                // no name to match
+    if (!form.category_id) return                     // need category to scope match
+    const match = allSubcategories.find(
+      s => s.category_id === form.category_id && s.name === form.subcategory_name
+    )
+    if (match) {
+      setForm(f => ({ ...f, subcategory_id: match.id }))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, allSubcategories])
 
   const selectedCategory = useMemo(
     () => categories.find(c => c.id === form.category_id),
@@ -158,7 +183,26 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
         .eq('id', expense.id)
       if (updErr) throw updErr
 
-      if (onSaved) onSaved()
+      // Refetch the updated row WITH joins so the parent can swap it
+      // into its `expenses` array in place — no full reload, no scroll
+      // jump. Falls back to a plain reload signal if the refetch fails.
+      let updatedRow = null
+      try {
+        const { data, error: fetchErr } = await supabase
+          .from('expenses')
+          .select(`
+            *,
+            accounts (id, name, account_type),
+            expense_categories (id, name, direction)
+          `)
+          .eq('id', expense.id)
+          .single()
+        if (!fetchErr) updatedRow = data
+      } catch (_e) {
+        // Swallow — we'll signal a reload below
+      }
+
+      if (onSaved) onSaved(updatedRow)
       onClose()
     } catch (err) {
       setError(err.message || 'Failed to save changes')
