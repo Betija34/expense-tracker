@@ -285,19 +285,84 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     window.print()
   }
 
-  // ----- Delete a manual expense -----
-  // Handles three cases:
-  //   1. Bank-imported expense → blocked (delete in Bank Parser instead, so the
-  //      bank_transactions side stays consistent)
-  //   2. Single (non-split) manual expense → simple confirm + delete
-  //   3. Split portion → ask whether to delete just this portion or all siblings
+  // ----- Delete an expense (manual OR bank-imported) -----
+  // Handles four cases:
+  //   1. Bank-imported single → confirm + un-match bank tx + delete
+  //   2. Bank-imported split portion → can only delete the WHOLE group (otherwise
+  //      the surviving portions wouldn't sum to the bank amount). Prompt 'all'/cancel.
+  //   3. Manual split portion → ask 'this' / 'all' / cancel
+  //   4. Manual single → simple confirm + delete
+  //
+  // For any case that involves a bank-imported row we also:
+  //   • NULL linked_expense_id on any counterpart pointing at the rows we'll delete
+  //   • NULL bank_transactions.matched_expense_id and set status back to 'pending'
+  //     (so the bank transaction returns to the Bank Parser for re-Finalize)
   const handleDelete = async (expense) => {
-    if (expense.bank_transaction_id) {
-      alert('Bank-imported expenses are deleted via Bank Parser (so the bank transaction status stays consistent).')
+    const isBankImported = !!expense.bank_transaction_id
+
+    // Helper: break FK refs + delete a set of expense IDs + un-match bank tx
+    const deleteExpenseSet = async (ids, bankTxIdToUnmatch) => {
+      if (!ids || ids.length === 0) return
+      // NULL counterpart linked_expense_id pointing at any of these rows
+      const { error: unlinkErr } = await supabase
+        .from('expenses')
+        .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
+        .in('linked_expense_id', ids)
+      if (unlinkErr) throw unlinkErr
+      // Un-match the bank transaction first so its FK to matched_expense_id
+      // doesn't block the delete
+      if (bankTxIdToUnmatch) {
+        const { error: unmatchErr } = await supabase
+          .from('bank_transactions')
+          .update({
+            matched_expense_id: null,
+            status: 'pending',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', bankTxIdToUnmatch)
+        if (unmatchErr) throw unmatchErr
+      }
+      const { error: delErr } = await supabase.from('expenses').delete().in('id', ids)
+      if (delErr) throw delErr
+    }
+
+    // Bank-imported split portion → group-only delete
+    if (isBankImported && expense.is_split && expense.split_group_id) {
+      const siblings = splitGroupMap.get(expense.split_group_id) || []
+      const choice = window.prompt(
+        `This is part of a BANK-IMPORTED split group with ${siblings.length} portion(s).\n\n` +
+        `Bank-imported splits can only be deleted as a whole (otherwise the surviving portions wouldn't sum to the bank amount).\n\n` +
+        `Type "all" to delete the entire group AND return the bank transaction to the Bank Parser for re-categorization.\n` +
+        `Type anything else (or leave blank) to cancel.`
+      )
+      if (choice !== 'all') return
+      try {
+        await deleteExpenseSet(siblings.map(s => s.id), expense.bank_transaction_id)
+        loadAll({ silent: true })
+      } catch (err) {
+        alert('Delete failed: ' + (err.message || err))
+      }
       return
     }
 
-    // Split portion case
+    // Bank-imported single → confirm + un-match
+    if (isBankImported) {
+      if (!window.confirm(
+        `Delete BANK-IMPORTED expense ${expense.reference_number || ''}?\n\n` +
+        `${expense.vendor || '—'} · €${Number(expense.amount || 0).toFixed(2)}\n\n` +
+        `This will also return the bank transaction to the Bank Parser as 'pending' so you can re-categorize it.\n\n` +
+        `This cannot be undone.`
+      )) return
+      try {
+        await deleteExpenseSet([expense.id], expense.bank_transaction_id)
+        loadAll({ silent: true })
+      } catch (err) {
+        alert('Delete failed: ' + (err.message || err))
+      }
+      return
+    }
+
+    // Manual split portion case
     if (expense.is_split && expense.split_group_id) {
       const siblings = splitGroupMap.get(expense.split_group_id) || []
       const choice = window.prompt(
@@ -308,19 +373,14 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       )
       if (choice === 'this') {
         try {
-          const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
-          if (error) throw error
+          await deleteExpenseSet([expense.id], null)
           loadAll({ silent: true })
         } catch (err) {
           alert('Delete failed: ' + (err.message || err))
         }
       } else if (choice === 'all') {
         try {
-          const { error } = await supabase
-            .from('expenses')
-            .delete()
-            .eq('split_group_id', expense.split_group_id)
-          if (error) throw error
+          await deleteExpenseSet(siblings.map(s => s.id), null)
           loadAll({ silent: true })
         } catch (err) {
           alert('Delete failed: ' + (err.message || err))
@@ -329,13 +389,12 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       return
     }
 
-    // Simple single-expense case
+    // Manual single-expense case
     if (!window.confirm(`Delete expense ${expense.reference_number || ''}?\n\n${expense.vendor || '—'} · €${Number(expense.amount || 0).toFixed(2)}\n\nThis cannot be undone.`)) {
       return
     }
     try {
-      const { error } = await supabase.from('expenses').delete().eq('id', expense.id)
-      if (error) throw error
+      await deleteExpenseSet([expense.id], null)
       loadAll({ silent: true })
     } catch (err) {
       alert('Delete failed: ' + (err.message || err))

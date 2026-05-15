@@ -72,7 +72,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   //             revenue from reimbursement (they roll up differently in reporting).
   //             A single client per transfer; each portion records its own invoice #(s).
   // -------------------------------------------------------------
-  const [isSplit, setIsSplit] = useState(false)
+  // When opening Re-categorize on an existing SPLIT PORTION, default to split
+  // mode so the user can immediately edit the whole group. Otherwise default
+  // to single mode (toggle off).
+  const isExistingSplit = isEditMode && !!existingExpense?.is_split && !!existingExpense?.split_group_id
+  const [isSplit, setIsSplit] = useState(isExistingSplit)
+  // All siblings of the existing split group (loaded once, used to pre-fill
+  // every portion slot so the user can edit the whole group as one unit).
+  const [groupSiblings, setGroupSiblings] = useState([])
   const OUTGOING_PORTION_TYPES = [
     { key: 'company', label: 'Company portion',                accent: '#185FA5' },
     { key: 'yk',      label: 'YK shareholder portion',         accent: '#3C3489' },
@@ -100,6 +107,98 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   }), {})
   const [portions, setPortions] = useState(initialPortions)
   const [allSubcats, setAllSubcats] = useState([])
+  // One-shot guard so the edit-mode split pre-fill runs only the first time
+  // the user enables the split toggle in this modal session — not every render.
+  const [splitPrefilled, setSplitPrefilled] = useState(false)
+
+  // On mount: if this is a split portion, load ALL siblings of the group so
+  // the user can edit the whole group as one unit. Runs once.
+  useEffect(() => {
+    if (!isExistingSplit) return
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('split_group_id', existingExpense.split_group_id)
+        .order('split_portion_index', { ascending: true })
+      if (!error && !cancelled && data) {
+        setGroupSiblings(data)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Pre-fill portion slots based on context:
+  //   A) Editing an existing split group → fill EVERY slot from its sibling
+  //      data so the user sees the current split exactly as it is.
+  //   B) Editing a single (non-split) outgoing expense + ticking split toggle
+  //      → seed only the Company slot with the original amount/category so
+  //      the user can split it off into YK / BK / Client portions.
+  // Both branches are guarded by splitPrefilled so they only run once per
+  // modal session.
+  useEffect(() => {
+    if (!isEditMode) return
+    if (splitPrefilled) return
+
+    // Branch A — existing group, prefill all slots
+    if (isExistingSplit && groupSiblings.length > 0) {
+      // Slot mapping based on each sibling's metadata.
+      // OUTGOING: route by shareholder_code (YK/BK) or is_reimbursable (client)
+      //           or fall back to 'company'.
+      // INCOMING: route by the sibling's category name → payment vs reimbursement.
+      const newPortions = { ...initialPortions }
+      const categoryById = new Map() // built lazily below from categories state
+
+      for (const s of groupSiblings) {
+        let slotKey
+        if (direction === 'in') {
+          // For incoming, we need the category name. We don't always have it
+          // on the row directly, so we use subcategory_name as a hint or fall
+          // back to the order: index 0 → payment, index 1 → reimbursement.
+          // Safer: use split_portion_index (1-based) — payment=1, reimbursement=2.
+          slotKey = (s.split_portion_index || 0) === 2 ? 'reimbursement' : 'payment'
+        } else {
+          slotKey =
+            s.shareholder_code === 'YK' ? 'yk' :
+            s.shareholder_code === 'BK' ? 'bk' :
+            s.is_reimbursable ? 'client' :
+            'company'
+        }
+
+        const clientInPredefined = s.client_name && PREDEFINED_CLIENTS.includes(s.client_name)
+        newPortions[slotKey] = {
+          amount:             String(Math.abs(Number(s.amount || 0)).toFixed(2)),
+          category_id:        s.category_id || '',
+          subcategory_id:     s.subcategory_id || '',
+          subcategory_name:   s.subcategory_name || '',
+          client_name:        clientInPredefined ? s.client_name : (s.client_name ? 'Other' : ''),
+          custom_client_name: !clientInPredefined && s.client_name ? s.client_name : '',
+          invoice_number:     s.invoice_number || '',
+        }
+      }
+      setPortions(newPortions)
+      setSplitPrefilled(true)
+      return
+    }
+
+    // Branch B — single existing expense, user just enabled split
+    if (!isExistingSplit && isSplit && direction === 'out') {
+      setPortions(prev => ({
+        ...prev,
+        company: {
+          ...prev.company,
+          amount:           String(Math.abs(Number(existingExpense.amount || 0)).toFixed(2)),
+          category_id:      existingExpense.category_id || '',
+          subcategory_id:   existingExpense.subcategory_id || '',
+          subcategory_name: existingExpense.subcategory_name || '',
+        },
+      }))
+      setSplitPrefilled(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSplit, groupSiblings])
 
   // Autocomplete: distinct (vendor, description) pairs from past expenses for this company
   const [vendorDescriptionPairs, setVendorDescriptionPairs] = useState([])
@@ -749,6 +848,29 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         }
       }
 
+      // EDIT-MODE PREP: identify the set of expense IDs that this save replaces.
+      //   • Editing a single expense → just [existingExpense.id]
+      //   • Editing an existing split group → all sibling IDs
+      // We need to break any FK references to these BEFORE we can delete them.
+      //   1. NULL linked_expense_id on any counterpart row that points at any
+      //      of them (otherwise the FK from the counterpart blocks the delete).
+      //   2. Insert the new portion rows.
+      //   3. Re-point bank_transactions.matched_expense_id to the first new
+      //      portion (replaces the old pointer to a doomed row).
+      //   4. Delete the doomed expense(s) — now safe.
+      const doomedIds = isEditMode
+        ? (isExistingSplit
+            ? groupSiblings.map(s => s.id).filter(Boolean)
+            : [existingExpense.id])
+        : []
+      if (doomedIds.length > 0) {
+        const { error: unlinkErr } = await supabase
+          .from('expenses')
+          .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
+          .in('linked_expense_id', doomedIds)
+        if (unlinkErr) throw unlinkErr
+      }
+
       // Insert all portions
       const { data: inserted, error: insertErr } = await supabase
         .from('expenses')
@@ -766,6 +888,18 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         })
         .eq('id', transaction.id)
       if (updateErr) throw updateErr
+
+      // EDIT-MODE CLEANUP: now that the bank tx no longer points at them and
+      // any counterpart links have been nulled, we can safely delete the
+      // doomed expense(s) — one row for single→split, or all siblings for
+      // split→split replacement.
+      if (doomedIds.length > 0) {
+        const { error: delErr } = await supabase
+          .from('expenses')
+          .delete()
+          .in('id', doomedIds)
+        if (delErr) throw delErr
+      }
 
       onSave && onSave()
       onClose && onClose()
@@ -832,11 +966,18 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             </div>
           </div>
 
-          {/* Split mode toggle — available for BOTH outgoing AND incoming in create mode.
+          {/* Split mode toggle — available in BOTH create mode and edit mode.
               Outgoing splits: 4 portion types (Company / YK / BK / Client).
               Incoming splits: 2 portion types (Client Payment / Client Reimbursement),
-                               same client across both portions, separate invoice numbers. */}
-          {!isEditMode && (
+                               same client across both portions, separate invoice numbers.
+              In edit mode, enabling split CONVERTS this single expense into multiple
+              portions: the original row is replaced. The Company portion auto-fills
+              with the existing data so the user only needs to adjust amounts. */}
+          {/* For a single (non-split) expense we show the toggle so the user
+              can opt-in to splitting. For an existing split group we hide the
+              toggle and show an info note instead — the split UI below is
+              always visible and pre-filled with the current group. */}
+          {!isExistingSplit && (
             <div className="form-group" style={{
               background: '#eef2ff', border: '1px solid #c7d2fe',
               borderRadius: 4, padding: 10
@@ -855,9 +996,21 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
               </label>
               {isSplit && (
                 <small style={{ color: '#4338ca', fontSize: 12, marginTop: 4, display: 'block' }}>
-                  Each filled portion creates its own expense row with a consecutive main reference number, linked together.
+                  {isEditMode
+                    ? 'Saving will REPLACE the existing single expense with these portions. The bank transaction stays linked. The Company portion is pre-filled — adjust the amounts.'
+                    : 'Each filled portion creates its own expense row with a consecutive main reference number, linked together.'}
                 </small>
               )}
+            </div>
+          )}
+          {isExistingSplit && (
+            <div className="form-group" style={{
+              background: '#eef2ff', border: '1px solid #c7d2fe',
+              borderRadius: 4, padding: 10, fontSize: 13, color: '#3730a3'
+            }}>
+              ✏️ Editing split group of <strong>{groupSiblings.length || '…'} portions</strong>.
+              Adjust amounts or categories below — saving REPLACES the entire group
+              and re-anchors the bank transaction to the new portions.
             </div>
           )}
 
