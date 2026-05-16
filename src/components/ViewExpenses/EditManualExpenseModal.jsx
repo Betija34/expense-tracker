@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 
 /**
  * EditManualExpenseModal — full-fields edit for a manual (non-bank-imported) expense.
@@ -58,6 +59,9 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
     is_reimbursable:   !!expense.is_reimbursable,
     client_name:       initialClient,
     custom_client_name: initialCustomClient,
+    // Future-trip note — comma-separated list of YYYY-MM tokens.
+    // Display-only badge in the Travel Log. Blank = no note.
+    expected_travel_month: expense.expected_travel_month || '',
   })
 
   // Load ALL categories + subcategories.
@@ -174,6 +178,8 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
         is_reimbursable:    form.is_reimbursable,
         requires_reimbursement: form.is_reimbursable,
         client_name:        resolvedClient,
+        // Future-trip note (comma-separated YYYY-MM list, or null).
+        expected_travel_month: form.expected_travel_month || null,
         updated_at:         new Date().toISOString(),
       }
 
@@ -336,25 +342,37 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
                 </div>
               )}
 
-              {/* Shareholder tag — required for Personal Expenses of Shareholders,
-                  optional for Travel Expenses (so the trip routes to the right
-                  person's section in Travel Log). Leave blank for company travel. */}
-              {(selectedCategory?.needs_shareholder_tag || selectedCategory?.sub_ref_series === 'T') && (
+              {/* Shareholder picker — REQUIRED only for Personal Expenses of
+                  Shareholders. Travel Expenses do NOT show a picker here:
+                  traveler assignment lives in the Travel Log's inline
+                  → YK / → BK / Clear buttons. */}
+              {selectedCategory?.needs_shareholder_tag && (
                 <div className="form-group">
-                  <label>
-                    Shareholder {selectedCategory?.needs_shareholder_tag
-                      ? '*'
-                      : <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — assign to YK or BK so it appears under them in Travel Log)</span>}
-                  </label>
+                  <label>Shareholder *</label>
                   <select
                     value={form.shareholder_code}
                     onChange={(e) => setForm({ ...form, shareholder_code: e.target.value })}
                     className="form-input"
                   >
-                    <option value="">— {selectedCategory?.needs_shareholder_tag ? 'Select shareholder' : 'None (company)'} —</option>
+                    <option value="">— Select shareholder —</option>
                     <option value="YK">YK</option>
                     <option value="BK">BK</option>
                   </select>
+                </div>
+              )}
+
+              {/* Expected Travel Month(s) — only for Travel Expenses.
+                  Display-only badges; supports multiple months (e.g. a
+                  deposit covering Jan + Feb 2027). */}
+              {selectedCategory?.sub_ref_series === 'T' && (
+                <div className="form-group">
+                  <label>
+                    Expected Travel Month(s) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — pick one or more future months this payment is for; shows as badges on the Travel Log row)</span>
+                  </label>
+                  <MonthMultiSelect
+                    value={form.expected_travel_month}
+                    onChange={(v) => setForm({ ...form, expected_travel_month: v })}
+                  />
                 </div>
               )}
 

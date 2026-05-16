@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import {
   parseISODate,
   nextMainRefSeq,
@@ -87,6 +88,9 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     shareholder_code: '',
     manual_sub_ref_month: '',
     manual_sub_ref_seq: '',
+    // Expected travel month for prepaid travel. Only relevant when the
+    // category is Travel Expenses. Blank = use payment month.
+    expected_travel_month: '',
   }
   const [form, setForm] = useState(blankForm)
 
@@ -646,6 +650,7 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
       shareholder_code: expense.shareholder_code || '',
       manual_sub_ref_month: expense.sub_ref_series === 'S' ? String(expense.sub_ref_month || '') : '',
       manual_sub_ref_seq:   expense.sub_ref_series === 'S' ? String(expense.sub_ref_seq || '')   : '',
+      expected_travel_month: expense.expected_travel_month || '',
     })
     // Editing always uses single mode (split editing is out of scope for v1)
     setIsSplit(false)
@@ -809,6 +814,8 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
         shareholder_code:   form.shareholder_code || null,
         bank_transaction_id: null,                      // Manual entry — no bank tx
         status:             isEditMode ? editingEntry.status : 'pending',
+        // Future-trip note (comma-separated YYYY-MM list, or null).
+        expected_travel_month: form.expected_travel_month || null,
       }
 
       if (isEditMode) {
@@ -1529,6 +1536,20 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
               </label>
             </div>
           </div>
+
+          {/* Expected Travel Month(s) — only for Travel Expenses.
+              Display-only badges; supports multiple months. */}
+          {selectedCategory?.sub_ref_series === 'T' && (
+            <div className="form-group">
+              <label>
+                Expected Travel Month(s) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — pick one or more future months this payment is for; shows as badges on the Travel Log row)</span>
+              </label>
+              <MonthMultiSelect
+                value={form.expected_travel_month}
+                onChange={(v) => setForm({ ...form, expected_travel_month: v })}
+              />
+            </div>
+          )}
 
           <div className="form-group">
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

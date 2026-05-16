@@ -17,6 +17,15 @@ function App() {
   const [currentTab, setCurrentTab] = useState('bank-parser')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // When a child tab wants to deep-link to a specific expense (e.g. Travel
+  // Log's Pre-paid row clicking "View →"), it calls handleViewExpense(id):
+  // we record the id and switch to View Expenses. View Expenses reads the
+  // id and scrolls/highlights the row, then clears it.
+  const [focusExpenseId, setFocusExpenseId] = useState(null)
+  const handleViewExpense = (expenseId) => {
+    setFocusExpenseId(expenseId)
+    setCurrentTab('view-expenses')
+  }
 
   // Load companies on mount
   useEffect(() => {
@@ -186,6 +195,8 @@ function App() {
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
             onSwitchTab={setCurrentTab}
+            focusExpenseId={focusExpenseId}
+            onFocusHandled={() => setFocusExpenseId(null)}
           />
         )}
         {currentTab === 'shareholder' && (
@@ -202,6 +213,7 @@ function App() {
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
             onSwitchTab={setCurrentTab}
+            onViewExpense={handleViewExpense}
           />
         )}
         {currentTab === 'client' && (

@@ -28,7 +28,7 @@ const LINKABLE_CATEGORIES = new Set([
  * Read-only in this initial build; row actions (Edit/Delete/Approve/etc.)
  * will be wired up in the next step.
  */
-export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onSwitchTab }) {
+export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onSwitchTab, focusExpenseId, onFocusHandled }) {
   const [expenses, setExpenses] = useState([])
   const [bankStats, setBankStats] = useState({ total: 0, categorized: 0, pending: 0 })
   const [loading, setLoading] = useState(false)
@@ -277,8 +277,34 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     if ((e.status || 'pending') === 'pending') {
       cls += ' row-pending'
     }
+    // Deep-link highlight: when another tab requested we focus this row,
+    // add a 'row-focused' class for the briefly-visible flash effect.
+    if (focusExpenseId && e.id === focusExpenseId) {
+      cls += ' row-focused'
+    }
     return cls.trim()
   }
+
+  // When a focus request comes in (e.g. Travel Log "View →"), scroll the
+  // matching row into view + clear the request so the highlight class
+  // sticks for a moment then fades. The CSS handles the animation.
+  useEffect(() => {
+    if (!focusExpenseId) return
+    if (expenses.length === 0) return
+    // Defer to next tick so the row is in the DOM.
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-expense-id="${focusExpenseId}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+      // Keep highlight class for ~2s then clear so future renders don't keep it on.
+      const clearT = setTimeout(() => {
+        if (onFocusHandled) onFocusHandled()
+      }, 2200)
+      return () => clearTimeout(clearT)
+    }, 80)
+    return () => clearTimeout(t)
+  }, [focusExpenseId, expenses])
 
   // ----- Print -----
   const handlePrint = () => {
@@ -913,7 +939,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
             </thead>
             <tbody>
               {filteredExpenses.map(e => (
-                <tr key={e.id} className={getRowClassName(e)}>
+                <tr key={e.id} className={getRowClassName(e)} data-expense-id={e.id}>
                   <td className="select-cell">
                     <input
                       type="checkbox"

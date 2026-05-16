@@ -3,6 +3,21 @@
    selected company + month/year context.
    ============================================================ */
 
+/* Deep-link highlight — applied briefly when another tab (e.g. Travel
+   Log "View →") asks View Expenses to focus a specific expense row.
+   Pulses yellow for a couple of seconds then fades back to default. */
+@keyframes row-focus-flash {
+  0%   { background-color: #fef3c7; box-shadow: inset 4px 0 0 #f59e0b; }
+  70%  { background-color: #fef3c7; box-shadow: inset 4px 0 0 #f59e0b; }
+  100% { background-color: transparent; box-shadow: none; }
+}
+tr.row-focused {
+  animation: row-focus-flash 2.2s ease-out;
+}
+tr.row-focused td {
+  animation: row-focus-flash 2.2s ease-out;
+}
+
 .view-expenses {
   display: flex;
   flex-direction: column;

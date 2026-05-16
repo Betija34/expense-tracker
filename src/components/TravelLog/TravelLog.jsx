@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
+import { formatMonthYear } from '../../lib/monthUtils'
 import './TravelLog.css'
 
 /**
@@ -31,7 +32,7 @@ const SHAREHOLDERS = [
   { code: 'BK', color: '#ea580c', bgLight: '#fff7ed', bgPanel: '#fed7aa' },
 ]
 
-export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwitchTab }) {
+export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwitchTab, onViewExpense }) {
   const [companyId, setCompanyId] = useState(null)
   const [periods, setPeriods] = useState([])              // all periods this month for this company
   const [travelExpenses, setTravelExpenses] = useState([]) // all Travel Expense entries this month
@@ -75,7 +76,11 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         if (cancelled) return
         setPeriods(periodRows || [])
 
-        // All Travel Expenses for this month (we'll filter to those falling in a period at render)
+        // Travel expenses are always loaded by PAYMENT month. expected_travel_month
+        // is a display-only badge ("flight is for August trip"), NOT a routing
+        // key — the expense always belongs to the Travel Log of the month it
+        // was paid. Otherwise it would disappear from the month where you
+        // actually need to see the outflow.
         const { data: expData, error: expErr } = await supabase
           .from('expenses')
           .select('*, expense_categories(name)')
@@ -294,7 +299,62 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       XLSX.utils.book_append_sheet(wb, ws, `${s.code} Travel`)
     }
 
-    // If both shareholders had no data, still produce a single empty sheet so the file isn't broken
+    // Extra sheet for unassigned travel — captures the "Pre-paid / Unassigned"
+    // section visible on screen: travel expenses paid this month that don't
+    // match any current-month trip for either shareholder, plus those with
+    // no shareholder tag at all.
+    {
+      const matchedExpenseIds = new Set()
+      for (const p of periods) {
+        for (const e of travelExpenses) {
+          // Use invoice_date when set (actual transaction date) instead of
+          // expense.date (bank settlement date). Card swiped Mar 11, posted
+          // Mar 13 → invoice_date = 2026-03-11 matches a Mar 10-12 trip.
+          const matchDate = e.invoice_date || e.date
+          if (
+            e.shareholder_code === p.shareholder_code &&
+            matchDate >= p.from_date &&
+            matchDate <= p.to_date
+          ) {
+            matchedExpenseIds.add(e.id)
+          }
+        }
+      }
+      const looseExpenses = travelExpenses.filter(e => !matchedExpenseIds.has(e.id))
+      if (looseExpenses.length > 0) {
+        const rows = [
+          ['PRE-PAID / UNASSIGNED TRAVEL'],
+          ['Travel expenses paid this month that don\'t match a current-month trip.'],
+          [],
+          ['Shareholder', 'Date', 'Reference', 'Sub-Ref', 'Vendor', 'Subcategory', 'Amount', 'Reimbursable', 'Client'],
+        ]
+        for (const e of looseExpenses) {
+          const subRef = e.sub_ref_series
+            ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+            : ''
+          rows.push([
+            e.shareholder_code || '(none)',
+            e.date || '',
+            e.reference_number || '',
+            subRef,
+            e.vendor || '',
+            e.subcategory_name || '',
+            Number(e.amount || 0),
+            e.is_reimbursable ? 'Yes' : '',
+            e.client_name || '',
+          ])
+        }
+        const ws = XLSX.utils.aoa_to_sheet(rows)
+        ws['!cols'] = [
+          { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 26 },
+          { wch: 18 }, { wch: 11 }, { wch: 12 }, { wch: 18 },
+        ]
+        XLSX.utils.book_append_sheet(wb, ws, 'Pre-paid Travel')
+      }
+    }
+
+    // If neither shareholder had data and there was no unassigned travel either,
+    // still produce a single empty sheet so the file isn't broken.
     if (wb.SheetNames.length === 0) {
       const ws = XLSX.utils.aoa_to_sheet([['No travel data for this period']])
       XLSX.utils.book_append_sheet(wb, ws, 'Empty')
@@ -333,6 +393,14 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         periodLabel={`Period: ${monthLabel}`}
       />
 
+      {/* Month-summary bar — at-a-glance breakdown of travel expenses this
+          month: how many landed on a YK trip, a BK trip, or aren't anchored
+          to a current-month trip yet (pre-paid for future / unassigned). */}
+      <TravelLogSummaryBar
+        periods={periods}
+        travelExpenses={travelExpenses}
+      />
+
       {/* Two shareholder sections */}
       {SHAREHOLDERS.map(s => (
         <ShareholderTravelSection
@@ -349,6 +417,472 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
           onSwitchTab={onSwitchTab}
         />
       ))}
+
+      {/* Pre-paid / Unassigned Travel section — catches every travel expense
+          paid this month that isn't accounted for by a YK/BK trip this month.
+          Covers two cases:
+            • Flight paid in May for a trip in June → tagged YK or BK, but no
+              matching period this month. Surfaces as a reminder that this
+              shareholder has pre-paid travel pending a future trip.
+            • Travel expense not yet tagged with a shareholder → routes
+              nowhere automatically. User can ✏️ in View Expenses to assign. */}
+      <UnassignedTravelSection
+        periods={periods}
+        travelExpenses={travelExpenses}
+        onSwitchTab={onSwitchTab}
+        onUpdateExpense={updateExpenseDetails}
+        onViewExpense={onViewExpense}
+      />
+    </div>
+  )
+}
+
+// =============================================================
+// Month-summary bar — counts and totals split into four buckets:
+//   • Total travel expenses dated in this month
+//   • Tagged YK + falling within a YK trip this month  (= "in YK's log")
+//   • Tagged BK + falling within a BK trip this month  (= "in BK's log")
+//   • Everything else (pre-paid for future trip, or no shareholder tag)
+// =============================================================
+function TravelLogSummaryBar({ periods, travelExpenses }) {
+  const stats = useMemo(() => {
+    const isMatched = (e, shareholder) => {
+      if (e.shareholder_code !== shareholder) return false
+      // invoice_date override beats bank settlement date for trip matching.
+      const matchDate = e.invoice_date || e.date
+      return periods.some(p =>
+        p.shareholder_code === shareholder &&
+        matchDate >= p.from_date &&
+        matchDate <= p.to_date
+      )
+    }
+    const yk = travelExpenses.filter(e => isMatched(e, 'YK'))
+    const bk = travelExpenses.filter(e => isMatched(e, 'BK'))
+    const ykIds = new Set(yk.map(e => e.id))
+    const bkIds = new Set(bk.map(e => e.id))
+    const other = travelExpenses.filter(e => !ykIds.has(e.id) && !bkIds.has(e.id))
+    const sum = (arr) => arr.reduce((s, e) => s + Number(e.amount || 0), 0)
+    return {
+      total:    { count: travelExpenses.length, amount: sum(travelExpenses) },
+      yk:       { count: yk.length,    amount: sum(yk) },
+      bk:       { count: bk.length,    amount: sum(bk) },
+      other:    { count: other.length, amount: sum(other) },
+    }
+  }, [periods, travelExpenses])
+
+  const fmt = (n) => `€${Number(n || 0).toFixed(2)}`
+
+  const Card = ({ label, helper, count, amount, accent, bg }) => (
+    <div style={{
+      background: bg,
+      border: `1px solid ${accent}`,
+      borderLeft: `4px solid ${accent}`,
+      borderRadius: 4,
+      padding: '10px 12px',
+      flex: 1,
+      minWidth: 0,
+    }}>
+      <div style={{
+        fontSize: 11, color: '#6b7280', textTransform: 'uppercase',
+        letterSpacing: 0.4, fontWeight: 600, marginBottom: 2,
+      }}>
+        {label}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
+        <span style={{ fontSize: 22, fontWeight: 700, color: accent }}>
+          {count}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>
+          {fmt(amount)}
+        </span>
+      </div>
+      {helper && (
+        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+          {helper}
+        </div>
+      )}
+    </div>
+  )
+
+  return (
+    <div style={{
+      marginTop: 12,
+      marginBottom: 8,
+      display: 'grid',
+      gridTemplateColumns: 'repeat(4, 1fr)',
+      gap: 10,
+    }}>
+      <Card
+        label="Total travel expenses"
+        helper="Paid this month"
+        count={stats.total.count}
+        amount={stats.total.amount}
+        accent="#1f2937"
+        bg="#f9fafb"
+      />
+      <Card
+        label="On YK's trip this month"
+        helper="Tagged YK, dated within a YK trip"
+        count={stats.yk.count}
+        amount={stats.yk.amount}
+        accent="#16a34a"
+        bg="#f0fdf4"
+      />
+      <Card
+        label="On BK's trip this month"
+        helper="Tagged BK, dated within a BK trip"
+        count={stats.bk.count}
+        amount={stats.bk.amount}
+        accent="#ea580c"
+        bg="#fff7ed"
+      />
+      <Card
+        label="Pre-paid / unassigned"
+        helper="Future trip or no shareholder yet"
+        count={stats.other.count}
+        amount={stats.other.amount}
+        accent="#6366f1"
+        bg="#eef2ff"
+      />
+    </div>
+  )
+}
+
+// =============================================================
+// One row in the Pre-paid / Unassigned section. Combines:
+//   • Identity strip:   date, sub-ref, vendor, badges, amount
+//   • Description line (italic, if present)
+//   • Where / Who / Why editable fields — same data model as the YK/BK
+//     trip cards above, so trip notes can be filled in right here while
+//     still in Pre-paid
+//   • Action row: Assign → YK / → BK / Clear, plus "View in View Expenses →"
+//     to jump to the underlying expense for editing date / amount / etc.
+// =============================================================
+function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateExpense, onViewExpense }) {
+  // Local state for the three free-text trip-note fields. Synced from
+  // props whenever the parent re-renders with new data (optimistic
+  // saves keep this in sync), and committed back on blur.
+  const [where, setWhere] = useState(e.travel_where || '')
+  const [who,   setWho]   = useState(e.travel_who   || '')
+  const [why,   setWhy]   = useState(e.travel_why   || '')
+
+  useEffect(() => { setWhere(e.travel_where || '') }, [e.travel_where])
+  useEffect(() => { setWho(e.travel_who   || '') }, [e.travel_who])
+  useEffect(() => { setWhy(e.travel_why   || '') }, [e.travel_why])
+
+  const commitField = (field, value, currentValue) => {
+    if (value === currentValue) return
+    onUpdateExpense && onUpdateExpense(e.id, { [field]: value || null })
+  }
+
+  const subRef = e.sub_ref_series
+    ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+    : ''
+
+  const inpStyle = {
+    padding: '4px 8px',
+    fontSize: 11,
+    border: '1px solid #e5e7eb',
+    borderRadius: 4,
+    width: '100%',
+    background: '#fafbff',
+  }
+
+  return (
+    <div style={{
+      padding: '8px 12px',
+      fontSize: 12,
+      borderTop: '1px solid #f3f4f6',
+      color: '#374151',
+    }}>
+      {/* Identity strip */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: '90px 70px 1fr 110px',
+        gap: 8,
+        alignItems: 'baseline',
+      }}>
+        <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>{fmtDate(e.date)}</span>
+        <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>{subRef}</span>
+        <span>
+          <strong>{e.vendor || '—'}</strong>
+          {e.subcategory_name && <span style={{ color: '#9ca3af' }}> · {e.subcategory_name}</span>}
+          <span style={{ fontFamily: 'monospace', color: '#9ca3af', marginLeft: 6 }}>
+            {e.reference_number}
+          </span>
+          {/* Multi-month "future trip" badges. */}
+          {e.expected_travel_month && (e.expected_travel_month.split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(token => (
+              <span
+                key={token}
+                style={{
+                  marginLeft: 6,
+                  padding: '1px 7px',
+                  background: '#ede9fe',
+                  color: '#6d28d9',
+                  fontSize: 11,
+                  borderRadius: 999,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                🔜 {formatMonthYear(token)}
+              </span>
+            ))
+          )}
+        </span>
+        <span style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(e.amount)}</span>
+      </div>
+
+      {/* Description on its own line. */}
+      {e.description && (
+        <div style={{
+          marginTop: 2,
+          paddingLeft: 168,
+          color: '#6b7280',
+          fontStyle: 'italic',
+        }}>
+          {e.description}
+        </div>
+      )}
+
+      {/* Trip-note editors — three side-by-side text inputs. Same data
+          model as the YK/BK trip expense cards, so anything entered here
+          flows straight into reports. */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 1fr)',
+        gap: 6,
+        marginTop: 8,
+      }}>
+        <input
+          type="text"
+          placeholder="Destination (where)"
+          value={where}
+          onChange={(ev) => setWhere(ev.target.value)}
+          onBlur={() => commitField('travel_where', where, e.travel_where)}
+          style={inpStyle}
+        />
+        <input
+          type="text"
+          placeholder="Travelers (who)"
+          value={who}
+          onChange={(ev) => setWho(ev.target.value)}
+          onBlur={() => commitField('travel_who', who, e.travel_who)}
+          style={inpStyle}
+        />
+        <input
+          type="text"
+          placeholder="Reason / purpose (why)"
+          value={why}
+          onChange={(ev) => setWhy(ev.target.value)}
+          onBlur={() => commitField('travel_why', why, e.travel_why)}
+          style={inpStyle}
+        />
+      </div>
+
+      {/* Action row — shareholder assignment + jump to View Expenses */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginTop: 8,
+        gap: 8,
+      }}>
+        <AssignButtons expense={e} />
+        <button
+          type="button"
+          onClick={() => onViewExpense && onViewExpense(e.id)}
+          style={{
+            padding: '2px 10px',
+            fontSize: 11,
+            border: '1px solid #d1d5db',
+            background: 'white',
+            color: '#374151',
+            borderRadius: 4,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+            fontWeight: 500,
+          }}
+          title="Open the underlying expense in View Expenses to edit date, amount, etc."
+        >
+          View in View Expenses →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================
+// Pre-paid / Unassigned Travel section
+// Catches all travel expenses paid this month that aren't anchored to a
+// current-month trip for either shareholder.
+// =============================================================
+function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdateExpense, onViewExpense }) {
+  // Build the same expense→period match as ShareholderTravelSection, but
+  // across both shareholders. Anything that doesn't match a period this
+  // month is "loose" and shows up here.
+  const buckets = useMemo(() => {
+    const matched = new Set()
+    for (const p of periods) {
+      for (const e of travelExpenses) {
+        const matchDate = e.invoice_date || e.date
+        if (
+          e.shareholder_code === p.shareholder_code &&
+          matchDate >= p.from_date &&
+          matchDate <= p.to_date
+        ) {
+          matched.add(e.id)
+        }
+      }
+    }
+    const loose = travelExpenses.filter(e => !matched.has(e.id))
+    return {
+      yk:         loose.filter(e => e.shareholder_code === 'YK'),
+      bk:         loose.filter(e => e.shareholder_code === 'BK'),
+      unassigned: loose.filter(e => !e.shareholder_code),
+      total:      loose.length,
+    }
+  }, [periods, travelExpenses])
+
+  if (buckets.total === 0) return null
+
+  const fmt = (n) => `€${Number(n || 0).toFixed(2)}`
+  const fmtDate = (iso) => {
+    if (!iso) return ''
+    const [y, m, d] = iso.split('-')
+    return `${d}/${m}/${y}`
+  }
+  const sectionSum = (arr) => arr.reduce((s, e) => s + Number(e.amount || 0), 0)
+
+  // Inline shareholder-assignment buttons rendered per row.
+  // Behavior depends on the current shareholder_code:
+  //   • Unassigned → show "→ YK" and "→ BK"
+  //   • Already YK → show "→ BK" and "Clear" (re-route or un-assign)
+  //   • Already BK → show "→ YK" and "Clear" (re-route or un-assign)
+  const AssignButtons = ({ expense }) => {
+    const current = expense.shareholder_code || null
+    const Btn = ({ target, color, label }) => (
+      <button
+        type="button"
+        onClick={() => onUpdateExpense && onUpdateExpense(expense.id, { shareholder_code: target })}
+        style={{
+          padding: '2px 8px',
+          fontSize: 11,
+          border: `1px solid ${color}`,
+          background: 'white',
+          color: color,
+          borderRadius: 999,
+          cursor: 'pointer',
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+        }}
+      >{label}</button>
+    )
+    return (
+      <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        {current !== 'YK' && <Btn target="YK" color="#16a34a" label="→ YK" />}
+        {current !== 'BK' && <Btn target="BK" color="#ea580c" label="→ BK" />}
+        {current && <Btn target={null} color="#6b7280" label="Clear" />}
+      </div>
+    )
+  }
+
+  const Sub = ({ title, accent, items, helper }) => {
+    if (items.length === 0) return null
+    return (
+      <div style={{
+        marginTop: 12,
+        border: `1px solid ${accent}`,
+        borderRadius: 4,
+        background: 'white',
+      }}>
+        <div style={{
+          padding: '8px 12px',
+          background: accent,
+          color: 'white',
+          fontSize: 13,
+          fontWeight: 700,
+          display: 'flex',
+          justifyContent: 'space-between',
+        }}>
+          <span>{title} ({items.length})</span>
+          <span>{fmt(sectionSum(items))}</span>
+        </div>
+        {helper && (
+          <div style={{ padding: '6px 12px', fontSize: 11, color: '#6b7280', background: '#f9fafb' }}>
+            {helper}
+          </div>
+        )}
+        <div style={{ padding: '4px 0' }}>
+          {items.map(e => (
+            <PrepaidExpenseRow
+              key={e.id}
+              expense={e}
+              fmt={fmt}
+              fmtDate={fmtDate}
+              AssignButtons={AssignButtons}
+              onUpdateExpense={onUpdateExpense}
+              onViewExpense={onViewExpense}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="shareholder-section"
+      style={{
+        marginTop: 20,
+        border: '2px solid #6366f1',
+        borderRadius: 6,
+        padding: 14,
+        background: '#eef2ff',
+      }}
+    >
+      <h3 style={{ margin: 0, color: '#3730a3', fontSize: 18 }}>
+        Pre-paid / Unassigned Travel ({buckets.total})
+      </h3>
+      <div style={{ marginTop: 6, fontSize: 12, color: '#3730a3' }}>
+        Travel expenses paid this month that don't match any current-month trip for either shareholder.
+        Most commonly: a flight paid now for a future trip.
+      </div>
+
+      <Sub
+        title="YK — pre-paid for future trip"
+        accent="#16a34a"
+        items={buckets.yk}
+        helper="Tagged YK but doesn't fall within any YK travel period this month."
+      />
+      <Sub
+        title="BK — pre-paid for future trip"
+        accent="#ea580c"
+        items={buckets.bk}
+        helper="Tagged BK but doesn't fall within any BK travel period this month."
+      />
+      <Sub
+        title="Not assigned to a shareholder"
+        accent="#6366f1"
+        items={buckets.unassigned}
+        helper={
+          <>
+            No shareholder tag yet. Open the expense in{' '}
+            <button
+              type="button"
+              onClick={() => onSwitchTab && onSwitchTab('view-expenses')}
+              style={{
+                background: 'none', border: 'none', padding: 0,
+                color: '#3730a3', textDecoration: 'underline', cursor: 'pointer', fontSize: 11,
+              }}
+            >View Expenses</button>{' '}
+            and use ✏️ Edit to set the Shareholder field.
+          </>
+        }
+      />
     </div>
   )
 }
@@ -400,10 +934,14 @@ function ShareholderTravelSection({
         cur.setDate(cur.getDate() + 1)
       }
 
-      // Expenses falling within this period's full date range (not just in-month)
-      const myExpenses = travelExpenses.filter(e =>
-        e.date >= p.from_date && e.date <= p.to_date
-      )
+      // Expenses falling within this period's full date range (not just in-month).
+      // Uses invoice_date when set (actual transaction date) instead of the
+      // bank settlement date — keeps cross-day card transactions on the
+      // correct trip.
+      const myExpenses = travelExpenses.filter(e => {
+        const matchDate = e.invoice_date || e.date
+        return matchDate >= p.from_date && matchDate <= p.to_date
+      })
       expensesByPeriod.set(p.id, myExpenses)
       for (const e of myExpenses) expenseToPeriodId.set(e.id, p.id)
       totalCompanyPaid += sumAmounts(myExpenses.filter(e => !e.is_reimbursable))
@@ -492,28 +1030,9 @@ function ShareholderTravelSection({
             ))
           )}
 
-          {/* Orphan travel expenses (tagged with this shareholder but not in any period) */}
-          {totals.orphans.length > 0 && (
-            <div style={{
-              marginTop: 12, padding: 10,
-              background: '#fef3c7', border: '1px solid #fcd34d',
-              borderRadius: 4, fontSize: 12,
-            }}>
-              <div style={{ fontWeight: 600, color: '#92400e', marginBottom: 4 }}>
-                ⚠ {totals.orphans.length} travel expense{totals.orphans.length === 1 ? '' : 's'} not in any period
-              </div>
-              <div style={{ color: '#78350f', marginBottom: 6 }}>
-                These travel expenses are tagged with {code} but don't fall within any defined travel period.
-                Add a period covering their dates so they're grouped properly.
-              </div>
-              {totals.orphans.map(e => (
-                <div key={e.id} style={{ fontSize: 12, color: '#78350f' }}>
-                  · {fmtDate(e.date)} · {e.vendor} · {fmt(e.amount)}
-                  {e.reference_number && <span style={{ fontFamily: 'monospace', marginLeft: 4 }}>({e.reference_number})</span>}
-                </div>
-              ))}
-            </div>
-          )}
+          {/* Per-shareholder orphan warnings were removed — those expenses now
+              appear in the global "Pre-paid / Unassigned Travel" section at
+              the bottom of the page, which gives a cleaner unified view. */}
         </div>
       </div>
 
@@ -791,9 +1310,17 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
           </span>
         )}
       </div>
-      <div style={{ fontSize: 12, color: '#374151', marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: '#374151', marginBottom: 4 }}>
         Subcategory: <strong>{expense.subcategory_name || '—'}</strong>
       </div>
+      {/* Description — the free-text note set when the expense was finalized
+          (e.g. "Flight TLV-LCA BK and YK"). Often the single most useful piece
+          of context for understanding what this travel expense is for. */}
+      {expense.description && (
+        <div style={{ fontSize: 12, color: '#4b5563', marginBottom: 8, fontStyle: 'italic' }}>
+          {expense.description}
+        </div>
+      )}
 
       {/* Metadata fields (white background sub-card) */}
       <div style={{

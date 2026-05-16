@@ -12,6 +12,7 @@ import {
   buildMainRef,
   uuid,
 } from '../../lib/refUtils'
+import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import './BankParser.css'
 
 /**
@@ -63,6 +64,16 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     // supports multiple values (comma-separated) when one transfer settles
     // multiple invoices of the same category.
     invoice_number:    isEditMode ? (existingExpense.invoice_number || '') : '',
+    // Optional override of the bank settlement date for travel-period
+    // matching. Card swiped Mar 11, bank posts Mar 13 → set invoice_date
+    // = 2026-03-11 so the expense matches the Mar 10-12 Athens trip.
+    // Blank = use the bank transaction date.
+    invoice_date:      isEditMode ? (existingExpense.invoice_date || '') : '',
+    // Optional list of future trip months this payment is for. Stored as
+    // a comma-separated string of "YYYY-MM" tokens — display-only badge
+    // in the Travel Log, never a routing key. Only relevant when the
+    // category is Travel Expenses.
+    expected_travel_month: isEditMode ? (existingExpense.expected_travel_month || '') : '',
   })
 
   // -------------------------------------------------------------
@@ -683,6 +694,10 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         // Invoice number(s) for incoming Client Payment / Client Reimbursement.
         // Free-text, may contain comma-separated values for multi-invoice transfers.
         invoice_number:     form.invoice_number?.trim() || null,
+        // Optional date / future-trip note. Stored as-is (comma-separated
+        // YYYY-MM tokens for the trip-month note, or null when blank).
+        invoice_date:       form.invoice_date || null,
+        expected_travel_month: form.expected_travel_month || null,
       }
 
       if (isEditMode) {
@@ -917,6 +932,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             split_group_id:     splitGroupId,
             split_portion_index: i + 1,
             status:             'pending',
+            // Travel-related metadata applies at the split-group level —
+            // every portion of a split flight inherits the same invoice
+            // date and future-trip note.
+            invoice_date:       form.invoice_date || null,
+            expected_travel_month: form.expected_travel_month || null,
           })
         }
       }
@@ -924,34 +944,57 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       // EDIT-MODE PREP: identify the set of expense IDs that this save replaces.
       //   • Editing a single expense → just [existingExpense.id]
       //   • Editing an existing split group → all sibling IDs
-      // We need to break any FK references to these BEFORE we can delete them.
-      //   1. NULL linked_expense_id on any counterpart row that points at any
-      //      of them (otherwise the FK from the counterpart blocks the delete).
-      //   2. Insert the new portion rows.
-      //   3. Re-point bank_transactions.matched_expense_id to the first new
-      //      portion (replaces the old pointer to a doomed row).
-      //   4. Delete the doomed expense(s) — now safe.
+      //
+      // Order matters — we must DELETE the doomed rows BEFORE inserting the
+      // new ones, because sub-ref preservation reuses the same
+      // (series, month, seq) tuple. If we inserted first, the unique
+      // constraint `uniq_expenses_sub_ref` fires.
+      //
+      //   1. NULL bank_tx.matched_expense_id → frees the FK that points at
+      //      a doomed row.
+      //   2. NULL linked_expense_id on any counterpart that points at a
+      //      doomed row → frees the other FK.
+      //   3. DELETE doomed expenses → sub-ref slots are now free.
+      //   4. INSERT new portions → no conflict with the reused sub-refs.
+      //   5. UPDATE bank_tx.matched_expense_id to first new portion.
       const doomedIds = isEditMode
         ? (isExistingSplit
             ? groupSiblings.map(s => s.id).filter(Boolean)
             : [existingExpense.id])
         : []
+
       if (doomedIds.length > 0) {
+        // Step 1 — un-match the bank transaction so the FK doesn't block delete.
+        const { error: unmatchErr } = await supabase
+          .from('bank_transactions')
+          .update({ matched_expense_id: null, updated_at: new Date().toISOString() })
+          .eq('id', transaction.id)
+        if (unmatchErr) throw unmatchErr
+
+        // Step 2 — clear any counterpart links pointing AT the doomed rows.
         const { error: unlinkErr } = await supabase
           .from('expenses')
           .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
           .in('linked_expense_id', doomedIds)
         if (unlinkErr) throw unlinkErr
+
+        // Step 3 — delete the doomed expenses, freeing their sub-ref slots.
+        const { error: delErr } = await supabase
+          .from('expenses')
+          .delete()
+          .in('id', doomedIds)
+        if (delErr) throw delErr
       }
 
-      // Insert all portions
+      // Step 4 — insert the new portion rows. With the doomed rows already
+      // gone, reused sub-refs (T3/5, T3/6, etc.) don't conflict.
       const { data: inserted, error: insertErr } = await supabase
         .from('expenses')
         .insert(rows)
         .select('id')
       if (insertErr) throw insertErr
 
-      // Mark bank transaction finalized — link to the first portion's id
+      // Step 5 — re-anchor the bank transaction to the first new portion.
       const { error: updateErr } = await supabase
         .from('bank_transactions')
         .update({
@@ -961,18 +1004,6 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         })
         .eq('id', transaction.id)
       if (updateErr) throw updateErr
-
-      // EDIT-MODE CLEANUP: now that the bank tx no longer points at them and
-      // any counterpart links have been nulled, we can safely delete the
-      // doomed expense(s) — one row for single→split, or all siblings for
-      // split→split replacement.
-      if (doomedIds.length > 0) {
-        const { error: delErr } = await supabase
-          .from('expenses')
-          .delete()
-          .in('id', doomedIds)
-        if (delErr) throw delErr
-      }
 
       onSave && onSave()
       onClose && onClose()
@@ -1037,6 +1068,24 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                 })()}
               </span>
             </div>
+          </div>
+
+          {/* Optional Invoice Date — override of the bank settlement date for
+              travel-period matching. Set when the actual transaction date
+              differs from when the bank posts (e.g. card swiped Mar 11 in
+              Athens, bank settles Mar 13 → invoice_date = 2026-03-11 so the
+              expense matches the Mar 10-12 Athens trip).
+              Blank = use the bank settlement date (current behavior). */}
+          <div className="form-group">
+            <label>
+              Invoice Date <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — override bank date for travel-period matching)</span>
+            </label>
+            <input
+              type="date"
+              value={form.invoice_date}
+              onChange={(e) => setForm({ ...form, invoice_date: e.target.value })}
+              className="form-input"
+            />
           </div>
 
           {/* Split mode toggle — available in BOTH create mode and edit mode.
@@ -1207,33 +1256,10 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                             </select>
                           </>
                         )}
-                        {t.key === 'company' && isActive && (() => {
-                          // Optional shareholder picker — only shown when the
-                          // Company portion's chosen category is Travel
-                          // Expenses (sub_ref_series 'T'). Picking YK or BK
-                          // here routes the trip to that shareholder's Travel
-                          // Log section without making them pay for it.
-                          const portionCat = categories.find(c => c.id === p.category_id)
-                          const isTravel = portionCat?.sub_ref_series === 'T'
-                          if (!isTravel) return null
-                          return (
-                            <>
-                              <label style={{ fontSize: 11, color: '#6b7280' }}>
-                                Shareholder <span style={{ color: '#9ca3af' }}>(optional — for Travel Log routing)</span>
-                              </label>
-                              <select
-                                value={p.shareholder_code || ''}
-                                onChange={(e) => updatePortion('company', { shareholder_code: e.target.value })}
-                                className="form-input"
-                                style={{ marginBottom: 6 }}
-                              >
-                                <option value="">— None (company-only) —</option>
-                                <option value="YK">YK</option>
-                                <option value="BK">BK</option>
-                              </select>
-                            </>
-                          )
-                        })()}
+                        {/* Per-portion Traveler picker removed — traveler
+                            assignment lives in the Travel Log's inline
+                            → YK / → BK / Clear buttons (single source of
+                            truth across the app). */}
                         {t.key === 'client' && isActive && (
                           <>
                             <label style={{ fontSize: 11, color: '#6b7280' }}>Client / project *</label>
@@ -1351,24 +1377,53 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
               • Travel Expenses (sub_ref_series = 'T') — OPTIONAL, lets the
                 user route the trip to the right person's Travel Log section.
               Leaving it blank means "company travel, not shareholder-specific".  */}
-          {!isSplit && (selectedCategory?.needs_shareholder_tag || selectedCategory?.sub_ref_series === 'T') && (
+          {/* Shareholder picker — REQUIRED only for Personal Expenses of
+              Shareholders. Travel Expenses do NOT show a picker here:
+              traveler assignment lives in the Travel Log's inline
+              → YK / → BK / Clear buttons (single source of truth). */}
+          {!isSplit && selectedCategory?.needs_shareholder_tag && (
             <div className="form-group">
-              <label>
-                Shareholder {selectedCategory?.needs_shareholder_tag
-                  ? '*'
-                  : <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — assign to YK or BK so it appears under them in Travel Log)</span>}
-              </label>
+              <label>Shareholder *</label>
               <select
                 value={form.shareholder_code}
                 onChange={(e) => setForm({ ...form, shareholder_code: e.target.value })}
                 className="form-input"
               >
-                <option value="">— {selectedCategory?.needs_shareholder_tag ? 'Select shareholder' : 'None (company)'} —</option>
+                <option value="">— Select shareholder —</option>
                 <option value="YK">YK</option>
                 <option value="BK">BK</option>
               </select>
             </div>
           )}
+
+          {/* Expected Travel Month — decouples payment month from trip month.
+              Flight paid in January for May trip → set 2026-05 here → the
+              expense surfaces in May's Travel Log instead of January's.
+              Blank = use payment month.
+              Visible when:
+                • Single mode: only when category is Travel Expenses
+                • Split mode: when ANY portion's category is Travel Expenses
+                  (gets stamped on every portion of the split). */}
+          {(() => {
+            const singleIsTravel = !isSplit && selectedCategory?.sub_ref_series === 'T'
+            const splitHasTravel = isSplit && Object.values(portions).some(p => {
+              if (!p.category_id) return false
+              const cat = categories.find(c => c.id === p.category_id)
+              return cat?.sub_ref_series === 'T'
+            })
+            if (!singleIsTravel && !splitHasTravel) return null
+            return (
+              <div className="form-group">
+                <label>
+                  Expected Travel Month(s) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(optional — pick one or more future months this payment is for; shows as badges on the Travel Log row)</span>
+                </label>
+                <MonthMultiSelect
+                  value={form.expected_travel_month}
+                  onChange={(v) => setForm({ ...form, expected_travel_month: v })}
+                />
+              </div>
+            )
+          })()}
 
           {/* Vendor */}
           <div className="form-group">
