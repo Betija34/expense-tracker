@@ -108,11 +108,14 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
           .order('date', { ascending: false })
         if (unlinkErr) throw unlinkErr
         if (cancelled) return
-        // Filter client-side to the three linkable categories. Cheap given small row count.
+        // Filter client-side to the linkable categories. Cheap given small row count.
+        // Note: intra-company has TWO categories — "Movement Between Accounts" (outgoing
+        // leg) and "Movement Between Accounts (in)" (incoming leg). Both need surfacing.
         const LINKABLE = new Set([
           'Transfers to Connected Accounts',
           'Intercompany Funding',
           'Movement Between Accounts',
+          'Movement Between Accounts (in)',
         ])
         const unlinkedFiltered = (unlinkedRows || []).filter(r =>
           LINKABLE.has(r.expense_categories?.name)
@@ -350,7 +353,7 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
               {unlinkedIntercompany.map(r => {
                 const [y, m, d] = r.date.split('-')
                 const catName = r.expense_categories?.name
-                const kindLabel = catName === 'Movement Between Accounts' ? 'Intra' : 'Inter'
+                const kindLabel = (catName === 'Movement Between Accounts' || catName === 'Movement Between Accounts (in)') ? 'Intra' : 'Inter'
                 return (
                   <tr key={r.id} style={{ borderBottom: '1px solid #fed7aa' }}>
                     <td style={{ padding: '5px 4px' }}>{`${d}/${m}/${y}`}</td>

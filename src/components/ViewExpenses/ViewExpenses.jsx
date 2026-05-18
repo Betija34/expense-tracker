@@ -10,11 +10,14 @@ import './ViewExpenses.css'
 // Categories that support transfer linking (the 🔗 button appears on these rows).
 // LinkInterCompanyModal handles both link modes:
 //   - inter-company: Rabona ↔ Espargos pairs (Transfers to Connected Accounts / Intercompany Funding)
-//   - intra-company: account-to-account within same company (Movement Between Accounts)
+//   - intra-company: account-to-account within same company. The outgoing leg
+//     uses "Movement Between Accounts" and the incoming leg uses
+//     "Movement Between Accounts (in)" — they're separate categories per the V2 schema.
 const LINKABLE_CATEGORIES = new Set([
   'Transfers to Connected Accounts',
   'Intercompany Funding',
   'Movement Between Accounts',
+  'Movement Between Accounts (in)',
 ])
 
 /**
@@ -132,9 +135,11 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
           const map = new Map()
           for (const cp of (counterparts || [])) {
             // Distinguish link kind based on counterpart's category:
-            // intra-company links sit on "Movement Between Accounts" on both sides;
+            // intra-company links sit on "Movement Between Accounts" (outgoing leg)
+            // or "Movement Between Accounts (in)" (incoming leg);
             // inter-company links sit on Transfers to Connected Accounts / Intercompany Funding.
-            const isIntra = cp.expense_categories?.name === 'Movement Between Accounts'
+            const cpCat = cp.expense_categories?.name
+            const isIntra = cpCat === 'Movement Between Accounts' || cpCat === 'Movement Between Accounts (in)'
             map.set(cp.id, {
               reference_number: cp.reference_number,
               company_name: cp.companies?.name || '—',

@@ -36,8 +36,16 @@ const INTERCOMPANY_OPPOSITE = {
   'Intercompany Funding': 'Transfers to Connected Accounts',
 }
 
-// Intra-company link category (same on both sides — just different accounts)
-const INTRACOMPANY_CATEGORY = 'Movement Between Accounts'
+// Intra-company category pair — same shape as inter-company. The outgoing
+// leg is tagged "Movement Between Accounts"; the incoming leg, by schema
+// design (V2 migration), has its own category "Movement Between Accounts (in)".
+// Both names live in `expense_categories` with needs_linking=TRUE.
+const INTRACOMPANY_OPPOSITE = {
+  'Movement Between Accounts':       'Movement Between Accounts (in)',
+  'Movement Between Accounts (in)':  'Movement Between Accounts',
+}
+// Either side counts as an "intra-company" expense for the modal's purposes.
+const INTRACOMPANY_CATEGORIES = new Set(Object.keys(INTRACOMPANY_OPPOSITE))
 
 export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSaved }) {
   const [otherCompany, setOtherCompany] = useState(null)
@@ -51,16 +59,28 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
 
   // Detect which link mode this expense uses based on its category.
   //   'inter'  → other company, opposite category
-  //   'intra'  → same company, same category, different account, opposite direction
+  //   'intra'  → same company, opposite intra category, different account
   //   null     → not a linkable category (modal shouldn't have opened)
-  const linkMode = myCategoryName === INTRACOMPANY_CATEGORY
+  const linkMode = INTRACOMPANY_CATEGORIES.has(myCategoryName)
     ? 'intra'
     : INTERCOMPANY_OPPOSITE[myCategoryName] ? 'inter' : null
 
-  // For inter-company, the OTHER company's matching category
+  // The OTHER category we should look for on the counterpart leg.
+  //   inter-company: maps via INTERCOMPANY_OPPOSITE
+  //   intra-company: maps via INTRACOMPANY_OPPOSITE (Movement ↔ Movement (in))
   const otherCategoryName = INTERCOMPANY_OPPOSITE[myCategoryName]
+    || INTRACOMPANY_OPPOSITE[myCategoryName]
   // The direction the counterpart must have (always opposite of this expense)
   const oppositeDirection = expense.direction === 'in' ? 'out' : 'in'
+
+  // Absolute amount — used so the matcher is sign-safe. A transfer between two
+  // accounts shows up on the bank statements with opposite signs (out: -1,000,
+  // in: +1,000). Most of our code stores `amount` as the unsigned absolute
+  // value with `direction` carrying the sign, but a few entry paths (manual
+  // edits, hand-typed AddExpense) can leak signed amounts into the DB. To make
+  // the link finder robust either way, we search for both +amount and -amount.
+  const absAmount = Math.abs(Number(expense.amount || 0))
+  const amountVariants = [absAmount, -absAmount]
 
   // Format helpers (local copies to keep component self-contained)
   const formatDate = (iso) => {
@@ -68,8 +88,10 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
     const [y, m, d] = iso.split('-')
     return `${d}/${m}/${y}`
   }
+  // Display amount always as the magnitude — the sign is conveyed by the
+  // direction badge (➕ Incoming / ➖ Outgoing) in the candidate row.
   const formatAmount = (n) =>
-    `€${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    `€${Math.abs(Number(n || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   // Build the ±7-day search window around this expense's date
   const dateWindow = useMemo(() => {
@@ -91,7 +113,7 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
 
         if (!linkMode) {
           setError(`"${myCategoryName}" is not a linkable category. Linking applies to: ` +
-            `Transfers to Connected Accounts, Intercompany Funding, or Movement Between Accounts.`)
+            `Transfers to Connected Accounts, Intercompany Funding, Movement Between Accounts, or Movement Between Accounts (in).`)
           setLoading(false)
           return
         }
@@ -147,7 +169,9 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
             .select('id, reference_number, vendor, description, amount, date, linked_expense_id, accounts(name), expense_categories(name)')
             .eq('company_id', other.id)
             .in('category_id', targetCatIds)
-            .eq('amount', expense.amount)
+            // Sign-safe match: accept both +amount and -amount so an outgoing
+            // entry stored as -1,000 still pairs with an incoming +1,000.
+            .in('amount', amountVariants)
             .gte('date', dateWindow.start)
             .lte('date', dateWindow.end)
             .is('linked_expense_id', null)
@@ -155,26 +179,35 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
           if (candErr) throw candErr
           if (!cancelled) setCandidates(cands || [])
         } else if (linkMode === 'intra') {
-          // Intra-company: SAME company, SAME category, DIFFERENT account, OPPOSITE direction
+          // Intra-company: SAME company, OPPOSITE intra category, DIFFERENT account.
+          //   - This row is "Movement Between Accounts"      → look for "Movement Between Accounts (in)"
+          //   - This row is "Movement Between Accounts (in)" → look for "Movement Between Accounts"
           const { data: categories, error: catErr } = await supabase
             .from('expense_categories')
             .select('id, name')
-            .eq('name', INTRACOMPANY_CATEGORY)
+            .eq('name', otherCategoryName)
           if (catErr) throw catErr
           const targetCatIds = (categories || []).map(c => c.id)
           if (targetCatIds.length === 0) {
-            setError(`Category "${INTRACOMPANY_CATEGORY}" not found in the system.`)
+            setError(`Category "${otherCategoryName}" not found in the system.`)
             setLoading(false)
             return
           }
 
+          // Intra-company match: SAME company + SAME category (Movement Between
+          // Accounts) + DIFFERENT account, on absolute-amount equality. We do
+          // NOT filter by `direction` server-side any more — when a row was
+          // entered manually with a signed amount the direction field can be
+          // out of sync with the sign, and we'd miss the pair. The absolute
+          // amount + different account + unlinked combination is already very
+          // specific, and we surface the direction in the candidate row so the
+          // user can sanity-check before linking.
           let query = supabase
             .from('expenses')
-            .select('id, reference_number, vendor, description, amount, date, linked_expense_id, account_id, accounts(name), expense_categories(name)')
+            .select('id, reference_number, vendor, description, amount, date, direction, linked_expense_id, account_id, accounts(name), expense_categories(name)')
             .eq('company_id', expense.company_id)
             .in('category_id', targetCatIds)
-            .eq('amount', expense.amount)
-            .eq('direction', oppositeDirection)
+            .in('amount', amountVariants)
             .gte('date', dateWindow.start)
             .lte('date', dateWindow.end)
             .is('linked_expense_id', null)
@@ -323,9 +356,7 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
                     : `Candidates from ${otherCompany?.name || 'the other company'}:`}
                 </div>
                 <div style={{ fontSize: 12, color: '#6b7280' }}>
-                  {linkMode === 'intra'
-                    ? `Looking for "${INTRACOMPANY_CATEGORY}" expenses with exact amount ${formatAmount(expense.amount)} on a different account, dated between ${formatDate(dateWindow?.start)} and ${formatDate(dateWindow?.end)}.`
-                    : `Looking for "${otherCategoryName}" expenses with exact amount ${formatAmount(expense.amount)} dated between ${formatDate(dateWindow?.start)} and ${formatDate(dateWindow?.end)}.`}
+                  {`Looking for "${otherCategoryName}" expenses for ${formatAmount(absAmount)} (sign-safe)${linkMode === 'intra' ? ' on a different account' : ''}, dated between ${formatDate(dateWindow?.start)} and ${formatDate(dateWindow?.end)}.`}
                 </div>
               </div>
 
@@ -349,14 +380,27 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
                     </tr>
                   </thead>
                   <tbody>
-                    {candidates.map(c => (
+                    {candidates.map(c => {
+                      // Direction badge: shown for intra so the user can spot
+                      // a same-direction row (which would indicate one side
+                      // was tagged wrong) before linking.
+                      const cDir = c.direction || (Number(c.amount) < 0 ? 'out' : null)
+                      const dirBadge = cDir === 'in'
+                        ? <span style={{ background: '#dcfce7', color: '#166534', padding: '2px 6px', borderRadius: 4, fontSize: 11, marginRight: 6 }}>➕ in</span>
+                        : cDir === 'out'
+                          ? <span style={{ background: '#fee2e2', color: '#991b1b', padding: '2px 6px', borderRadius: 4, fontSize: 11, marginRight: 6 }}>➖ out</span>
+                          : null
+                      return (
                       <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
                         <td style={{ padding: '8px 6px' }}>{formatDate(c.date)}</td>
                         <td style={{ padding: '8px 6px', fontFamily: 'monospace' }}>{c.reference_number}</td>
                         {linkMode === 'intra' && (
                           <td style={{ padding: '8px 6px' }}>{c.accounts?.name || '—'}</td>
                         )}
-                        <td style={{ padding: '8px 6px' }}>{c.vendor || c.description || '—'}</td>
+                        <td style={{ padding: '8px 6px' }}>
+                          {linkMode === 'intra' && dirBadge}
+                          {c.vendor || c.description || '—'}
+                        </td>
                         <td style={{ padding: '8px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatAmount(c.amount)}</td>
                         <td style={{ padding: '8px 6px', textAlign: 'right' }}>
                           <button
@@ -371,7 +415,8 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               )}
