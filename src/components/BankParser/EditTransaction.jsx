@@ -18,6 +18,11 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
   }
 
+  // Original status, used to detect a Finalized → Pending transition on save.
+  // bank_transactions.status values: 'unmatched', 'matched', 'pending_review'.
+  // We treat 'matched' as "Finalized" and anything else as "Pending".
+  const wasMatched = transaction.status === 'matched'
+
   // Amount is always displayed/edited as POSITIVE in the form. The SIGN is
   // derived from transaction_type at save time: credit → +amount, debit → -amount.
   const [formData, setFormData] = useState({
@@ -25,15 +30,18 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     transaction_date:   isoToDisplay(transaction.transaction_date),
     description:        transaction.description,
     transaction_type:   transaction.transaction_type || 'debit',  // 'credit' = in, 'debit' = out
+    // Status dropdown — only relevant when the row is currently Finalized.
+    // Picking 'pending' here means "un-finalize this row" (deletes linked
+    // expense rows on save). For currently-pending rows the field is
+    // read-only and the dropdown isn't shown.
+    status:             wasMatched ? 'matched' : 'pending',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  // Lock direction editing for already-finalized transactions — flipping the
-  // direction would leave the linked expense pointing at the old direction's
-  // category, creating inconsistent data. The user should use Re-categorize
-  // (or delete the expense first) for matched rows.
-  const directionLocked = transaction.status === 'matched'
+  // Convenience flags driven by current form state vs the persisted state.
+  const directionChanged = formData.transaction_type !== transaction.transaction_type
+  const willUnfinalize   = wasMatched && formData.status === 'pending'
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -56,11 +64,22 @@ export function EditTransaction({ transaction, onClose, onSave }) {
       return
     }
 
+    // Confirm destructive un-finalize before touching the DB.
+    if (willUnfinalize) {
+      const ok = window.confirm(
+        'Set status to Pending?\n\n'
+        + 'This will DELETE the linked expense entry (and any split portions) '
+        + 'tied to this bank transaction. The transaction itself stays imported '
+        + "but goes back to the Pending list so you can Finalize it again.\n\n"
+        + 'Continue?'
+      )
+      if (!ok) return
+    }
+
     try {
       setLoading(true)
       setError(null)
 
-      // Convert DD/MM/YYYY to ISO format for storage
       const isoDate = displayToIso(formData.transaction_date)
 
       // Apply the direction's sign convention: credit → positive, debit → negative.
@@ -70,17 +89,78 @@ export function EditTransaction({ transaction, onClose, onSave }) {
         ? positiveAmount
         : -positiveAmount
 
+      // -----------------------------------------------------------------
+      // 1) Un-finalize path: delete linked expense rows + counterpart links
+      // -----------------------------------------------------------------
+      if (willUnfinalize) {
+        // Find every expense tied to this bank transaction. Single-line
+        // saves produce one row; split saves produce N rows that all share
+        // bank_transaction_id. Both cases are handled here.
+        const { data: linkedExpenses, error: lookupErr } = await supabase
+          .from('expenses')
+          .select('id, linked_expense_id')
+          .eq('bank_transaction_id', transaction.id)
+        if (lookupErr) throw lookupErr
+
+        if (linkedExpenses && linkedExpenses.length > 0) {
+          // Unlink any inter-company counterparts that point back at the
+          // expenses we're about to delete (avoids dangling FK references).
+          const counterpartIds = linkedExpenses
+            .map(e => e.linked_expense_id)
+            .filter(Boolean)
+          if (counterpartIds.length > 0) {
+            const { error: unlinkErr } = await supabase
+              .from('expenses')
+              .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
+              .in('id', counterpartIds)
+            if (unlinkErr) throw unlinkErr
+          }
+          // Delete the expense rows.
+          const expIds = linkedExpenses.map(e => e.id)
+          const { error: delErr } = await supabase
+            .from('expenses')
+            .delete()
+            .in('id', expIds)
+          if (delErr) throw delErr
+        }
+      }
+
+      // -----------------------------------------------------------------
+      // 2) Direction-change mirror: keep linked expense(s) in sync
+      // -----------------------------------------------------------------
+      // Only runs if we're NOT un-finalizing (in that case the expense rows
+      // are already gone) AND the user actually flipped the direction.
+      if (!willUnfinalize && wasMatched && directionChanged) {
+        const newDirection = formData.transaction_type === 'credit' ? 'in' : 'out'
+        const newExpenseType = newDirection === 'in' ? 'income' : 'regular'
+        const { error: mirrorErr } = await supabase
+          .from('expenses')
+          .update({
+            direction:    newDirection,
+            expense_type: newExpenseType,
+            updated_at:   new Date().toISOString(),
+          })
+          .eq('bank_transaction_id', transaction.id)
+        if (mirrorErr) throw mirrorErr
+      }
+
+      // -----------------------------------------------------------------
+      // 3) Update the bank_transaction row itself
+      // -----------------------------------------------------------------
+      const nextStatus           = willUnfinalize ? 'unmatched'   : transaction.status
+      const nextMatchedExpenseId = willUnfinalize ? null          : transaction.matched_expense_id
       const { error: updateError } = await supabase
         .from('bank_transactions')
         .update({
-          amount: signedAmount,
-          transaction_date: isoDate,
-          description: formData.description,
-          transaction_type: formData.transaction_type,
-          updated_at: new Date().toISOString()
+          amount:              signedAmount,
+          transaction_date:    isoDate,
+          description:         formData.description,
+          transaction_type:    formData.transaction_type,
+          status:              nextStatus,
+          matched_expense_id:  nextMatchedExpenseId,
+          updated_at:          new Date().toISOString(),
         })
         .eq('id', transaction.id)
-
       if (updateError) throw updateError
 
       onSave()
@@ -91,6 +171,14 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Shared inline styles for the small warning notes under the editable
+  // Direction / Status fields. Keeps the JSX scannable.
+  const warnStyle = {
+    marginTop: 6, padding: '6px 8px',
+    background: '#fef3c7', border: '1px solid #fcd34d',
+    borderRadius: 4, fontSize: 12, color: '#92400e',
   }
 
   return (
@@ -142,34 +230,70 @@ export function EditTransaction({ transaction, onClose, onSave }) {
             />
           </div>
 
+          {/* Direction — always editable now. If the row is already finalized
+              and direction is flipped, the linked expense(s) get their
+              direction + expense_type updated to match on save. The picked
+              category may no longer make sense, so a warning is shown. */}
           <div className="form-group">
-            <label>Direction {directionLocked && <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(locked — already finalized)</span>}</label>
+            <label>Direction</label>
             <select
               name="transaction_type"
               value={formData.transaction_type}
               onChange={handleChange}
               className="form-input"
-              disabled={directionLocked}
             >
               <option value="debit">➖ Outgoing (Debit)</option>
               <option value="credit">➕ Incoming (Credit)</option>
             </select>
-            {!directionLocked && (
+            {!wasMatched && (
               <small style={{ color: '#6b7280', fontSize: 12, marginTop: 4, display: 'block' }}>
                 Flip this if the OCR captured the wrong direction.
               </small>
             )}
+            {wasMatched && directionChanged && !willUnfinalize && (
+              <div style={warnStyle}>
+                ⚠️ The linked expense entry will also flip to{' '}
+                <strong>{formData.transaction_type === 'credit' ? 'Incoming' : 'Outgoing'}</strong>{' '}
+                on save. The current category may no longer apply — re-check it
+                via the Re-categorize (✏️) modal afterwards.
+              </div>
+            )}
           </div>
 
+          {/* Status — editable when currently Finalized (lets the user
+              un-finalize without going to View Expenses + delete). When
+              currently Pending the field is read-only and the dropdown is
+              hidden; use the main "Finalize" button to create the expense. */}
           <div className="form-group">
             <label>Status</label>
-            <input
-              type="text"
-              value={transaction.status === 'matched' ? 'Finalized' : 'Pending'}
-              className="form-input"
-              disabled
-              readOnly
-            />
+            {wasMatched ? (
+              <>
+                <select
+                  name="status"
+                  value={formData.status}
+                  onChange={handleChange}
+                  className="form-input"
+                >
+                  <option value="matched">Finalized</option>
+                  <option value="pending">Pending (un-finalize)</option>
+                </select>
+                {willUnfinalize && (
+                  <div style={warnStyle}>
+                    ⚠️ Setting status to Pending will <strong>delete the linked
+                    expense entry</strong> (and any split portions). The bank
+                    transaction stays imported and goes back to the Pending list.
+                  </div>
+                )}
+              </>
+            ) : (
+              <input
+                type="text"
+                value="Pending"
+                className="form-input"
+                disabled
+                readOnly
+              />
+            )}
           </div>
         </div>
 

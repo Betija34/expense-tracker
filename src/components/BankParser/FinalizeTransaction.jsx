@@ -573,6 +573,119 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     }))
   }
 
+  // ------------------------------------------------------------------
+  // Auto-create the "Payment Made on Behalf of …" inter-company leg
+  // ------------------------------------------------------------------
+  // When the user tags a row with category "Transfers to Connected
+  // Accounts" + a "Payment Made on Behalf of <Other Company>"
+  // subcategory, we create a mirror row on the OTHER company's books
+  // with category "Intercompany Funding" + the matching "From <This
+  // Company> — Payment on Behalf" subcategory, and bidirectionally
+  // link the two rows via expenses.linked_expense_id.
+  //
+  // The mirror row is notional — no real cash arrives at the other
+  // company's bank — but it captures the accounting fact that the
+  // other company was funded by this company for the amount of this
+  // payment. Reporting can then surface the receivable / payable
+  // balance between the two companies.
+  //
+  // Symmetric — covers both directions via PAYMENT_ON_BEHALF_PAIRS.
+  const PAYMENT_ON_BEHALF_PAIRS = [
+    {
+      fromCompany:      'Rabona Holdings',
+      toCompany:        'Espargos',
+      fromSubcategory:  'Payment Made on Behalf of Espargos',
+      toSubcategory:    'From Rabona — Payment on Behalf',
+    },
+    {
+      fromCompany:      'Espargos',
+      toCompany:        'Rabona Holdings',
+      fromSubcategory:  'Payment Made on Behalf of Rabona',
+      toSubcategory:    'From Espargos — Payment on Behalf',
+    },
+  ]
+  // Subcategory names that should trigger the heads-up info note + the
+  // auto-create logic. Cheap O(2) Set lookup.
+  const PAYMENT_ON_BEHALF_FROM_SUBCATS = new Set(
+    PAYMENT_ON_BEHALF_PAIRS.map(p => p.fromSubcategory)
+  )
+
+  const maybeCreatePaymentOnBehalfLeg = async (sourceExpenseId, expenseRow, alreadyLinkedId) => {
+    // 1) Look up the pair config that matches the current company + subcategory.
+    const pair = PAYMENT_ON_BEHALF_PAIRS.find(
+      p => p.fromCompany === companyName && p.fromSubcategory === expenseRow.subcategory_name
+    )
+    if (!pair) return null
+
+    // 2) Skip if already linked — user can manage via the 🔗 modal. Prevents
+    //    duplicate mirror rows when an already-linked row is re-saved.
+    if (alreadyLinkedId) return null
+
+    // 3) Resolve the OTHER company + its Current Account + Intercompany
+    //    Funding category + the specific subcategory id on its side.
+    const { data: otherCompany, error: otherErr } = await supabase
+      .from('companies').select('id').eq('name', pair.toCompany).maybeSingle()
+    if (otherErr) throw otherErr
+    if (!otherCompany) throw new Error(`Company "${pair.toCompany}" not found (V2 migration may be incomplete).`)
+
+    const { data: otherAccount, error: accErr } = await supabase
+      .from('accounts').select('id')
+      .eq('company_id', otherCompany.id).eq('name', 'Current Account').maybeSingle()
+    if (accErr) throw accErr
+    if (!otherAccount) throw new Error(`${pair.toCompany} Current Account not found.`)
+
+    const { data: fundingCat, error: catErr } = await supabase
+      .from('expense_categories').select('id').eq('name', 'Intercompany Funding').maybeSingle()
+    if (catErr) throw catErr
+    if (!fundingCat) throw new Error('Category "Intercompany Funding" not found.')
+
+    const { data: fundingSub, error: subErr } = await supabase
+      .from('expense_subcategories').select('id, name')
+      .eq('category_id', fundingCat.id).eq('name', pair.toSubcategory).maybeSingle()
+    if (subErr) throw subErr
+    if (!fundingSub) throw new Error(`Subcategory "${pair.toSubcategory}" not found — run V15/V16 migrations.`)
+
+    // 4) Allocate the other company's main_ref for the same year/month.
+    const otherSeq = await nextMainRefSeq(otherCompany.id, expenseRow.main_ref_year, expenseRow.main_ref_month)
+    const otherRef = buildMainRef(expenseRow.main_ref_year, expenseRow.main_ref_month, otherSeq, pair.toCompany)
+
+    // 5) Build & INSERT the mirror row. No bank_transaction_id —
+    //    notional booking, not tied to any imported transaction.
+    const mirrorRow = {
+      company_id:        otherCompany.id,
+      category_id:       fundingCat.id,
+      subcategory_id:    fundingSub.id,
+      subcategory_name:  fundingSub.name,
+      account_id:        otherAccount.id,
+      date:              expenseRow.date,
+      amount:            expenseRow.amount,
+      currency:          expenseRow.currency || 'EUR',
+      vendor:            expenseRow.vendor,
+      description:       `Funded by ${pair.fromCompany} — original payment ${expenseRow.reference_number} to ${expenseRow.vendor}${expenseRow.description ? ` (${expenseRow.description})` : ''}`,
+      reference_number:  otherRef,
+      expense_type:      'income',
+      direction:         'in',
+      main_ref_year:     expenseRow.main_ref_year,
+      main_ref_month:    expenseRow.main_ref_month,
+      main_ref_seq:      otherSeq,
+      status:            'pending',
+      linked_expense_id: sourceExpenseId,
+    }
+
+    const { data: insertedMirror, error: insErr } = await supabase
+      .from('expenses').insert([mirrorRow]).select('id').single()
+    if (insErr) throw insErr
+
+    // 6) Back-link the source row → mirror row.
+    const { error: backErr } = await supabase
+      .from('expenses')
+      .update({ linked_expense_id: insertedMirror.id, updated_at: new Date().toISOString() })
+      .eq('id', sourceExpenseId)
+    if (backErr) throw backErr
+
+    return insertedMirror.id
+  }
+
   const handleSave = async () => {
     setSaveError(null)
 
@@ -707,6 +820,15 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           .update({ ...expenseRow, updated_at: new Date().toISOString() })
           .eq('id', existingExpense.id)
         if (updErr) throw updErr
+
+        // Auto-create the Espargos "Intercompany Funding" leg if the user
+        // just toggled this row INTO "Payment Made on Behalf of Espargos"
+        // and there's no existing counterpart link to preserve.
+        await maybeCreatePaymentOnBehalfLeg(
+          existingExpense.id,
+          expenseRow,
+          existingExpense.linked_expense_id,
+        )
       } else {
         // INSERT new expense + link bank transaction
         const { data: inserted, error: insertErr } = await supabase
@@ -725,6 +847,9 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           })
           .eq('id', transaction.id)
         if (updateErr) throw updateErr
+
+        // Auto-create the Espargos "Intercompany Funding" leg if applicable.
+        await maybeCreatePaymentOnBehalfLeg(inserted.id, expenseRow, null)
       }
 
       onSave && onSave()
@@ -1343,6 +1468,28 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
+              {/* Heads-up: auto-create the matching Intercompany Funding leg
+                  when the user picks a "Payment Made on Behalf of …" subcategory
+                  AND the current company is the funding side AND there's no
+                  pre-existing link to preserve. */}
+              {(() => {
+                const pair = PAYMENT_ON_BEHALF_PAIRS.find(
+                  p => p.fromCompany === companyName && p.fromSubcategory === form.subcategory_name
+                )
+                if (!pair) return null
+                if (existingExpense?.linked_expense_id) return null
+                return (
+                  <div style={{
+                    marginTop: 8, padding: '8px 10px',
+                    background: '#eff6ff', border: '1px solid #bfdbfe',
+                    borderRadius: 4, fontSize: 12, color: '#1e40af',
+                  }}>
+                    💡 On save, a matching <strong>Intercompany Funding</strong> entry
+                    will be auto-created on <strong>{pair.toCompany}</strong>'s
+                    Current Account and linked to this row.
+                  </div>
+                )
+              })()}
             </div>
           )}
 

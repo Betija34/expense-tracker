@@ -175,31 +175,51 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
     }
 
     // Helper: dedup check between Pattern 1/2 and Pattern 3.
-    // We KEY on date + abs(amount) + vendor-prefix. The amount key is critical:
-    // two legitimate transactions on the same day with the same vendor (e.g.
-    // two Wolt Greece orders on 19/03) MUST NOT be deduped — they have
-    // different amounts. Without the amount in the key, the second would be
-    // silently dropped.
-    const alreadyCaptured = (date, vendor, amount) => {
+    // We KEY on date + abs(amount) + vendor-prefix + SOURCE-TEXT POSITION.
+    //
+    //   The position is critical: two LEGITIMATE transactions with the
+    //   same date+vendor+amount (e.g. two €300 BOC transfers on the same
+    //   day) appear at DIFFERENT positions in the OCR'd text and must
+    //   both be kept. A phantom duplicate — the same source row matched
+    //   by Pattern 1 (decimal "300,00") AND Pattern 3 ("N/A 30000") —
+    //   has OVERLAPPING positions and must be dropped.
+    //
+    //   The amount is also part of the key: two Wolt Greece orders on
+    //   19/03 with different amounts have different positions AND
+    //   different keys, so both are kept either way.
+    //
+    // matchStart/matchEnd are the regex match's [index, index + length]
+    // range in the source text. Two ranges overlap iff NOT(a.end < b.start
+    // OR a.start > b.end). If they overlap, treat as a phantom duplicate.
+    const alreadyCaptured = (date, vendor, amount, matchStart, matchEnd) => {
       const prefix = vendor.trim().toLowerCase().substring(0, 15)
       const targetAmount = Math.abs(amount).toFixed(2)
       return transactions.some(t =>
         t.date === date &&
         Math.abs(t.amount).toFixed(2) === targetAmount &&
-        t.vendor.toLowerCase().startsWith(prefix)
+        t.vendor.toLowerCase().startsWith(prefix) &&
+        // Position overlap → same source row matched twice (phantom).
+        // No overlap → two real source rows that just happen to share
+        // date+vendor+amount; keep both.
+        !(t._matchEnd < matchStart || t._matchStart > matchEnd)
       )
     }
 
     // Helper: keyword-based direction detection. OCR frequently drops minus
     // signs and there's no reliable visual cue (color) in the text — so we
     // look for direction-indicating words in the description.
-    //   • "deposit", "refund", "credit", "received", "transfer from" → INCOMING
+    //   • "deposit", "refund", "credit", "received", "transfer from",
+    //     "incoming", "payment in", "inward", "credit transfer" → INCOMING
     //   • everything else → OUTGOING (safer default for card/account flows)
     // User can always flip via Edit Transaction in Bank Parser before
     // finalizing if a row is mis-classified.
+    //
+    // Note: "inward" is the BoC term for an incoming wire/transfer
+    // (e.g. "INWARD CY260407044566 by 613 INVESTMENT…"). Add new banking
+    // dialect terms here as they show up in real statements.
     const detectDirection = (vendor) => {
       const v = vendor.toLowerCase()
-      const incomingMarkers = /\b(deposit|refund|received|credit\s|transfer from|incoming|payment in)\b/i
+      const incomingMarkers = /\b(deposit|refund|received|credit\s|credit transfer|transfer from|incoming|payment in|inward)\b/i
       return incomingMarkers.test(v) ? 'credit' : 'debit'
     }
 
@@ -217,7 +237,9 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
         if (!vendor || vendor.trim().length === 0) continue
         const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
         const isoDate = toISODate(dateStr)
-        if (alreadyCaptured(isoDate, vendor, parsedAmount)) continue
+        const matchStart = match.index
+        const matchEnd   = match.index + match[0].length
+        if (alreadyCaptured(isoDate, vendor, parsedAmount, matchStart, matchEnd)) continue
         // Apply keyword-based direction (overrides OCR'd sign which is often
         // dropped). If the keyword detection says outgoing but the OCR'd sign
         // was already negative, both agree — leave it. If they disagree,
@@ -233,6 +255,8 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
           currency: 'EUR',
           type: dir,
           status: 'pending',
+          _matchStart: matchStart,
+          _matchEnd:   matchEnd,
         })
       }
     }
@@ -263,7 +287,12 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
       if (Number.isNaN(intNum)) continue
       const absAmount = intNum / 100
       const isoDate = toISODate(dateStr)
-      if (alreadyCaptured(isoDate, vendor, absAmount)) continue
+      const matchStart = m3.index
+      const matchEnd   = m3.index + m3[0].length
+      // Phantom dedup: this Pattern 3 match shouldn't overlap a Pattern 1/2
+      // match that already captured the same source row. Different position
+      // → real separate transaction; keep it.
+      if (alreadyCaptured(isoDate, vendor, absAmount, matchStart, matchEnd)) continue
       const dir = detectDirection(vendor)
       const signedAmount = dir === 'credit' ? absAmount : -absAmount
       transactions.push({
@@ -273,10 +302,14 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
         currency: 'EUR',
         type: dir,
         status: 'pending',
+        _matchStart: matchStart,
+        _matchEnd:   matchEnd,
       })
     }
 
-    return transactions
+    // Strip internal position-tracking fields before returning — they're
+    // only needed by alreadyCaptured() during parsing.
+    return transactions.map(({ _matchStart, _matchEnd, ...rest }) => rest)
   }
 
   // Process image with OCR
