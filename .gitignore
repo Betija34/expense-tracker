@@ -3,6 +3,14 @@
 .env.local
 .env.*.local
 
+# Credential templates / notes (NEVER commit these)
+CREDENTIALS_*.md
+CREDENTIALS_*.txt
+*_CREDENTIALS.md
+*_CREDENTIALS.txt
+secrets.*
+passwords.*
+
 # Dependencies
 node_modules/
 package-lock.json
