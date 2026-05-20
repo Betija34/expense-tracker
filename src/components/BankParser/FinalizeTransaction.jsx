@@ -15,6 +15,43 @@ import {
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import './BankParser.css'
 
+// ---------------------------------------------------------------------
+// Helpers for the additional_sub_refs TEXT column (multi-payee payroll)
+// ---------------------------------------------------------------------
+// Stored format: comma-separated "<series><month>/<seq>" tokens.
+//   e.g. "S3/5,S3/6"   or   "S12/1,S1/1"
+// In the form we keep them as [{ month: '3', seq: '5' }, ...] objects.
+// Series is implicit (currently always 'S' — see V17 migration notes).
+
+// Parse the TEXT column → array of { month, seq } strings for the form.
+// Robust to whitespace and malformed tokens — anything that doesn't
+// match SNN/NN is silently dropped rather than blowing up the modal.
+function parseAdditionalSubRefs(raw) {
+  if (!raw || typeof raw !== 'string') return []
+  return raw.split(',')
+    .map(t => t.trim())
+    .filter(Boolean)
+    .map(t => {
+      // Token shape: optional series letter + month + '/' + seq
+      const m = t.match(/^([A-Z])(\d{1,2})\/(\d+)$/)
+      if (!m) return null
+      return { month: m[2], seq: m[3] }
+    })
+    .filter(Boolean)
+}
+
+// Serialize the form's [{ month, seq }, ...] back to the TEXT column.
+// Returns null for an empty list so the DB column stays NULL rather than
+// being an empty string (cleaner for filters and reports).
+function serializeAdditionalSubRefs(arr, series = 'S') {
+  if (!Array.isArray(arr) || arr.length === 0) return null
+  const tokens = arr
+    .map(({ month, seq }) => `${series}${parseInt(month, 10)}/${parseInt(seq, 10)}`)
+    .filter(t => /^[A-Z]\d{1,2}\/\d+$/.test(t))
+  return tokens.length === 0 ? null : tokens.join(',')
+}
+
+
 /**
  * FinalizeTransaction modal — categorizes a pending bank transaction and creates
  * the corresponding expenses row (Path 1 workflow).
@@ -60,6 +97,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     shareholder_code:  isEditMode ? (existingExpense.shareholder_code || '') : '',
     manual_sub_ref_month: isEditMode && existingExpense.sub_ref_series === 'S' ? String(existingExpense.sub_ref_month || '') : '',
     manual_sub_ref_seq:   isEditMode && existingExpense.sub_ref_series === 'S' ? String(existingExpense.sub_ref_seq || '') : '',
+    // Additional payroll sub-refs for multi-payee transfers (series S only).
+    // Stored as an array of { month, seq } pairs in the form. On save these
+    // are serialized to the comma-separated tokens in expenses.additional_sub_refs
+    // (e.g. "S3/5,S3/6" or "S12/1,S1/1"). The PRIMARY sub-ref still lives in
+    // manual_sub_ref_month/seq; this holds the extras.
+    additional_sub_refs: isEditMode && existingExpense.sub_ref_series === 'S' && existingExpense.additional_sub_refs
+      ? parseAdditionalSubRefs(existingExpense.additional_sub_refs)
+      : [],
     // Invoice number(s) for incoming Client Payment / Reimbursement. Free-text,
     // supports multiple values (comma-separated) when one transfer settles
     // multiple invoices of the same category.
@@ -311,18 +356,46 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     loadAllSubcats()
   }, [direction])
 
-  // Load subcategories when category changes
+  // Load subcategories when category changes.
+  //
+  // Important: this effect must NOT wipe the saved subcategory when the
+  // modal opens in edit mode and the form's category_id is initialised
+  // from the existing expense. Previously this effect cleared
+  // subcategory_id / subcategory_name unconditionally on every run,
+  // which meant every Edit-click reset the user's saved subcategory and
+  // they had to re-pick it.
+  //
+  // New behaviour:
+  //   1. Fetch the subcategory list for the current category.
+  //   2. After the list loads, check whether form.subcategory_id is
+  //      still valid for this category — if yes, keep it. If no
+  //      (the user actually picked a different category), clear it.
+  //   3. Don't clear before the fetch returns, otherwise the dropdown
+  //      flickers empty for a moment in edit mode.
   useEffect(() => {
-    setSubcats([])
-    setForm(f => ({ ...f, subcategory_id: '', subcategory_name: '' }))
-    if (!form.category_id) return
+    if (!form.category_id) {
+      setSubcats([])
+      setForm(f => ({ ...f, subcategory_id: '', subcategory_name: '' }))
+      return
+    }
     ;(async () => {
       const { data, error } = await supabase
         .from('expense_subcategories')
         .select('*')
         .eq('category_id', form.category_id)
         .order('sort_order')
-      if (!error) setSubcats(data || [])
+      if (error) return
+      const list = data || []
+      setSubcats(list)
+      // Preserve the saved subcategory if it still belongs to the
+      // currently selected category. Otherwise the user has picked a
+      // different category and the old subcategory no longer applies.
+      setForm(f => {
+        if (!f.subcategory_id) return f
+        const stillValid = list.some(s => s.id === f.subcategory_id)
+        if (stillValid) return f
+        return { ...f, subcategory_id: '', subcategory_name: '' }
+      })
     })()
   }, [form.category_id])
 
@@ -724,6 +797,68 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       const s = parseInt(form.manual_sub_ref_seq)
       if (!(m >= 1 && m <= 12)) { setSaveError('Sub-reference month must be 1–12'); return }
       if (!(s >= 1))            { setSaveError('Sub-reference sequence must be ≥ 1'); return }
+
+      // Validate every additional sub-ref the user added (multi-payee transfers).
+      // Each must be a valid month + seq, and the whole set (primary + additional)
+      // must contain no duplicates within this single form.
+      const allSubRefs = [{ month: m, seq: s }]
+      for (let i = 0; i < form.additional_sub_refs.length; i++) {
+        const r = form.additional_sub_refs[i]
+        const rm = parseInt(r.month), rs = parseInt(r.seq)
+        if (!(rm >= 1 && rm <= 12)) {
+          setSaveError(`Additional sub-ref #${i + 1}: month must be 1–12`); return
+        }
+        if (!(rs >= 1)) {
+          setSaveError(`Additional sub-ref #${i + 1}: sequence must be ≥ 1`); return
+        }
+        // Same-form duplicate guard (e.g. user typed S3/5 twice).
+        if (allSubRefs.some(prev => prev.month === rm && prev.seq === rs)) {
+          setSaveError(`Sub-ref S${rm}/${rs} appears more than once in this entry`); return
+        }
+        allSubRefs.push({ month: rm, seq: rs })
+      }
+
+      // DB uniqueness: every additional sub-ref must be free across the company.
+      // (The PRIMARY sub-ref is enforced by the uniq_expenses_sub_ref index;
+      // additionals live in a TEXT column so we check them in app code.)
+      if (form.additional_sub_refs.length > 0) {
+        const additionalChecks = form.additional_sub_refs.map(r => ({
+          month: parseInt(r.month), seq: parseInt(r.seq),
+        }))
+        for (const r of additionalChecks) {
+          // Hit 1: another expense's PRIMARY sub-ref claims this slot.
+          const { data: primaryHit } = await supabase
+            .from('expenses')
+            .select('id, reference_number')
+            .eq('company_id', companyId)
+            .eq('sub_ref_series', 'S')
+            .eq('sub_ref_month', r.month)
+            .eq('sub_ref_seq', r.seq)
+            .neq('id', existingExpense?.id || '00000000-0000-0000-0000-000000000000')
+            .maybeSingle()
+          if (primaryHit) {
+            setSaveError(`Sub-ref S${r.month}/${r.seq} is already used by expense ${primaryHit.reference_number}`)
+            return
+          }
+          // Hit 2: another expense's ADDITIONAL sub-refs already contain this token.
+          // Wrap with commas so we match whole tokens, not partial (e.g. S3/5 vs S3/50).
+          const token = `S${r.month}/${r.seq}`
+          const { data: additionalHits } = await supabase
+            .from('expenses')
+            .select('id, reference_number, additional_sub_refs')
+            .eq('company_id', companyId)
+            .not('additional_sub_refs', 'is', null)
+            .neq('id', existingExpense?.id || '00000000-0000-0000-0000-000000000000')
+          const collision = (additionalHits || []).find(row => {
+            const tokens = (row.additional_sub_refs || '').split(',').map(t => t.trim())
+            return tokens.includes(token)
+          })
+          if (collision) {
+            setSaveError(`Sub-ref ${token} is already used by expense ${collision.reference_number}`)
+            return
+          }
+        }
+      }
     }
 
     // ---- Duplicate check (warn-but-allow) ----
@@ -796,6 +931,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         sub_ref_series:     subSeries,
         sub_ref_month:      subMonth,
         sub_ref_seq:        subSeq,
+        // Comma-separated extra sub-refs for multi-payee payroll transfers.
+        // Null when there's only one payee (the primary sub-ref above).
+        additional_sub_refs: subRefIsManual
+          ? serializeAdditionalSubRefs(form.additional_sub_refs, 'S')
+          : null,
         subcategory_id:     form.subcategory_id || null,
         subcategory_name:   form.subcategory_name || null,
         is_reimbursable:    form.is_reimbursable,
@@ -1725,6 +1865,90 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
               <small style={{ color: '#6b7280', fontSize: 12 }}>
                 The sub-ref month can be any month (not bound to dashboard selection) —
                 reflects the accounting/work period, not necessarily the payment month.
+              </small>
+
+              {/* Additional sub-refs — one bank transfer covering multiple payees.
+                  Each row is its own (month, seq) pair; the series is always S.
+                  Stored on save as a comma-separated token list in
+                  expenses.additional_sub_refs (e.g. "S3/5,S3/6" or "S12/1,S1/1"). */}
+              {form.additional_sub_refs.length > 0 && (
+                <div style={{
+                  marginTop: 12, padding: 10,
+                  background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4,
+                }}>
+                  <div style={{ fontSize: 12, color: '#374151', fontWeight: 600, marginBottom: 6 }}>
+                    Additional payees in the same transfer:
+                  </div>
+                  {form.additional_sub_refs.map((r, idx) => (
+                    <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 16 }}>S</span>
+                      <input
+                        type="number"
+                        min={1} max={12}
+                        placeholder="month"
+                        value={r.month}
+                        onChange={(e) => {
+                          const next = [...form.additional_sub_refs]
+                          next[idx] = { ...next[idx], month: e.target.value }
+                          setForm({ ...form, additional_sub_refs: next })
+                        }}
+                        className="form-input"
+                        style={{ width: 80 }}
+                      />
+                      <span style={{ fontFamily: 'monospace', fontSize: 16 }}>/</span>
+                      <input
+                        type="number"
+                        min={1}
+                        placeholder="seq"
+                        value={r.seq}
+                        onChange={(e) => {
+                          const next = [...form.additional_sub_refs]
+                          next[idx] = { ...next[idx], seq: e.target.value }
+                          setForm({ ...form, additional_sub_refs: next })
+                        }}
+                        className="form-input"
+                        style={{ width: 100 }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = form.additional_sub_refs.filter((_, i) => i !== idx)
+                          setForm({ ...form, additional_sub_refs: next })
+                        }}
+                        style={{
+                          padding: '4px 10px', background: '#fee2e2', color: '#991b1b',
+                          border: '1px solid #fca5a5', borderRadius: 4, cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setForm({
+                  ...form,
+                  additional_sub_refs: [
+                    ...form.additional_sub_refs,
+                    { month: '', seq: '' },
+                  ],
+                })}
+                style={{
+                  marginTop: 8, padding: '6px 12px',
+                  background: '#eff6ff', color: '#1e40af',
+                  border: '1px solid #bfdbfe', borderRadius: 4,
+                  cursor: 'pointer', fontSize: 13,
+                }}
+              >
+                + Add another payroll sub-reference
+              </button>
+              <small style={{ display: 'block', marginTop: 4, color: '#6b7280', fontSize: 12 }}>
+                Use this when one transfer paid more than one payee (e.g. payroll for
+                two employees, or year-end transfer covering Dec and Jan).
               </small>
             </div>
           )}

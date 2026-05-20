@@ -636,7 +636,19 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
 
   const renderSubRef = (e) => {
     if (!e.sub_ref_series) return '—'
-    return `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+    // Primary sub-ref. Always present when a series is set.
+    const primary = `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
+    // Optional additional sub-refs — comma-separated tokens (e.g. "S3/5,S3/6")
+    // stored on the row for the multi-payee payroll case. Concatenate primary
+    // + additional with ", " between so the cell reads "S3/4, S3/5, S3/6".
+    if (e.additional_sub_refs) {
+      const extras = e.additional_sub_refs
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean)
+      if (extras.length > 0) return [primary, ...extras].join(', ')
+    }
+    return primary
   }
 
   const renderFlags = (e) => {
