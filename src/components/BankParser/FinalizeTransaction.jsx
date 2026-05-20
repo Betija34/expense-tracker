@@ -636,15 +636,30 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     return finalResults
   }
 
-  // Subcategory selection — store both id and name
+  // Subcategory selection — store both id and name.
+  // For "dynamic" subcategories (is_dynamic = TRUE — currently only
+  // "Supplier Refunds → [Dynamic - learned from data]"), the user picks
+  // the placeholder row from the dropdown and then types the real
+  // value (e.g. the supplier name) in a free-text input that appears
+  // below. We seed subcategory_name with empty string so the input
+  // starts blank; the user fills it in. On save we store the typed
+  // value in subcategory_name while subcategory_id keeps pointing at
+  // the placeholder row.
   const handleSubcategoryChange = (subId) => {
     const sub = subcategories.find(s => s.id === subId)
     setForm(f => ({
       ...f,
       subcategory_id: subId,
-      subcategory_name: sub ? sub.name : '',
+      subcategory_name: sub
+        ? (sub.is_dynamic ? '' : sub.name)
+        : '',
     }))
   }
+
+  // Helper — is the currently-selected subcategory dynamic (free-text)?
+  // Memo-free derived value; cheap given subcategories is small.
+  const selectedSubcategory = subcategories.find(s => s.id === form.subcategory_id)
+  const subcategoryIsDynamic = !!selectedSubcategory?.is_dynamic
 
   // ------------------------------------------------------------------
   // Auto-create the "Payment Made on Behalf of …" inter-company leg
@@ -774,6 +789,17 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     // Subcategory required unless the category has none
     if (subcategories.length > 0 && !form.subcategory_id) {
       setSaveError('Subcategory is required'); return
+    }
+
+    // Dynamic subcategory (e.g. Supplier Refunds → [Dynamic - learned from data]):
+    // the user must type the actual value (supplier name etc.) into the
+    // free-text input below the dropdown. The placeholder name itself
+    // is not a valid value.
+    if (subcategoryIsDynamic) {
+      const typed = form.subcategory_name?.trim() || ''
+      if (!typed) {
+        setSaveError('Please type the supplier (or other) name for this subcategory'); return
+      }
     }
 
     // Shareholder code required if the category needs it
@@ -1608,6 +1634,31 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
+              {/* Dynamic subcategory (e.g. "Supplier Refunds → [Dynamic - learned
+                  from data]") — show a free-text input so the user can type the
+                  actual value (supplier name, etc.). The typed value is stored
+                  in subcategory_name; subcategory_id keeps pointing at the
+                  placeholder row so re-edit still selects the right option. */}
+              {subcategoryIsDynamic && (
+                <div style={{ marginTop: 8 }}>
+                  <input
+                    type="text"
+                    placeholder="Type the supplier (or other) name…"
+                    // If the saved value is just the placeholder text (e.g.
+                    // the row was saved before this fix and never given a
+                    // real supplier name), render the input empty so the
+                    // user can type cleanly.
+                    value={form.subcategory_name === selectedSubcategory?.name ? '' : form.subcategory_name}
+                    onChange={(e) => setForm(f => ({ ...f, subcategory_name: e.target.value }))}
+                    className="form-input"
+                    autoFocus
+                  />
+                  <small style={{ color: '#6b7280', fontSize: 12, marginTop: 4, display: 'block' }}>
+                    Free-text — typically the supplier name (e.g. "EAC Cyprus").
+                    The list of past values is remembered for future autocomplete.
+                  </small>
+                </div>
+              )}
               {/* Heads-up: auto-create the matching Intercompany Funding leg
                   when the user picks a "Payment Made on Behalf of …" subcategory
                   AND the current company is the funding side AND there's no
