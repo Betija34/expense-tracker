@@ -145,7 +145,7 @@ function App() {
             className={`tab-button ${currentTab === 'clients' ? 'active' : ''}`}
             onClick={() => setCurrentTab('clients')}
           >
-            Clients
+            Client Invoicing
           </button>
           <button
             className={`tab-button ${currentTab === 'shareholder' ? 'active' : ''}`}

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './Clients.css'
 
 /**
@@ -57,6 +58,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // normalised name (lowercased trimmed). Source = expenses.client_name
   // (free text) summed where requires_reimbursement=true.
   const [reimbursableByClient, setReimbursableByClient] = useState(new Map())
+  // Invoices for the selected company + month, loaded from V21's invoices
+  // table. The page renders ONE row per active client per applicable type;
+  // those rows are auto-drafted as placeholders in the UI and only get
+  // INSERTed to this list when the user types into any lifecycle field
+  // (lazy-create — keeps the DB clean from un-touched draft rows).
+  const [invoices, setInvoices]   = useState([])
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState(null)
   // editing = null (closed) | { mode: 'add' | 'edit', client: {...} }
@@ -64,6 +71,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const [form, setForm]           = useState(BLANK_FORM)
   const [saveError, setSaveError] = useState(null)
   const [saving, setSaving]       = useState(false)
+  // One-off invoice modal state. null = closed.
+  // Otherwise: { client_id, oneoff_type ('service' | 'reimbursement'),
+  //              description, amount_net, vat_rate, notes }
+  const [oneOffForm, setOneOffForm]   = useState(null)
+  const [oneOffError, setOneOffError] = useState(null)
 
   // ---- Loader ----
   useEffect(() => {
@@ -112,6 +124,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             }
             setReimbursableByClient(m)
           }
+
+          // Invoices for the selected month — feeds the lifecycle inputs
+          // on each invoice row. Loaded last so all the upstream context
+          // (clients, reimbursables) is ready when rows render.
+          const { data: inv, error: invErr } = await supabase
+            .from('invoices')
+            .select('*')
+            .eq('company_id', comp.id)
+            .eq('period_year', selectedYear)
+            .eq('period_month', selectedMonth)
+          if (invErr) throw invErr
+          if (!cancelled) setInvoices(inv || [])
         }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load clients')
@@ -123,6 +147,23 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return () => { cancelled = true }
   }, [selectedCompany, selectedMonth, selectedYear])
 
+  // Combined Project cell: trade_name bold on top, legal_name smaller
+  // underneath. Saves a column of horizontal space vs. showing each in
+  // its own <td>. Used in every invoice block and the inactive-clients
+  // table.
+  const renderProjectCell = (c) => (
+    <td>
+      <div style={{ fontWeight: 600, fontSize: 13, color: '#111827' }}>
+        {c?.trade_name || c?.legal_name || '—'}
+      </div>
+      {c?.trade_name && c?.legal_name && (
+        <div style={{ fontSize: 10, color: '#9ca3af', lineHeight: 1.2, marginTop: 1 }}>
+          {c.legal_name}
+        </div>
+      )}
+    </td>
+  )
+
   // Helper — get the reimbursable total for a client by trying trade_name
   // first, then falling back to legal_name. Returns 0 when no match.
   const reimbursableFor = (client) => {
@@ -131,6 +172,462 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return reimbursableByClient.get(tradeKey)
         || reimbursableByClient.get(legalKey)
         || 0
+  }
+
+  // ===================================================================
+  // INVOICE HELPERS (V21 / Step 2 MVP)
+  // ===================================================================
+  // Each invoice block (Monthly Fee, Fixed Exp Reimbursement, Variable
+  // Exp Reimbursement) shows ONE row per active client. The row is a
+  // "placeholder" until the user types into any lifecycle field — then
+  // we INSERT the invoice to the DB. Subsequent edits UPDATE in place.
+
+  // Find the DB invoice for a (client, type) — returns null if not yet
+  // created (placeholder state).
+  const getInvoiceFor = (clientId, invoiceType) =>
+    invoices.find(i => i.client_id === clientId && i.invoice_type === invoiceType) || null
+
+  // Compute the auto-filled defaults for a new invoice row based on the
+  // client master + invoice type + selected period. Used at INSERT time.
+  const computeInvoiceDefaults = (client, invoiceType) => {
+    let amount_net = 0
+    let vat_rate   = 0
+    let description = ''
+    if (invoiceType === 'monthly_fee') {
+      amount_net  = Number(client.monthly_fee_net || 0)
+      vat_rate    = Number(client.vat_rate || 0)
+      description = `${monthName(selectedMonth)} ${selectedYear} fee`
+    } else if (invoiceType === 'fixed_expense') {
+      amount_net  = Number(client.monthly_fixed_expense_net || 0)
+      vat_rate    = 0  // reimbursements never carry VAT (pass-through cost)
+      description = `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
+    } else if (invoiceType === 'variable_expense') {
+      amount_net  = reimbursableFor(client)
+      vat_rate    = 0
+      description = `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
+    }
+    return {
+      company_id:    companyId,
+      client_id:     client.id,
+      period_year:   selectedYear,
+      period_month:  selectedMonth,
+      invoice_type:  invoiceType,
+      description,
+      amount_net,
+      vat_rate,
+      amount_total:  amount_net * (1 + vat_rate),
+      status:        'planned',
+    }
+  }
+
+  // Patch one or more fields on an invoice row. INSERTs the row if it
+  // doesn't exist yet (lazy-create), UPDATEs in place if it does.
+  // Pass `null` for a field to clear it (used when un-ticking a SOA box).
+  const upsertInvoice = async (client, invoiceType, patch) => {
+    try {
+      const existing = getInvoiceFor(client.id, invoiceType)
+      const stamped  = { ...patch, updated_at: new Date().toISOString() }
+      // Recompute amount_total whenever amount_net or vat_rate change.
+      if (Object.prototype.hasOwnProperty.call(stamped, 'amount_net') ||
+          Object.prototype.hasOwnProperty.call(stamped, 'vat_rate')) {
+        const baseRow = existing || computeInvoiceDefaults(client, invoiceType)
+        const nextNet = stamped.amount_net != null ? Number(stamped.amount_net) : Number(baseRow.amount_net || 0)
+        const nextVat = stamped.vat_rate != null   ? Number(stamped.vat_rate)   : Number(baseRow.vat_rate   || 0)
+        stamped.amount_total = nextNet * (1 + nextVat)
+      }
+      if (existing) {
+        const { data: updated, error: updErr } = await supabase
+          .from('invoices').update(stamped).eq('id', existing.id).select('*').single()
+        if (updErr) throw updErr
+        setInvoices(prev => prev.map(i => i.id === updated.id ? updated : i))
+      } else {
+        const defaults = computeInvoiceDefaults(client, invoiceType)
+        const { data: inserted, error: insErr } = await supabase
+          .from('invoices').insert([{ ...defaults, ...stamped }]).select('*').single()
+        if (insErr) throw insErr
+        setInvoices(prev => [...prev, inserted])
+      }
+    } catch (err) {
+      alert(`Could not save: ${err.message}`)
+    }
+  }
+
+  // Derive the human-readable status badge label from which lifecycle
+  // fields are filled. The DB also stores a status string but the UI
+  // computes from fields directly so the user always sees ground truth.
+  const deriveStatus = (invoice) => {
+    if (!invoice) return { label: 'Pending', cls: 'status-pending' }
+    if (invoice.status === 'skipped') return { label: 'Skipped', cls: 'status-skipped-badge' }
+    if (invoice.status === 'voided')  return { label: 'Voided',  cls: 'status-voided' }
+    if (invoice.soa_updated_at_payment) return { label: 'Finalized', cls: 'status-finalized' }
+    if (invoice.date_paid)              return { label: 'Paid',      cls: 'status-paid' }
+    if (invoice.email_sent_at)          return { label: 'Emailed',   cls: 'status-emailed' }
+    if (invoice.invoice_number && invoice.date_issued) return { label: 'Issued', cls: 'status-issued' }
+    return { label: 'Pending', cls: 'status-pending' }
+  }
+
+  // -------------------------------------------------------------------
+  // ADD-INVOICE MODAL — unified flow for one-off / fixed / variable invoices
+  // -------------------------------------------------------------------
+  // Used by Blocks 2 (One-off), 3 (Fixed Exp), and 4 (Variable Exp) to
+  // manually add an invoice row. Block 1 (Monthly Fee) doesn't need this
+  // path because recurring monthly fee rows auto-draft per active client.
+  //
+  // The modal's invoice_type field accepts:
+  //   - one_off_service        (VAT applies)
+  //   - one_off_reimbursement  (no VAT — pass-through)
+  //   - fixed_expense          (no VAT — pass-through)
+  //   - variable_expense       (no VAT — pass-through)
+
+  // Map of invoice_type → which types carry VAT. Service-style invoices
+  // do; pass-through reimbursements don't. Credit notes mirror whatever
+  // they're reversing, so they're VAT-capable (user picks the rate in
+  // the modal — defaults to 19% but can be set to 0%).
+  const TYPE_CARRIES_VAT = {
+    monthly_fee:           true,
+    one_off_service:       true,
+    one_off_reimbursement: false,
+    fixed_expense:         false,
+    variable_expense:      false,
+    credit_note:           true,
+  }
+
+  // Friendly labels for the type dropdown in the modal.
+  const TYPE_LABELS = {
+    monthly_fee:           '📄 Monthly Fee (VAT applies)',
+    one_off_service:       '💼 One-off Service (VAT applies)',
+    one_off_reimbursement: '💵 One-off Reimbursement (no VAT — pass-through)',
+    fixed_expense:         '🔁 Fixed Expense Reimbursement (no VAT — pass-through)',
+    variable_expense:      '💸 Variable Expense Reimbursement (no VAT — pass-through)',
+    credit_note:           '↩️ Credit Note (reverses a previous invoice)',
+  }
+
+  // Description placeholder text per type — helps the user write a useful
+  // description (especially for credit notes which need to reference the
+  // original invoice number).
+  const TYPE_DESCRIPTION_PLACEHOLDER = {
+    monthly_fee:           'e.g. "January 2026 fee (late catch-up)" or "April 2026 fee (advance)"',
+    one_off_service:       'e.g. "Special project Q2 — March 2026 advisory work"',
+    one_off_reimbursement: 'e.g. "One-time travel cost advance"',
+    fixed_expense:         'e.g. "Late catch-up — November 2025 fixed expenses"',
+    variable_expense:      'e.g. "January 2026 reimbursable expenses"',
+    credit_note:           'e.g. "Credit note for invoice 2026-03-001 — overcharge correction"',
+  }
+
+  // Open the modal pre-filled. typePrefill controls which invoice type is
+  // selected by default (matches the block the user clicked Add from).
+  //
+  // Filing model: every invoice is saved under the TOP-BAR's selected
+  // month/year — i.e. the ISSUE month, not the period the invoice covers.
+  // Reason (user clarification, May 22 session): VIES + VAT reporting
+  // happen in the month the invoice was issued, regardless of which
+  // period the invoice describes. So a January fee invoiced in April is
+  // filed in April. The "what period does this cover" info lives in the
+  // description field (e.g. "January 2026 fee — late catch-up").
+  const openOneOffModal = (clientIdPrefill = '', typePrefill = 'one_off_service') => {
+    setOneOffError(null)
+    setOneOffForm({
+      client_id:     clientIdPrefill,
+      invoice_type:  typePrefill,
+      description:   '',
+      amount_net:    '',
+      vat_rate:      TYPE_CARRIES_VAT[typePrefill] ? '0.19' : '0',
+      notes:         '',
+    })
+  }
+  const closeOneOffModal = () => {
+    setOneOffForm(null)
+    setOneOffError(null)
+  }
+
+  // Save the invoice: validate, INSERT into invoices, refresh state.
+  const saveOneOff = async () => {
+    setOneOffError(null)
+    if (!oneOffForm.client_id) {
+      setOneOffError('Please pick a client (or add a new one).'); return
+    }
+    if (!oneOffForm.description?.trim()) {
+      setOneOffError('Description is required.'); return
+    }
+    const amt = parseFloat(oneOffForm.amount_net)
+    if (Number.isNaN(amt) || amt <= 0) {
+      setOneOffError('Amount must be greater than zero.'); return
+    }
+    // Only one_off_service carries VAT; everything else is forced to 0
+    // (pass-through cost — see TYPE_CARRIES_VAT above).
+    const carriesVat = TYPE_CARRIES_VAT[oneOffForm.invoice_type] === true
+    const vat = carriesVat ? parseFloat(oneOffForm.vat_rate || '0') : 0
+    if (Number.isNaN(vat) || vat < 0 || vat > 1) {
+      setOneOffError('VAT rate must be between 0 and 1 (e.g. 0.19 for 19%).'); return
+    }
+    // Filing month = the top-bar's selected month/year. Every invoice is
+    // filed under the month it's ISSUED in, not the period it covers
+    // (period info lives in the description for cases where they differ).
+    const row = {
+      company_id:    companyId,
+      client_id:     oneOffForm.client_id,
+      period_year:   selectedYear,
+      period_month:  selectedMonth,
+      invoice_type:  oneOffForm.invoice_type,
+      description:   oneOffForm.description.trim(),
+      amount_net:    amt,
+      vat_rate:      vat,
+      amount_total:  amt * (1 + vat),
+      status:        'planned',
+      notes:         oneOffForm.notes?.trim() || null,
+    }
+    try {
+      const { data: inserted, error: insErr } = await supabase
+        .from('invoices').insert([row]).select('*').single()
+      if (insErr) throw insErr
+      setInvoices(prev => [...prev, inserted])
+      closeOneOffModal()
+    } catch (err) {
+      setOneOffError(err.message || 'Could not save invoice')
+    }
+  }
+
+  // Delete an invoice row (with confirm). Used for one-off + any manually
+  // added fixed/variable reimbursement rows. Auto-drafted rows from Block
+  // 1/3/4 use their own delete flow (none today — they just stay PLANNED).
+  const deleteOneOff = async (invoice) => {
+    const ok = window.confirm(`Delete this invoice (${invoice.description})? This cannot be undone.`)
+    if (!ok) return
+    try {
+      const { error: delErr } = await supabase
+        .from('invoices').delete().eq('id', invoice.id)
+      if (delErr) throw delErr
+      setInvoices(prev => prev.filter(i => i.id !== invoice.id))
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`)
+    }
+  }
+
+  // For one-off rows: a lifecycle-cells renderer that takes the actual
+  // invoice row instead of looking it up by (client_id, type). Used in
+  // Block 2 because there can be multiple one-off rows per client.
+  const renderLifecycleCellsForInvoice = (invoice) => {
+    const status = deriveStatus(invoice)
+    const patch = (field, value) =>
+      supabase.from('invoices').update({ [field]: value, updated_at: new Date().toISOString() })
+        .eq('id', invoice.id).select('*').single()
+        .then(({ data, error }) => {
+          if (error) { alert(`Save failed: ${error.message}`); return }
+          setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+        })
+    const handleField = (field, value) => patch(field, value)
+    const handleCheckbox = (field, checked) => patch(field, checked ? new Date().toISOString() : null)
+    return (
+      <>
+        <td>
+          <input type="text" className="lifecycle-input lifecycle-input-mono"
+            placeholder={`${expectedYearMonth}-NNN`} defaultValue={invoice.invoice_number || ''}
+            onBlur={(e) => {
+              const next = e.target.value.trim() || null
+              if (next) {
+                const v = validateInvoiceNumber(next)
+                if (!v.ok) {
+                  alert(v.error)
+                  e.target.value = invoice.invoice_number || ''  // revert
+                  return
+                }
+              }
+              if (next !== (invoice.invoice_number || null)) handleField('invoice_number', next)
+            }} />
+        </td>
+        <td>
+          <input type="date" className="lifecycle-input" defaultValue={invoice.date_issued || ''}
+            onBlur={(e) => {
+              const next = e.target.value || null
+              if (next) {
+                const v = validateIssueDate(next)
+                if (!v.ok) {
+                  alert(v.error)
+                  e.target.value = invoice.date_issued || ''  // revert
+                  return
+                }
+              }
+              if (next !== (invoice.date_issued || null)) handleField('date_issued', next)
+            }} />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input type="checkbox" checked={!!invoice.soa_updated_at_issue}
+            onChange={(e) => handleCheckbox('soa_updated_at_issue', e.target.checked)} />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input type="checkbox" checked={!!invoice.email_sent_at}
+            onChange={(e) => handleCheckbox('email_sent_at', e.target.checked)} />
+        </td>
+        <td>
+          <input type="date" className="lifecycle-input" defaultValue={invoice.date_paid || ''}
+            onBlur={(e) => {
+              const next = e.target.value || null
+              if (next !== (invoice.date_paid || null)) handleField('date_paid', next)
+            }} />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input type="checkbox" checked={!!invoice.soa_updated_at_payment}
+            onChange={(e) => handleCheckbox('soa_updated_at_payment', e.target.checked)} />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <span className={`status-badge ${status.cls}`}>{status.label}</span>
+        </td>
+      </>
+    )
+  }
+
+  // -------------------------------------------------------------------
+  // VALIDATION — invoice number + issue date must match top-bar period
+  // -------------------------------------------------------------------
+  // Invoice numbers must start with YYYY[separator]MM[separator] where
+  // YYYY/MM are the top-bar values. Issue date must fall within that
+  // same month. These rules exist because VIES + VAT reporting use the
+  // issue month — letting the user type a Feb invoice number while
+  // viewing April would create a filing mismatch.
+
+  const expectedYearMonth = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+
+  const validateInvoiceNumber = (value) => {
+    if (!value || !String(value).trim()) return { ok: true }
+    const trimmed = String(value).trim()
+    // Lenient on separators: accept "-", "/", "." between year/month/seq.
+    const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(.+)$/)
+    if (!m) {
+      return {
+        ok: false,
+        error: `Invoice number must include year + month from the top bar.\nExpected format: ${expectedYearMonth}-001 (separators: - / .)`,
+      }
+    }
+    const y  = parseInt(m[1])
+    const mo = parseInt(m[2])
+    if (y !== selectedYear) {
+      return {
+        ok: false,
+        error: `Invoice number year is ${y} but the top bar is on ${selectedYear}.\nSwitch the top bar to ${y} or correct the invoice number.`,
+      }
+    }
+    if (mo !== selectedMonth) {
+      return {
+        ok: false,
+        error: `Invoice number month is ${String(mo).padStart(2, '0')} (${monthName(mo)}) but the top bar is on ${String(selectedMonth).padStart(2, '0')} (${monthName(selectedMonth)}).\nSwitch the top bar or correct the invoice number.`,
+      }
+    }
+    return { ok: true }
+  }
+
+  const validateIssueDate = (value) => {
+    if (!value) return { ok: true }
+    const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!m) return { ok: false, error: 'Invalid date format.' }
+    const y  = parseInt(m[1])
+    const mo = parseInt(m[2])
+    if (y !== selectedYear || mo !== selectedMonth) {
+      return {
+        ok: false,
+        error: `Issue Date must fall within ${monthName(selectedMonth)} ${selectedYear} (the top-bar period).\nTo file an invoice under a different month, switch the top bar first.`,
+      }
+    }
+    return { ok: true }
+  }
+
+  // Render the 6 inline-editable lifecycle cells for one invoice row.
+  // Used by Blocks 1 (Monthly Fee), 3 (Fixed Exp), and 4 (Variable Exp).
+  // For checkboxes, ticking stores a timestamp; un-ticking sets it to null.
+  const renderLifecycleCells = (client, invoiceType) => {
+    const inv = getInvoiceFor(client.id, invoiceType)
+    const status = deriveStatus(inv)
+    const handleField = (field, value) => upsertInvoice(client, invoiceType, { [field]: value })
+    const handleCheckbox = (field, checked) =>
+      upsertInvoice(client, invoiceType, { [field]: checked ? new Date().toISOString() : null })
+    return (
+      <>
+        <td>
+          <input
+            type="text"
+            className="lifecycle-input lifecycle-input-mono"
+            placeholder={`${expectedYearMonth}-NNN`}
+            defaultValue={inv?.invoice_number || ''}
+            onBlur={(e) => {
+              const next = e.target.value.trim() || null
+              // Validate against the top-bar period before saving.
+              if (next) {
+                const v = validateInvoiceNumber(next)
+                if (!v.ok) {
+                  alert(v.error)
+                  e.target.value = inv?.invoice_number || ''  // revert
+                  return
+                }
+              }
+              if (next !== (inv?.invoice_number || null)) handleField('invoice_number', next)
+            }}
+          />
+        </td>
+        <td>
+          <input
+            type="date"
+            className="lifecycle-input"
+            defaultValue={inv?.date_issued || ''}
+            onBlur={(e) => {
+              const next = e.target.value || null
+              // Issue date must fall within the top-bar month.
+              if (next) {
+                const v = validateIssueDate(next)
+                if (!v.ok) {
+                  alert(v.error)
+                  e.target.value = inv?.date_issued || ''  // revert
+                  return
+                }
+              }
+              if (next !== (inv?.date_issued || null)) handleField('date_issued', next)
+            }}
+          />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={!!inv?.soa_updated_at_issue}
+            onChange={(e) => handleCheckbox('soa_updated_at_issue', e.target.checked)}
+            title={inv?.soa_updated_at_issue
+              ? `Ticked ${new Date(inv.soa_updated_at_issue).toLocaleString()}`
+              : 'Tick when SOA updated after issuing'}
+          />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={!!inv?.email_sent_at}
+            onChange={(e) => handleCheckbox('email_sent_at', e.target.checked)}
+            title={inv?.email_sent_at
+              ? `Sent ${new Date(inv.email_sent_at).toLocaleString()}`
+              : 'Tick when email sent to client'}
+          />
+        </td>
+        <td>
+          <input
+            type="date"
+            className="lifecycle-input"
+            defaultValue={inv?.date_paid || ''}
+            onBlur={(e) => {
+              const next = e.target.value || null
+              if (next !== (inv?.date_paid || null)) handleField('date_paid', next)
+            }}
+          />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={!!inv?.soa_updated_at_payment}
+            onChange={(e) => handleCheckbox('soa_updated_at_payment', e.target.checked)}
+            title={inv?.soa_updated_at_payment
+              ? `Ticked ${new Date(inv.soa_updated_at_payment).toLocaleString()}`
+              : 'Tick when SOA updated after payment received'}
+          />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <span className={`status-badge ${status.cls}`}>{status.label}</span>
+        </td>
+      </>
+    )
   }
 
   // Month name for the column header (e.g. "Reimbursable (March 2026)")
@@ -265,6 +762,82 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     }
   }
 
+  // ---- Progress: % of invoices fully finalized this month ----
+  // Mirrors the Monthly Checklist pattern. "Finalized" = all 6 lifecycle
+  // fields filled (Inv #, Issue Date, SOA-issue, Email Sent, Payment Date,
+  // SOA-payment). Placeholder rows count toward total but never as finalized
+  // (they're invoices that haven't been started yet).
+  const progress = useMemo(() => {
+    const isFinalized = (inv) =>
+      !!(inv.invoice_number && inv.date_issued &&
+         inv.soa_updated_at_issue && inv.email_sent_at &&
+         inv.date_paid && inv.soa_updated_at_payment)
+
+    // Index DB invoices by (type, client_id) so we can quickly tell which
+    // clients still need a placeholder row.
+    const clientIdsByType = new Map()
+    let dbTotal = 0
+    let finalized = 0
+    for (const inv of invoices) {
+      dbTotal += 1
+      if (isFinalized(inv)) finalized += 1
+      if (!clientIdsByType.has(inv.invoice_type)) clientIdsByType.set(inv.invoice_type, new Set())
+      clientIdsByType.get(inv.invoice_type).add(inv.client_id)
+    }
+
+    // Placeholders: active clients with defaults whose row hasn't been
+    // INSERTed yet for this month. Each counts as 1 row toward total
+    // but 0 toward finalized.
+    let placeholderTotal = 0
+    for (const c of clients) {
+      if (!c.active) continue
+      if (Number(c.monthly_fee_net || 0) > 0 &&
+          !clientIdsByType.get('monthly_fee')?.has(c.id)) {
+        placeholderTotal += 1
+      }
+      if (Number(c.monthly_fixed_expense_net || 0) > 0 &&
+          !clientIdsByType.get('fixed_expense')?.has(c.id)) {
+        placeholderTotal += 1
+      }
+      if (reimbursableFor(c) > 0 &&
+          !clientIdsByType.get('variable_expense')?.has(c.id)) {
+        placeholderTotal += 1
+      }
+    }
+
+    const total = dbTotal + placeholderTotal
+    const pending = total - finalized
+    const pct = total === 0 ? 0 : Math.round((finalized / total) * 100)
+    return { total, finalized, pending, pct }
+    // reimbursableByClient is the underlying state behind reimbursableFor —
+    // recompute when it changes too.
+  }, [invoices, clients, reimbursableByClient])
+
+  // ---- Print handler — A4 landscape, same pattern as Client Report ----
+  const handlePrint = () => {
+    const styleEl = document.createElement('style')
+    styleEl.textContent = `
+      @media print {
+        @page {
+          size: A4 landscape;
+          margin: 1cm 1cm 1.5cm 1cm;
+          @bottom-right {
+            content: "Page " counter(page) " of " counter(pages);
+            font-size: 10px;
+            color: #6b7280;
+          }
+        }
+      }
+    `
+    document.head.appendChild(styleEl)
+    const cleanup = () => {
+      styleEl.remove()
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    window.print()
+  }
+
   // ---- Compute total monthly billable across active clients ----
   // = (monthly fee × (1 + VAT))            ← services, VAT applies
   // + fixed monthly expense reimbursement  ← pass-through, NO VAT
@@ -287,12 +860,30 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   return (
     <div className="clients-page">
+      {/* Print-only letterhead — visible on paper, hidden on screen. */}
+      <div className="print-only">
+        <PrintLetterhead
+          companyName={selectedCompany}
+          reportTitle="Client Invoicing"
+          periodLabel={selectedMonth && selectedYear
+            ? `Issue period: ${monthName(selectedMonth)} ${selectedYear}`
+            : ''}
+        />
+      </div>
+
       <div className="clients-header">
-        <div>
-          <h2 style={{ margin: 0 }}>👥 Clients — {selectedCompany}</h2>
+        <div style={{ flex: 1 }}>
+          <h2 style={{ margin: 0 }}>
+            📋 Client Invoicing — {selectedCompany}
+            {selectedMonth && selectedYear && (
+              <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 16, marginLeft: 8 }}>
+                · {monthName(selectedMonth)} {selectedYear}
+              </span>
+            )}
+          </h2>
           <div style={{ color: '#6b7280', marginTop: 4, fontSize: 13 }}>
-            {clients.length} total · {clients.filter(c => c.active).length} active
-            {' · '}total monthly billable (active): <strong>{formatEuro(totalMonthlyBillable)}</strong>
+            {clients.length} clients · {clients.filter(c => c.active).length} active
+            {' · '}total monthly billable: <strong>{formatEuro(totalMonthlyBillable)}</strong>
             {selectedMonth && selectedYear && (
               <>
                 {' · '}reimbursable in {monthName(selectedMonth)} {selectedYear}:{' '}
@@ -300,8 +891,30 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               </>
             )}
           </div>
+          {/* Progress: how many of this month's invoices are fully finalized */}
+          <div style={{ marginTop: 8, color: '#374151', fontSize: 13 }}>
+            <strong>{progress.finalized} of {progress.total} invoices finalized</strong>
+            {progress.pending > 0 && (
+              <span style={{ color: '#6b7280', marginLeft: 6 }}>
+                · {progress.pending} pending
+              </span>
+            )}
+          </div>
+          {/* Green-fill progress bar — same shape as Monthly Checklist */}
+          <div className="invoicing-progress-bar">
+            <div
+              className="invoicing-progress-fill"
+              style={{ width: `${progress.pct}%` }}
+            />
+            <div className="invoicing-progress-label">{progress.pct}%</div>
+          </div>
         </div>
-        <button onClick={openAdd} className="button">+ Add client</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <button onClick={handlePrint} className="button" style={{ background: '#475569' }}>
+            🖨 Print
+          </button>
+          <button onClick={openAdd} className="button">+ Add client</button>
+        </div>
       </div>
 
       {clients.length === 0 ? (
@@ -319,70 +932,94 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               underlying records.
               ================================================================= */}
           {(() => {
-            const rows = clients.filter(c => c.active && Number(c.monthly_fee_net || 0) > 0)
-            const totalForBlock = rows.reduce((s, c) =>
-              s + Number(c.monthly_fee_net || 0) * (1 + Number(c.vat_rate || 0)), 0)
+            // All monthly_fee invoices for the selected period
+            const dbInvoices = invoices.filter(i => i.invoice_type === 'monthly_fee')
+            const clientsWithDefault = clients.filter(c => c.active && Number(c.monthly_fee_net || 0) > 0)
+            const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
+            // Placeholder rows: clients with default + no DB invoice yet
+            const placeholderClients = clientsWithDefault.filter(c => !clientIdsWithDbRow.has(c.id))
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            const totalForBlock =
+              dbInvoices.reduce((s, i) => s + Number(i.amount_total || 0), 0)
+              + placeholderClients.reduce((s, c) =>
+                  s + Number(c.monthly_fee_net || 0) * (1 + Number(c.vat_rate || 0)), 0)
+            const totalRows = placeholderClients.length + dbInvoices.length
             return (
               <section className="clients-block clients-block-monthly">
                 <div className="clients-block-header">
                   <h3>📄 Monthly Fee Invoices</h3>
-                  <div className="block-subtitle">
-                    {rows.length} active · total <strong>{formatEuro(totalForBlock)}</strong>
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {totalRows} row{totalRows === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong>
+                    </span>
+                    <button
+                      className="button"
+                      style={{ padding: '6px 12px' }}
+                      onClick={() => openOneOffModal('', 'monthly_fee')}
+                      title="Add a monthly fee invoice for a different client, period, or amount (use for arrears or advance billing)"
+                    >
+                      + Add monthly fee invoice
+                    </button>
                   </div>
                 </div>
                 <div style={{ overflowX: 'auto' }}>
                 <table className="clients-table">
                   <thead>
                     <tr>
-                      <th>Project name</th>
-                      <th>Legal name</th>
+                      <th>Project</th>
                       <th>Description</th>
                       <th style={{ textAlign: 'right' }}>Amount (net)</th>
                       <th style={{ textAlign: 'right' }}>VAT</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
-                      <th>Inv. #</th>
-                      <th>Issue Date</th>
+                      <th style={{ minWidth: 120 }}>Inv. #</th>
+                      <th style={{ minWidth: 150 }}>Issue Date</th>
                       <th title="Statement of Account updated after invoice issued">SOA ✓</th>
-                      <th>Payment Date</th>
+                      <th title="Email with invoice sent to client">Email ✓</th>
+                      <th style={{ minWidth: 150 }}>Payment Date</th>
                       <th title="Statement of Account updated after payment received">SOA ✓</th>
                       <th>Status</th>
                       <th>Active</th>
-                      <th>Edit</th>
-                      <th>Delete</th>
+                      <th>Edit / Delete</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(c => {
-                      const total = Number(c.monthly_fee_net || 0) * (1 + Number(c.vat_rate || 0))
+                    {/* Placeholder rows first — one per active client with a default
+                        monthly fee who hasn't yet had an invoice created for this
+                        period. Has client Edit/Delete + Active toggle. */}
+                    {placeholderClients.map(c => {
+                      const amountNet = Number(c.monthly_fee_net || 0)
+                      const vatRate   = Number(c.vat_rate || 0)
+                      const total     = amountNet * (1 + vatRate)
                       const periodLabel = selectedMonth && selectedYear
                         ? `${monthName(selectedMonth)} ${selectedYear} fee`
                         : 'Monthly fee'
                       return (
-                        <tr key={c.id}>
-                          <td><strong>{c.trade_name || '—'}</strong></td>
-                          <td style={{ fontSize: 13, color: '#374151' }}>{c.legal_name}</td>
+                        <tr key={`placeholder-${c.id}`}>
+                          {renderProjectCell(c)}
                           <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
-                          <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{formatEuro(c.monthly_fee_net)}</td>
                           <td style={{ textAlign: 'right' }}>
-                            {Number(c.vat_rate) === 0
+                            <input
+                              type="number" step="0.01" min="0"
+                              className="lifecycle-input lifecycle-input-mono"
+                              style={{ textAlign: 'right', width: 90 }}
+                              defaultValue={amountNet}
+                              onBlur={(e) => {
+                                const next = parseFloat(e.target.value)
+                                if (!Number.isNaN(next) && next !== amountNet) {
+                                  upsertInvoice(c, 'monthly_fee', { amount_net: next, vat_rate: vatRate })
+                                }
+                              }}
+                            />
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {vatRate === 0
                               ? <span style={{ color: '#9ca3af' }}>—</span>
-                              : `${(Number(c.vat_rate) * 100).toFixed(0)}%`}
+                              : `${(vatRate * 100).toFixed(0)}%`}
                           </td>
                           <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
                             {formatEuro(total)}
                           </td>
-                          {/* Lifecycle cells — Step 2 will wire these to the
-                              invoices table so they become real inline inputs.
-                              For now they render as placeholders so the user
-                              can see the planned layout. */}
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">
-                            <span className="status-pending">Pending</span>
-                          </td>
+                          {renderLifecycleCells(c, 'monthly_fee')}
                           <td>
                             <label className="active-toggle">
                               <input
@@ -395,9 +1032,56 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           </td>
                           <td style={{ whiteSpace: 'nowrap' }}>
                             <button className="row-btn" onClick={() => openEdit(c)}>✏️</button>
-                          </td>
-                          <td style={{ whiteSpace: 'nowrap' }}>
                             <button className="row-btn danger" onClick={() => handleDelete(c)}>🗑️</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {/* DB rows — each is its own invoice. May include rows for
+                        clients without a default fee (manually added via the
+                        + Add button) or multiple invoices for the same client. */}
+                    {dbInvoices.map(inv => {
+                      const c = clientById.get(inv.client_id) || {}
+                      const amountNet = Number(inv.amount_net || 0)
+                      const vatRate   = Number(inv.vat_rate || 0)
+                      const total     = Number(inv.amount_total || amountNet * (1 + vatRate))
+                      return (
+                        <tr key={inv.id}>
+                          {renderProjectCell(c)}
+                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || '—'}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <input
+                              type="number" step="0.01" min="0"
+                              className="lifecycle-input lifecycle-input-mono"
+                              style={{ textAlign: 'right', width: 90 }}
+                              defaultValue={amountNet}
+                              onBlur={(e) => {
+                                const next = parseFloat(e.target.value)
+                                if (!Number.isNaN(next) && next !== amountNet) {
+                                  const newTotal = next * (1 + vatRate)
+                                  supabase.from('invoices')
+                                    .update({ amount_net: next, amount_total: newTotal, updated_at: new Date().toISOString() })
+                                    .eq('id', inv.id).select('*').single()
+                                    .then(({ data, error }) => {
+                                      if (error) { alert(`Save failed: ${error.message}`); return }
+                                      setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+                                    })
+                                }
+                              }}
+                            />
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {vatRate === 0
+                              ? <span style={{ color: '#9ca3af' }}>—</span>
+                              : `${(vatRate * 100).toFixed(0)}%`}
+                          </td>
+                          <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
+                            {formatEuro(total)}
+                          </td>
+                          {renderLifecycleCellsForInvoice(inv)}
+                          <td></td>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
                           </td>
                         </tr>
                       )
@@ -410,31 +1094,103 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           })()}
 
           {/* =================================================================
-              BLOCK 2 (was 4) — One-off Invoices (placeholder)
-              Moved up to follow Monthly Fees per the user's preferred
-              invoicing order: monthly fees → one-off → fixed reimbursement →
-              variable reimbursement → credit notes → inactive (last).
+              BLOCK 2 — One-off Invoices (live)
+              Supports two sub-types via invoice_type:
+                - one_off_service        (VAT applies)
+                - one_off_reimbursement  (no VAT — pass-through)
+              Multiple rows allowed per client per month (unlike the
+              recurring blocks which have one row per client). Add via
+              the "+ Add one-off invoice" button which opens a modal.
               ================================================================= */}
-          <section className="clients-block clients-block-oneoff">
-            <div className="clients-block-header">
-              <h3>
-                ⭐ One-off Invoices
-                {selectedMonth && selectedYear && (
-                  <span style={{ fontWeight: 400, fontSize: 14, color: '#6b7280', marginLeft: 8 }}>
-                    — {monthName(selectedMonth)} {selectedYear}
-                  </span>
+          {(() => {
+            const rows = invoices
+              .filter(i => i.invoice_type === 'one_off_service' || i.invoice_type === 'one_off_reimbursement')
+              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+            const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            return (
+              <section className="clients-block clients-block-oneoff">
+                <div className="clients-block-header">
+                  <h3>
+                    ⭐ One-off Invoices
+                    {selectedMonth && selectedYear && (
+                      <span style={{ fontWeight: 400, fontSize: 14, color: '#6b7280', marginLeft: 8 }}>
+                        — {monthName(selectedMonth)} {selectedYear}
+                      </span>
+                    )}
+                  </h3>
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {rows.length === 0
+                        ? 'No one-off invoices for this month yet.'
+                        : <>{rows.length} invoice{rows.length === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong></>}
+                    </span>
+                    <button className="button" style={{ padding: '6px 12px' }} onClick={() => openOneOffModal()}>
+                      + Add one-off invoice
+                    </button>
+                  </div>
+                </div>
+                {rows.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="clients-table">
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          <th>Type</th>
+                          <th>Description</th>
+                          <th style={{ textAlign: 'right' }}>Amount (net)</th>
+                          <th style={{ textAlign: 'right' }}>VAT</th>
+                          <th style={{ textAlign: 'right' }}>Total</th>
+                          <th style={{ minWidth: 120 }}>Inv. #</th>
+                          <th style={{ minWidth: 150 }}>Issue Date</th>
+                          <th title="Statement of Account updated after invoice issued">SOA ✓</th>
+                          <th title="Email with invoice sent to client">Email ✓</th>
+                          <th style={{ minWidth: 150 }}>Payment Date</th>
+                          <th title="Statement of Account updated after payment received">SOA ✓</th>
+                          <th>Status</th>
+                          <th>Delete</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(inv => {
+                          const c = clientById.get(inv.client_id)
+                          const isService = inv.invoice_type === 'one_off_service'
+                          return (
+                            <tr key={inv.id}>
+                              {renderProjectCell(c)}
+                              <td>
+                                <span style={{
+                                  fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                                  background: isService ? '#dbeafe' : '#fef3c7',
+                                  color:      isService ? '#1e40af' : '#92400e',
+                                }}>
+                                  {isService ? '💼 Service' : '💵 Reimbursement'}
+                                </span>
+                              </td>
+                              <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || '—'}</td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{formatEuro(inv.amount_net)}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                {Number(inv.vat_rate || 0) === 0
+                                  ? <span style={{ color: '#9ca3af' }}>—</span>
+                                  : `${(Number(inv.vat_rate) * 100).toFixed(0)}%`}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
+                                {formatEuro(inv.amount_total)}
+                              </td>
+                              {renderLifecycleCellsForInvoice(inv)}
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
-              </h3>
-              <div className="block-subtitle">
-                Coming with Step 2 (Invoicing Tracker — task #45). For
-                special / ad-hoc invoices on top of recurring monthly fees.
-              </div>
-            </div>
-            <div className="block-placeholder">
-              No one-off invoices yet. The "+ Add one-off invoice" button
-              will appear here once Step 2 is built.
-            </div>
-          </section>
+              </section>
+            )
+          })()}
 
           {/* =================================================================
               BLOCK 2 — Fixed Monthly Expense Reimbursement Invoices
@@ -446,66 +1202,119 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               in a single month.
               ================================================================= */}
           {(() => {
-            const rows = clients.filter(c => c.active && Number(c.monthly_fixed_expense_net || 0) > 0)
-            // Expense reimbursements are pass-through costs (the underlying
-            // expense already had its own VAT treatment) — VAT is NEVER
-            // applied on the reimbursement invoice. So the block total is
-            // just the sum of the net amounts; no VAT multiplier.
-            const totalForBlock = rows.reduce((s, c) =>
-              s + Number(c.monthly_fixed_expense_net || 0), 0)
+            // All DB invoices of this type for the selected month
+            const dbInvoices = invoices.filter(i => i.invoice_type === 'fixed_expense')
+            // Active clients with a default fixed_expense > 0 — they get an
+            // auto-drafted placeholder row when no DB row exists for them yet.
+            const clientsWithDefault = clients.filter(c => c.active && Number(c.monthly_fixed_expense_net || 0) > 0)
+            const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
+            // Placeholder rows for clients-with-default who have no DB row yet
+            const placeholderClients = clientsWithDefault.filter(c => !clientIdsWithDbRow.has(c.id))
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            // Total: sum of all DB invoices' net amounts (no VAT) + placeholder defaults
+            const totalForBlock =
+              dbInvoices.reduce((s, i) => s + Number(i.amount_net || 0), 0)
+              + placeholderClients.reduce((s, c) => s + Number(c.monthly_fixed_expense_net || 0), 0)
             const periodLabel = selectedMonth && selectedYear
               ? `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
               : 'Fixed monthly expenses'
+            const totalRows = dbInvoices.length + placeholderClients.length
             return (
               <section className="clients-block clients-block-fixed">
                 <div className="clients-block-header">
                   <h3>🔁 Fixed Monthly Expense Reimbursement Invoices</h3>
-                  <div className="block-subtitle">
-                    {rows.length === 0
-                      ? 'No clients with a fixed monthly expense reimbursement.'
-                      : <>
-                          {rows.length} active · total <strong>{formatEuro(totalForBlock)}</strong>
-                          <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>
-                            (no VAT — pass-through cost)
-                          </span>
-                        </>}
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {totalRows === 0
+                        ? 'No fixed-expense reimbursements yet for this month.'
+                        : <>
+                            {totalRows} row{totalRows === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong>
+                            <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>
+                              (no VAT — pass-through cost)
+                            </span>
+                          </>}
+                    </span>
+                    <button className="button" style={{ padding: '6px 12px' }} onClick={() => openOneOffModal('', 'fixed_expense')}>
+                      + Add fixed reimbursement
+                    </button>
                   </div>
                 </div>
-                {rows.length > 0 && (
+                {totalRows > 0 && (
                   <div style={{ overflowX: 'auto' }}>
                   <table className="clients-table">
                     <thead>
                       <tr>
-                        <th>Project name</th>
-                        <th>Legal name</th>
+                        <th>Project</th>
                         <th>Description</th>
                         <th style={{ textAlign: 'right' }}>Amount</th>
-                        <th>Inv. #</th>
-                        <th>Issue Date</th>
+                        <th style={{ minWidth: 120 }}>Inv. #</th>
+                        <th style={{ minWidth: 150 }}>Issue Date</th>
                         <th title="Statement of Account updated after invoice issued">SOA ✓</th>
-                        <th>Payment Date</th>
+                        <th title="Email with invoice sent to client">Email ✓</th>
+                        <th style={{ minWidth: 150 }}>Payment Date</th>
                         <th title="Statement of Account updated after payment received">SOA ✓</th>
                         <th>Status</th>
+                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map(c => {
-                        const fixedExp = Number(c.monthly_fixed_expense_net || 0)
+                      {/* Placeholder rows first (auto-drafted for clients with default). */}
+                      {placeholderClients.map(c => (
+                        <tr key={`placeholder-${c.id}`}>
+                          {renderProjectCell(c)}
+                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              className="lifecycle-input lifecycle-input-mono"
+                              style={{ textAlign: 'right', width: 90 }}
+                              defaultValue={Number(c.monthly_fixed_expense_net || 0)}
+                              onBlur={(e) => {
+                                const next = parseFloat(e.target.value)
+                                if (!Number.isNaN(next) && next !== Number(c.monthly_fixed_expense_net || 0)) {
+                                  upsertInvoice(c, 'fixed_expense', { amount_net: next, vat_rate: 0 })
+                                }
+                              }}
+                            />
+                          </td>
+                          {renderLifecycleCells(c, 'fixed_expense')}
+                          <td></td>
+                        </tr>
+                      ))}
+                      {/* DB rows — each is its own invoice (multiple per client allowed for manual catch-up entries). */}
+                      {dbInvoices.map(inv => {
+                        const c = clientById.get(inv.client_id) || {}
                         return (
-                          <tr key={c.id}>
-                            <td><strong>{c.trade_name || '—'}</strong></td>
-                            <td style={{ fontSize: 13, color: '#374151' }}>{c.legal_name}</td>
-                            <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
-                            <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
-                              {formatEuro(fixedExp)}
+                          <tr key={inv.id}>
+                            {renderProjectCell(c)}
+                            <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || periodLabel}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="lifecycle-input lifecycle-input-mono"
+                                style={{ textAlign: 'right', width: 90 }}
+                                defaultValue={Number(inv.amount_net || 0)}
+                                onBlur={(e) => {
+                                  const next = parseFloat(e.target.value)
+                                  if (!Number.isNaN(next) && next !== Number(inv.amount_net || 0)) {
+                                    supabase.from('invoices')
+                                      .update({ amount_net: next, amount_total: next, updated_at: new Date().toISOString() })
+                                      .eq('id', inv.id).select('*').single()
+                                      .then(({ data, error }) => {
+                                        if (error) { alert(`Save failed: ${error.message}`); return }
+                                        setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+                                      })
+                                  }
+                                }}
+                              />
                             </td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                            <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">
-                              <span className="status-pending">Pending</span>
+                            {renderLifecycleCellsForInvoice(inv)}
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
                             </td>
                           </tr>
                         )
@@ -528,14 +1337,24 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               can track which expenses have already been invoiced.
               ================================================================= */}
           {(() => {
-            const rows = clients
+            // All DB invoices of this type for the selected month
+            const dbInvoices = invoices.filter(i => i.invoice_type === 'variable_expense')
+            // Auto-draft candidates: active clients with reimbursable expenses
+            // this month who don't have an invoice row yet
+            const reimbursableClients = clients
               .filter(c => c.active && reimbursableFor(c) > 0)
               .map(c => ({ c, reimbursable: reimbursableFor(c) }))
               .sort((a, b) => b.reimbursable - a.reimbursable)
-            const totalForBlock = rows.reduce((s, r) => s + r.reimbursable, 0)
+            const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
+            const placeholderRows = reimbursableClients.filter(({ c }) => !clientIdsWithDbRow.has(c.id))
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            const totalForBlock =
+              dbInvoices.reduce((s, i) => s + Number(i.amount_net || 0), 0)
+              + placeholderRows.reduce((s, r) => s + r.reimbursable, 0)
             const periodLabel = selectedMonth && selectedYear
               ? `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
               : 'Reimbursable expenses'
+            const totalRows = dbInvoices.length + placeholderRows.length
             return (
               <section className="clients-block clients-block-variable">
                 <div className="clients-block-header">
@@ -547,58 +1366,106 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                       </span>
                     )}
                   </h3>
-                  <div className="block-subtitle">
-                    {rows.length === 0
-                      ? 'No clients with reimbursable expenses for this month.'
-                      : <>
-                          {rows.length} client{rows.length === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong>
-                          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-                            Note: only the selected top-bar month is shown.
-                            Bundling multiple months into one invoice (e.g.
-                            Jan + Feb + Mar together) comes with Step 2.
-                          </div>
-                        </>}
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {totalRows === 0
+                        ? 'No variable-expense reimbursements yet for this month.'
+                        : <>
+                            {totalRows} row{totalRows === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong>
+                            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                              Auto-drafted from the selected month's reimbursable expenses;
+                              you can override or manually add catch-up rows via the button.
+                            </div>
+                          </>}
+                    </span>
+                    <button className="button" style={{ padding: '6px 12px' }} onClick={() => openOneOffModal('', 'variable_expense')}>
+                      + Add variable reimbursement
+                    </button>
                   </div>
                 </div>
-                {rows.length > 0 && (
+                {totalRows > 0 && (
                   <div style={{ overflowX: 'auto' }}>
                   <table className="clients-table">
                     <thead>
                       <tr>
-                        <th>Project name</th>
-                        <th>Legal name</th>
+                        <th>Project</th>
                         <th>Description</th>
                         <th style={{ textAlign: 'right' }}>Amount</th>
-                        <th>Inv. #</th>
-                        <th>Issue Date</th>
+                        <th style={{ minWidth: 120 }}>Inv. #</th>
+                        <th style={{ minWidth: 150 }}>Issue Date</th>
                         <th title="Statement of Account updated after invoice issued">SOA ✓</th>
-                        <th>Payment Date</th>
+                        <th title="Email with invoice sent to client">Email ✓</th>
+                        <th style={{ minWidth: 150 }}>Payment Date</th>
                         <th title="Statement of Account updated after payment received">SOA ✓</th>
                         <th>Status</th>
+                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
                       {/* No VAT applied — expense reimbursements are
                           pass-through costs, not services. The original
                           expense already had its own VAT treatment. */}
-                      {rows.map(({ c, reimbursable }) => (
-                        <tr key={c.id}>
-                          <td><strong>{c.trade_name || '—'}</strong></td>
-                          <td style={{ fontSize: 13, color: '#374151' }}>{c.legal_name}</td>
+                      {/* Placeholder rows first (auto-drafted from expenses). */}
+                      {placeholderRows.map(({ c, reimbursable }) => (
+                        <tr key={`placeholder-${c.id}`}>
+                          {renderProjectCell(c)}
                           <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
-                          <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: '#7c2d12' }}>
-                            {formatEuro(reimbursable)}
+                          <td style={{ textAlign: 'right' }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              className="lifecycle-input lifecycle-input-mono"
+                              style={{ textAlign: 'right', width: 90, color: '#7c2d12' }}
+                              defaultValue={reimbursable}
+                              onBlur={(e) => {
+                                const next = parseFloat(e.target.value)
+                                if (!Number.isNaN(next) && next !== reimbursable) {
+                                  upsertInvoice(c, 'variable_expense', { amount_net: next, vat_rate: 0 })
+                                }
+                              }}
+                            />
                           </td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">—</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">☐</td>
-                          <td className="lifecycle-cell" title="Editable in Step 2 (invoicing tracker)">
-                            <span className="status-pending">Pending</span>
-                          </td>
+                          {renderLifecycleCells(c, 'variable_expense')}
+                          <td></td>
                         </tr>
                       ))}
+                      {/* DB rows */}
+                      {dbInvoices.map(inv => {
+                        const c = clientById.get(inv.client_id) || {}
+                        return (
+                          <tr key={inv.id}>
+                            {renderProjectCell(c)}
+                            <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || periodLabel}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="lifecycle-input lifecycle-input-mono"
+                                style={{ textAlign: 'right', width: 90, color: '#7c2d12' }}
+                                defaultValue={Number(inv.amount_net || 0)}
+                                onBlur={(e) => {
+                                  const next = parseFloat(e.target.value)
+                                  if (!Number.isNaN(next) && next !== Number(inv.amount_net || 0)) {
+                                    supabase.from('invoices')
+                                      .update({ amount_net: next, amount_total: next, updated_at: new Date().toISOString() })
+                                      .eq('id', inv.id).select('*').single()
+                                      .then(({ data, error }) => {
+                                        if (error) { alert(`Save failed: ${error.message}`); return }
+                                        setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+                                      })
+                                  }
+                                }}
+                              />
+                            </td>
+                            {renderLifecycleCellsForInvoice(inv)}
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                   </div>
@@ -608,28 +1475,98 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           })()}
 
           {/* =================================================================
-              BLOCK 5 (Credit Notes) — Placeholder, populates with Step 2.
+              BLOCK 5 — Credit Notes (live)
+              For reversing or correcting previously-issued invoices. Same
+              lifecycle structure as the other blocks (Inv # → Issue Date
+              → SOA → Email → Payment Date → SOA → Status). Description
+              column is intentionally wider here because the user typically
+              writes longer text referencing the original invoice number
+              (e.g. "Credit note for invoice 2026-03-001 — overcharge").
+              VAT is configurable per credit note since it mirrors whatever
+              invoice it's reversing.
               ================================================================= */}
-          <section className="clients-block clients-block-credit">
-            <div className="clients-block-header">
-              <h3>
-                ↩️ Credit Notes
-                {selectedMonth && selectedYear && (
-                  <span style={{ fontWeight: 400, fontSize: 14, color: '#6b7280', marginLeft: 8 }}>
-                    — {monthName(selectedMonth)} {selectedYear}
-                  </span>
+          {(() => {
+            const rows = invoices
+              .filter(i => i.invoice_type === 'credit_note')
+              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+            const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            return (
+              <section className="clients-block clients-block-credit">
+                <div className="clients-block-header">
+                  <h3>
+                    ↩️ Credit Notes
+                    {selectedMonth && selectedYear && (
+                      <span style={{ fontWeight: 400, fontSize: 14, color: '#6b7280', marginLeft: 8 }}>
+                        — {monthName(selectedMonth)} {selectedYear}
+                      </span>
+                    )}
+                  </h3>
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {rows.length === 0
+                        ? 'No credit notes for this month yet.'
+                        : <>{rows.length} credit note{rows.length === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong></>}
+                    </span>
+                    <button className="button" style={{ padding: '6px 12px' }} onClick={() => openOneOffModal('', 'credit_note')}>
+                      + Add credit note
+                    </button>
+                  </div>
+                </div>
+                {rows.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="clients-table">
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          {/* Wider description column — user typically writes longer
+                              text referencing the original invoice (per credit note). */}
+                          <th style={{ minWidth: 240 }}>Description</th>
+                          <th style={{ textAlign: 'right' }}>Amount (net)</th>
+                          <th style={{ textAlign: 'right' }}>VAT</th>
+                          <th style={{ textAlign: 'right' }}>Total</th>
+                          <th style={{ minWidth: 120 }}>Inv. #</th>
+                          <th style={{ minWidth: 150 }}>Issue Date</th>
+                          <th title="Statement of Account updated after credit note issued">SOA ✓</th>
+                          <th title="Email with credit note sent to client">Email ✓</th>
+                          <th style={{ minWidth: 150 }}>Settled Date</th>
+                          <th title="Statement of Account updated after credit applied">SOA ✓</th>
+                          <th>Status</th>
+                          <th>Delete</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(inv => {
+                          const c = clientById.get(inv.client_id) || {}
+                          return (
+                            <tr key={inv.id}>
+                              {renderProjectCell(c)}
+                              <td style={{ fontStyle: 'italic', color: '#374151' }}>
+                                {inv.description || '—'}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{formatEuro(inv.amount_net)}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                {Number(inv.vat_rate || 0) === 0
+                                  ? <span style={{ color: '#9ca3af' }}>—</span>
+                                  : `${(Number(inv.vat_rate) * 100).toFixed(0)}%`}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
+                                {formatEuro(inv.amount_total)}
+                              </td>
+                              {renderLifecycleCellsForInvoice(inv)}
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
-              </h3>
-              <div className="block-subtitle">
-                Coming with Step 2 (Invoicing Tracker — task #45). For
-                reversing or correcting previously-issued invoices.
-              </div>
-            </div>
-            <div className="block-placeholder">
-              No credit notes yet. The "+ Add credit note" button will
-              appear here once Step 2 is built.
-            </div>
-          </section>
+              </section>
+            )
+          })()}
 
           {/* =================================================================
               EMAIL DELIVERY DIRECTORY — per-project cards
@@ -698,8 +1635,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               <table className="clients-table">
                 <thead>
                   <tr>
-                    <th>Trade name</th>
-                    <th>Legal name</th>
+                    <th>Project</th>
                     <th>Contact</th>
                     <th style={{ textAlign: 'right' }}>Fee (net)</th>
                     <th>Active</th>
@@ -709,8 +1645,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                 <tbody>
                   {clients.filter(c => !c.active).map(c => (
                     <tr key={c.id} style={{ opacity: 0.55 }}>
-                      <td><strong>{c.trade_name || '—'}</strong></td>
-                      <td style={{ fontSize: 13, color: '#374151' }}>{c.legal_name}</td>
+                      {renderProjectCell(c)}
                       <td>{c.contact_name || '—'}</td>
                       <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{formatEuro(c.monthly_fee_net)}</td>
                       <td>
@@ -737,6 +1672,178 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       )}
 
       {/* ===== Edit / Add modal ===== */}
+      {/* ===== Add One-off Invoice modal ===== */}
+      {oneOffForm && (
+        <div className="modal-overlay" onClick={closeOneOffModal}>
+          <div className="modal-content clients-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 600 }}>
+            <div className="modal-header">
+              <h3>+ Add invoice</h3>
+              <button className="modal-close" onClick={closeOneOffModal}>×</button>
+            </div>
+            <div className="modal-body">
+              {oneOffError && <div className="message error" style={{ marginBottom: 12 }}>{oneOffError}</div>}
+              <div className="form-grid">
+                <div className="form-group full-row">
+                  <label>Client *</label>
+                  <select
+                    value={oneOffForm.client_id}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (val === '__new__') {
+                        // Open the client-add modal first; user will come back
+                        // here after creating the client. We stash the partial
+                        // one-off form in a closure to restore later (kept in
+                        // state already since we don't close it).
+                        openAdd()
+                      } else {
+                        setOneOffForm(f => ({ ...f, client_id: val }))
+                      }
+                    }}
+                    className="form-input"
+                  >
+                    <option value="">— Pick a client —</option>
+                    {clients.filter(c => c.active).map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.trade_name ? `${c.trade_name} (${c.legal_name})` : c.legal_name}
+                      </option>
+                    ))}
+                    <option value="__new__">+ Add new client…</option>
+                  </select>
+                  <small style={{ color: '#6b7280', fontSize: 11 }}>
+                    Need a new one? Pick "+ Add new client…" — the regular Add
+                    Client form will open. After saving, come back to this
+                    modal and pick the new client from the list.
+                  </small>
+                </div>
+
+                <div className="form-group full-row">
+                  <label>Type *</label>
+                  <select
+                    value={oneOffForm.invoice_type}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setOneOffForm(f => ({
+                        ...f,
+                        invoice_type: next,
+                        // When switching to a non-VAT type, force vat_rate to 0
+                        // so the saved row is clean. Switching back to service
+                        // restores the Cyprus standard default.
+                        vat_rate: TYPE_CARRIES_VAT[next] ? '0.19' : '0',
+                      }))
+                    }}
+                    className="form-input"
+                  >
+                    {Object.entries(TYPE_LABELS).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>VAT rate</label>
+                  {!TYPE_CARRIES_VAT[oneOffForm.invoice_type] ? (
+                    <div style={{ padding: '6px 0', color: '#9ca3af', fontSize: 13, fontStyle: 'italic' }}>
+                      No VAT — pass-through cost.
+                    </div>
+                  ) : (
+                    <select
+                      value={oneOffForm.vat_rate}
+                      onChange={(e) => setOneOffForm(f => ({ ...f, vat_rate: e.target.value }))}
+                      className="form-input"
+                    >
+                      <option value="0">0% (no VAT)</option>
+                      <option value="0.05">5% (reduced)</option>
+                      <option value="0.09">9% (reduced)</option>
+                      <option value="0.19">19% (standard Cyprus)</option>
+                    </select>
+                  )}
+                </div>
+
+                <div className="form-group full-row">
+                  <div style={{
+                    padding: '8px 10px',
+                    background: '#f0f9ff',
+                    border: '1px solid #bae6fd',
+                    borderRadius: 4,
+                    fontSize: 12,
+                    color: '#075985',
+                  }}>
+                    📅 This invoice will be filed under <strong>{monthName(selectedMonth)} {selectedYear}</strong> —
+                    the issue month from the top bar. VIES + VAT reporting use the
+                    issue month, not the period the invoice covers. If this is a
+                    catch-up or advance billing, mention the actual period in the
+                    description (e.g. "January 2026 fee — late catch-up").
+                  </div>
+                </div>
+
+                <div className="form-group full-row">
+                  <label>Description *</label>
+                  <input
+                    type="text"
+                    value={oneOffForm.description}
+                    onChange={(e) => setOneOffForm(f => ({ ...f, description: e.target.value }))}
+                    className="form-input"
+                    placeholder={TYPE_DESCRIPTION_PLACEHOLDER[oneOffForm.invoice_type] || ''}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Amount (net) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={oneOffForm.amount_net}
+                    onChange={(e) => setOneOffForm(f => ({ ...f, amount_net: e.target.value }))}
+                    className="form-input"
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Total (computed)</label>
+                  <div style={{ padding: '6px 0', fontFamily: 'monospace', fontWeight: 600, fontSize: 16 }}>
+                    {(() => {
+                      const amt = parseFloat(oneOffForm.amount_net)
+                      if (Number.isNaN(amt)) return '€—'
+                      const vat = TYPE_CARRIES_VAT[oneOffForm.invoice_type]
+                        ? parseFloat(oneOffForm.vat_rate || '0')
+                        : 0
+                      return formatEuro(amt * (1 + (Number.isNaN(vat) ? 0 : vat)))
+                    })()}
+                  </div>
+                </div>
+
+                <div className="form-group full-row">
+                  <label>Notes (optional)</label>
+                  <textarea
+                    rows={2}
+                    value={oneOffForm.notes}
+                    onChange={(e) => setOneOffForm(f => ({ ...f, notes: e.target.value }))}
+                    className="form-input"
+                    placeholder="Internal note about this invoice"
+                  />
+                </div>
+
+                <div className="form-group full-row">
+                  <small style={{ color: '#6b7280', fontSize: 11 }}>
+                    After saving, the invoice appears in its block with the
+                    same Inv # / Issue Date / SOA / Email / Payment Date /
+                    SOA lifecycle inputs as auto-drafted invoices.
+                  </small>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={closeOneOffModal} className="btn-secondary">Cancel</button>
+              <button onClick={saveOneOff} className="button">
+                ➕ Add invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {editing && (
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal-content clients-modal" onClick={(e) => e.stopPropagation()}>

@@ -1,14 +1,17 @@
 /* Clients admin page — Step 1 of the Phase 2 Clients & Billing module. */
 
 .clients-page {
-  max-width: 1300px;
+  /* Use the full screen width minus minimal padding — Step 2's invoicing
+     worksheet has ~15 columns and needs every pixel. The big cap at
+     2400px still keeps things sane on ultra-wide displays. */
+  max-width: 2400px;
   margin: 0 auto;
-  padding: 16px 12px 48px;
+  padding: 16px 16px 48px;
 }
 
 .clients-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 16px 18px;
@@ -16,6 +19,40 @@
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   margin-bottom: 20px;
+}
+
+/* Progress bar — mirrors the Monthly Checklist's pattern.
+   Shows "X of Y finalized" with a green fill bar in the header. */
+.invoicing-progress-bar {
+  position: relative;
+  margin-top: 8px;
+  width: 100%;
+  max-width: 480px;
+  height: 22px;
+  background: #e5e7eb;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.invoicing-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #34d399);
+  transition: width 0.25s ease;
+}
+.invoicing-progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  mix-blend-mode: difference;
+}
+
+/* Print-only block — render in print but hide on screen. */
+.print-only {
+  display: none;
 }
 
 /* Block — each invoice type sits in its own section so the user can
@@ -37,18 +74,45 @@
 .clients-block-email    { border-left-color: #475569; background: #f8fafc; }
 .clients-block-inactive { border-left-color: #9ca3af; background: #fafafa; }
 
-/* Placeholder lifecycle cells — visual preview of where Step 2 inputs will live */
+/* Lifecycle cells — used in Step 2 for real per-invoice inputs.
+   Originally placeholders; now host real <input>s. The
+   .lifecycle-cell class is kept for stragglers but unused on
+   normal invoice rows. */
 .lifecycle-cell {
   text-align: center;
   color: #9ca3af;
   font-size: 12px;
   font-style: italic;
   font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
-  /* Wide enough to fit "2026-03-001" without wrapping. Step 2 will swap
-     the placeholder with a real <input> that needs the same width. */
   min-width: 110px;
   white-space: nowrap;
 }
+
+/* Lifecycle input — the actual editable cell content (text/date inputs) */
+.lifecycle-input {
+  padding: 3px 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 3px;
+  font-size: 12px;
+  background: #fff;
+  width: 110px;
+  box-sizing: border-box;
+}
+/* Date pickers need extra width because the browser's calendar icon
+   and the day/month/year spinners take a chunk of visible width. */
+.lifecycle-input[type="date"] {
+  width: 140px;
+}
+.lifecycle-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.lifecycle-input-mono {
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+/* Status badges — derived from which lifecycle fields are filled */
 .status-pending {
   display: inline-block;
   padding: 2px 8px;
@@ -56,7 +120,68 @@
   color: #6b7280;
   border-radius: 4px;
   font-size: 11px;
-  font-style: normal;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-issued {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-emailed {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #ede9fe;
+  color: #5b21b6;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-paid {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #d1fae5;
+  color: #065f46;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-finalized {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #10b981;
+  color: #ffffff;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-skipped-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-voided {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 /* Email delivery directory — per-project cards */
@@ -240,4 +365,72 @@
   font-size: 12px;
   font-weight: 600;
   color: #374151;
+}
+
+/* =====================================================================
+   PRINT
+   =====================================================================
+   Page is wide (15 columns) so we print in A4 landscape (rule injected
+   by handlePrint at print time). The CSS here cleans up the page chrome
+   so the printout focuses on the invoice data, not the UI controls. */
+@media print {
+  /* Show the letterhead, hide the screen-only header. */
+  .print-only { display: block; margin-bottom: 12px; }
+  .clients-header { display: none; }
+
+  /* Hide all interactive controls + the per-block + Add buttons. */
+  .row-btn,
+  .button,
+  .modal-overlay,
+  .clients-block-header button,
+  .invoicing-progress-bar { display: none !important; }
+
+  /* Strip backgrounds + borders so the page renders cleanly. */
+  body, .clients-page {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 9pt !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .clients-page { max-width: none; padding: 0; }
+
+  /* Keep each invoice block on one page where possible. */
+  .clients-block {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border: 1px solid #cbd5e1 !important;
+    border-left-width: 4px !important;
+    margin-bottom: 10pt;
+  }
+
+  /* Tables: compact, no hover, plain borders. */
+  .clients-table {
+    font-size: 8pt !important;
+    border: 1px solid #cbd5e1 !important;
+  }
+  .clients-table th {
+    background: #f3f4f6 !important;
+    color: #000 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+    padding: 4px 6px !important;
+  }
+  .clients-table td {
+    padding: 3px 6px !important;
+    border-bottom: 1px solid #e5e7eb !important;
+  }
+  .clients-table tbody tr:hover { background: transparent !important; }
+
+  /* Lifecycle inputs render as plain text on paper. */
+  .lifecycle-input {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    width: auto !important;
+    font-size: 8pt !important;
+  }
+
+  /* Don't print the Email Delivery card grid (info already on the page). */
+  .clients-block-email,
+  .clients-block-inactive { display: none !important; }
 }
