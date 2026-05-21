@@ -7,6 +7,7 @@ import { Dashboard } from './components/Dashboard/Dashboard'
 import { ShareholderReport } from './components/ShareholderReport/ShareholderReport'
 import { TravelLog } from './components/TravelLog/TravelLog'
 import { ClientReport } from './components/ClientReport/ClientReport'
+import { MonthlyChecklist } from './components/MonthlyChecklist/MonthlyChecklist'
 import './App.css'
 
 function App() {
@@ -116,6 +117,12 @@ function App() {
             Dashboard
           </button>
           <button
+            className={`tab-button ${currentTab === 'checklist' ? 'active' : ''}`}
+            onClick={() => setCurrentTab('checklist')}
+          >
+            Monthly Checklist
+          </button>
+          <button
             className={`tab-button ${currentTab === 'bank-parser' ? 'active' : ''}`}
             onClick={() => setCurrentTab('bank-parser')}
           >
@@ -168,6 +175,14 @@ function App() {
         {/* Tab Content */}
         {currentTab === 'dashboard' && (
           <Dashboard
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onSwitchTab={setCurrentTab}
+          />
+        )}
+        {currentTab === 'checklist' && (
+          <MonthlyChecklist
             selectedCompany={selectedCompany}
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}

@@ -1,6 +1,6 @@
 # Session Summary — May 20, 2026 (Day 10)
 
-A focused half-day session. We restarted from a Mac reboot, did some account housekeeping (GitHub PAT recovery + macOS Keychain wiring), and then shipped a real new feature plus a quality-of-life bug fix.
+A long day in two halves. Morning: Mac reboot recovery + account housekeeping + multi-payee payroll feature + edit-mode subcategory preservation. Evening: free-text input for dynamic subcategories (the Supplier Refunds case where the UI was blocking the user from typing the actual supplier name).
 
 ---
 
@@ -52,6 +52,17 @@ The category-change `useEffect` was wiping `subcategory_id` / `subcategory_name`
 
 Refactor: fetch the subcategory list first; **only** clear the saved subcategory if it doesn't belong to the now-selected category. The legitimate "user actually switched category" case still clears the now-invalid subcategory.
 
+### 7. Dynamic subcategory free-text input (Supplier Refunds)
+`expense_subcategories` carries an `is_dynamic` flag — TRUE for the `Supplier Refunds → [Dynamic - learned from data]` placeholder row, intended to mark "the user types the value here." But the UI never read that flag, so the dropdown showed the placeholder and there was no way to type the actual supplier name. The value the user wanted to record (e.g. "EAC Cyprus", "BoC") was lost.
+
+Fix:
+- `handleSubcategoryChange` now seeds `subcategory_name` as empty when the user picks a dynamic sub (so the new text input starts blank for fresh entries).
+- A free-text input renders below the dropdown when `selectedSubcategory.is_dynamic` is true. `autoFocus` so typing is immediate.
+- For rows saved before this fix (where the literal placeholder text ended up in `subcategory_name`), the input rebases the value via `form.subcategory_name === selectedSubcategory.name ? '' : form.subcategory_name` so the user doesn't have to delete `[Dynamic - learned from data]` first.
+- Save-time validation rejects an empty typed value with a clear message.
+
+`subcategory_id` keeps pointing at the placeholder row (so the dropdown re-selects it on re-edit); `subcategory_name` carries the real supplier name used in View Expenses, reports, and analytics.
+
 ---
 
 ## Files changed
@@ -72,6 +83,7 @@ Refactor: fetch the subcategory list first; **only** clear the saved subcategory
 User tested live:
 - **Multi-payee sub-refs:** Created a real payroll transfer with two sub-refs; View Expenses showed `S3/4, S3/5` correctly. User: "works."
 - **Subcategory preservation on Edit:** Opened a saved expense via the ✏️ button — both category AND subcategory now pre-filled (previously subcategory disappeared). User: "The subcategories work well now. Thank you."
+- **Dynamic subcategory typing (Supplier Refunds):** Picked the `[Dynamic - learned from data]` subcategory, the new text input appeared, typed the supplier name, saved. User: "I added. It works. Thank you."
 
 ---
 
@@ -81,8 +93,9 @@ User tested live:
 |---|---|
 | `8cd63fa` | gitignore: block credential templates and secrets/passwords files |
 | `b5d2555` | Multi-payee payroll sub-refs (V17) + preserve subcategory on edit |
+| `83e88b1` | FinalizeTransaction: free-text input for dynamic subcategories (Supplier Refunds) |
 
-Both on `origin/main`.
+All three on `origin/main`.
 
 ---
 
