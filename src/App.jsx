@@ -8,6 +8,7 @@ import { ShareholderReport } from './components/ShareholderReport/ShareholderRep
 import { TravelLog } from './components/TravelLog/TravelLog'
 import { ClientReport } from './components/ClientReport/ClientReport'
 import { MonthlyChecklist } from './components/MonthlyChecklist/MonthlyChecklist'
+import { Clients } from './components/Clients/Clients'
 import './App.css'
 
 function App() {
@@ -141,6 +142,12 @@ function App() {
             View Expenses
           </button>
           <button
+            className={`tab-button ${currentTab === 'clients' ? 'active' : ''}`}
+            onClick={() => setCurrentTab('clients')}
+          >
+            Clients
+          </button>
+          <button
             className={`tab-button ${currentTab === 'shareholder' ? 'active' : ''}`}
             onClick={() => setCurrentTab('shareholder')}
           >
@@ -212,6 +219,13 @@ function App() {
             onSwitchTab={setCurrentTab}
             focusExpenseId={focusExpenseId}
             onFocusHandled={() => setFocusExpenseId(null)}
+          />
+        )}
+        {currentTab === 'clients' && (
+          <Clients
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
           />
         )}
         {currentTab === 'shareholder' && (

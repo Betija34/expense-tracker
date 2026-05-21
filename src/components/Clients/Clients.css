@@ -1,0 +1,243 @@
+/* Clients admin page — Step 1 of the Phase 2 Clients & Billing module. */
+
+.clients-page {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 16px 12px 48px;
+}
+
+.clients-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+/* Block — each invoice type sits in its own section so the user can
+   visually separate "what's due as monthly fees" vs "fixed reimbursements"
+   vs "variable reimbursements for this month". */
+.clients-block {
+  margin-bottom: 24px;
+  background: #fff;
+  border-left: 4px solid #d1d5db;
+  border-radius: 6px;
+  padding: 14px 14px 12px;
+  border: 1px solid #e5e7eb;
+}
+.clients-block-monthly  { border-left-color: #2563eb; }
+.clients-block-fixed    { border-left-color: #7c3aed; }
+.clients-block-variable { border-left-color: #b45309; }
+.clients-block-oneoff   { border-left-color: #db2777; }
+.clients-block-credit   { border-left-color: #0891b2; }
+.clients-block-email    { border-left-color: #475569; background: #f8fafc; }
+.clients-block-inactive { border-left-color: #9ca3af; background: #fafafa; }
+
+/* Placeholder lifecycle cells — visual preview of where Step 2 inputs will live */
+.lifecycle-cell {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 12px;
+  font-style: italic;
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+  /* Wide enough to fit "2026-03-001" without wrapping. Step 2 will swap
+     the placeholder with a real <input> that needs the same width. */
+  min-width: 110px;
+  white-space: nowrap;
+}
+.status-pending {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  color: #6b7280;
+  border-radius: 4px;
+  font-size: 11px;
+  font-style: normal;
+}
+
+/* Email delivery directory — per-project cards */
+.email-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.email-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+.email-card-project {
+  font-weight: 600;
+  font-size: 15px;
+  color: #1f2937;
+  margin-bottom: 2px;
+}
+.email-card-legal {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+.email-card-row {
+  display: grid;
+  grid-template-columns: 50px 1fr;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  align-items: baseline;
+}
+.email-card-label {
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.email-card-invoices {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5e7eb;
+}
+.email-card-invoices-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.email-card-placeholder {
+  font-size: 11px;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* Empty-state cell rendered in placeholder blocks (One-off, Credit Notes) */
+.block-placeholder {
+  padding: 18px;
+  text-align: center;
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  border-radius: 4px;
+  color: #6b7280;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.clients-block-header {
+  margin-bottom: 10px;
+}
+.clients-block-header h3 {
+  margin: 0 0 2px;
+  font-size: 16px;
+  color: #1f2937;
+}
+.block-subtitle {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.clients-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.clients-table thead tr {
+  background: #f3f4f6;
+}
+.clients-table th {
+  text-align: left;
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #e5e7eb;
+}
+.clients-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: middle;
+  font-size: 14px;
+}
+.clients-table tbody tr:hover {
+  background: #f9fafb;
+}
+
+.active-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
+.row-btn {
+  padding: 4px 8px;
+  margin-right: 4px;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.row-btn:hover {
+  background: #e5e7eb;
+}
+.row-btn.danger {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+.row-btn.danger:hover {
+  background: #fee2e2;
+}
+
+.empty-state {
+  padding: 24px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  text-align: center;
+  color: #92400e;
+}
+.empty-state p {
+  margin: 4px 0;
+}
+
+/* ===== Modal ===== */
+.clients-modal {
+  max-width: 720px;
+  width: 100%;
+}
+.clients-modal .form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+.clients-modal .form-grid .full-row {
+  grid-column: 1 / -1;
+}
+.clients-modal .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.clients-modal .form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
