@@ -76,6 +76,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   //              description, amount_net, vat_rate, notes }
   const [oneOffForm, setOneOffForm]   = useState(null)
   const [oneOffError, setOneOffError] = useState(null)
+  // Delete-confirmation modal state. null = closed. Otherwise:
+  //   { client, impact: { invoices, expenses }, typed }
+  // The user must type the client's trade_name (case-insensitive)
+  // before the Delete button enables — guards against accidental clicks.
+  const [deleting, setDeleting]       = useState(null)
 
   // ---- Loader ----
   useEffect(() => {
@@ -828,23 +833,86 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     }
   }
 
-  // ---- Delete with confirm ----
-  const handleDelete = async (client) => {
-    const ok = window.confirm(
-      `Delete client "${client.trade_name || client.legal_name}"?\n\n`
-      + 'This permanently removes the client record. Past expenses tagged with '
-      + 'this name as free text are NOT affected. Cannot be undone.'
-    )
-    if (!ok) return
+  // ---- Delete with type-to-confirm modal ----
+  // Opens the modal, gathers impact stats (how many invoices will cascade,
+  // how many free-text expenses will become orphans), and requires the user
+  // to type the client name before the Delete button enables.
+  const openDeleteModal = async (client) => {
+    // Open immediately with loading impact so the modal feels responsive;
+    // fetch stats in the background and patch them in when ready.
+    setDeleting({
+      client,
+      typed: '',
+      impact: null,   // null = still loading
+      busy: false,
+      error: null,
+    })
     try {
-      const { error: delErr } = await supabase
-        .from('clients').delete().eq('id', client.id)
-      if (delErr) throw delErr
-      setClients(prev => prev.filter(c => c.id !== client.id))
+      const trade = (client.trade_name || '').trim()
+      const legal = (client.legal_name || '').trim()
+      // Count linked invoices (ON DELETE CASCADE will sweep these).
+      const { count: invoiceCount, error: invErr } = await supabase
+        .from('invoices')
+        .select('id', { count: 'exact', head: true })
+        .eq('client_id', client.id)
+      if (invErr) throw invErr
+      // Count free-text expense rows that reference this client by name
+      // (these will become orphans — the row stays, but no client card
+      // exists anymore).
+      let expenseQuery = supabase
+        .from('expenses')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+      // Match on trade_name first (the canonical name we save against).
+      // If trade is empty fall back to legal.
+      if (trade) {
+        expenseQuery = expenseQuery.ilike('client_name', trade)
+      } else if (legal) {
+        expenseQuery = expenseQuery.ilike('client_name', legal)
+      } else {
+        expenseQuery = expenseQuery.eq('id', '00000000-0000-0000-0000-000000000000')
+      }
+      const { count: expenseCount, error: expErr } = await expenseQuery
+      if (expErr) throw expErr
+      setDeleting(d => d && d.client.id === client.id
+        ? { ...d, impact: { invoices: invoiceCount || 0, expenses: expenseCount || 0 } }
+        : d)
     } catch (err) {
-      alert(`Delete failed: ${err.message}`)
+      setDeleting(d => d && d.client.id === client.id
+        ? { ...d, impact: { invoices: 0, expenses: 0 }, error: `Could not load impact: ${err.message}` }
+        : d)
     }
   }
+
+  const closeDeleteModal = () => setDeleting(null)
+
+  // Compare typed vs canonical (case-insensitive, trim). For a client with
+  // no trade_name we fall back to legal_name as the type-target.
+  const deleteConfirmTarget = (client) =>
+    (client.trade_name || client.legal_name || '').trim()
+  const deleteTypeMatches =
+    deleting &&
+    deleting.typed.trim().toLowerCase() ===
+      deleteConfirmTarget(deleting.client).toLowerCase() &&
+    deleteConfirmTarget(deleting.client).length > 0
+
+  const confirmDelete = async () => {
+    if (!deleting) return
+    if (!deleteTypeMatches) return
+    setDeleting(d => ({ ...d, busy: true, error: null }))
+    try {
+      const { error: delErr } = await supabase
+        .from('clients').delete().eq('id', deleting.client.id)
+      if (delErr) throw delErr
+      setClients(prev => prev.filter(c => c.id !== deleting.client.id))
+      setDeleting(null)
+    } catch (err) {
+      setDeleting(d => d ? { ...d, busy: false, error: `Delete failed: ${err.message}` } : d)
+    }
+  }
+
+  // Wrapper kept for the existing onClick wiring — opens the modal.
+  const handleDelete = (client) => openDeleteModal(client)
 
   // ---- Progress: % of invoices fully finalized this month ----
   // Mirrors the Monthly Checklist pattern. "Finalized" = all 6 lifecycle
@@ -2109,6 +2177,132 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               <button onClick={closeModal} className="btn-secondary" disabled={saving}>Cancel</button>
               <button onClick={handleSave} className="button" disabled={saving}>
                 {saving ? '💾 Saving…' : (editing.mode === 'edit' ? '💾 Save changes' : '➕ Add client')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Delete-client confirmation modal ===== */}
+      {/* Deliberate friction: the user must type the client's trade_name
+          (or legal_name if trade is empty) before the Delete button enables.
+          Shows impact stats — invoices that will cascade-delete, plus any
+          free-text expense rows that will lose their client link. */}
+      {deleting && (
+        <div className="modal-overlay" onClick={deleting.busy ? undefined : closeDeleteModal}>
+          <div
+            className="modal-content clients-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 560 }}
+          >
+            <div className="modal-header" style={{ background: '#fef2f2', borderBottom: '1px solid #fecaca' }}>
+              <h3 style={{ color: '#991b1b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>⚠️</span> Delete client?
+              </h3>
+              <button className="modal-close" onClick={closeDeleteModal} disabled={deleting.busy}>×</button>
+            </div>
+            <div className="modal-body">
+              {deleting.error && (
+                <div className="message error" style={{ marginBottom: 12 }}>{deleting.error}</div>
+              )}
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>You are about to permanently delete:</div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#111827' }}>
+                  {deleting.client.trade_name || deleting.client.legal_name}
+                </div>
+                {deleting.client.trade_name && deleting.client.legal_name &&
+                 deleting.client.trade_name !== deleting.client.legal_name && (
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>
+                    Legal name: {deleting.client.legal_name}
+                  </div>
+                )}
+              </div>
+
+              {/* Impact stats */}
+              <div style={{
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 6,
+                padding: '12px 14px',
+                marginBottom: 16,
+                fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 600, color: '#991b1b', marginBottom: 6 }}>
+                  Impact:
+                </div>
+                {deleting.impact === null ? (
+                  <div style={{ color: '#6b7280', fontStyle: 'italic' }}>Loading impact…</div>
+                ) : (
+                  <ul style={{ margin: 0, paddingLeft: 18, color: '#7f1d1d' }}>
+                    <li>
+                      <strong>{deleting.impact.invoices}</strong>{' '}
+                      invoice row{deleting.impact.invoices === 1 ? '' : 's'} will be{' '}
+                      <strong>permanently deleted</strong> (cascade).
+                      {deleting.impact.invoices > 0 && (
+                        <span style={{ color: '#991b1b', fontWeight: 600 }}> Lifecycle data lost.</span>
+                      )}
+                    </li>
+                    <li style={{ marginTop: 4 }}>
+                      <strong>{deleting.impact.expenses}</strong>{' '}
+                      expense row{deleting.impact.expenses === 1 ? '' : 's'} tagged with this name will become{' '}
+                      <strong>orphans</strong> (rows stay; will surface in the orphan warning box of Block 4).
+                    </li>
+                  </ul>
+                )}
+              </div>
+
+              <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
+                This cannot be undone. To confirm, type the client name exactly:
+              </div>
+              <div style={{
+                fontFamily: 'monospace',
+                background: '#f3f4f6',
+                border: '1px solid #d1d5db',
+                borderRadius: 4,
+                padding: '6px 10px',
+                marginBottom: 8,
+                fontSize: 14,
+                color: '#111827',
+                userSelect: 'none',
+              }}>
+                {deleteConfirmTarget(deleting.client)}
+              </div>
+              <input
+                type="text"
+                className="form-input"
+                value={deleting.typed}
+                onChange={(e) => setDeleting(d => d ? { ...d, typed: e.target.value } : d)}
+                placeholder="Type the name above to enable Delete"
+                autoFocus
+                disabled={deleting.busy}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && deleteTypeMatches && !deleting.busy) {
+                    confirmDelete()
+                  }
+                }}
+              />
+              {deleting.typed.length > 0 && !deleteTypeMatches && (
+                <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>
+                  Doesn't match — check spelling (case doesn't matter).
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button onClick={closeDeleteModal} className="btn-secondary" disabled={deleting.busy}>
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="button"
+                disabled={!deleteTypeMatches || deleting.busy || deleting.impact === null}
+                style={{
+                  background: deleteTypeMatches && !deleting.busy ? '#dc2626' : '#fca5a5',
+                  color: '#fff',
+                  cursor: deleteTypeMatches && !deleting.busy ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {deleting.busy ? '🗑️ Deleting…' : '🗑️ Delete permanently'}
               </button>
             </div>
           </div>
