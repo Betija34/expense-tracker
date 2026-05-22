@@ -58,6 +58,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // normalised name (lowercased trimmed). Source = expenses.client_name
   // (free text) summed where requires_reimbursement=true.
   const [reimbursableByClient, setReimbursableByClient] = useState(new Map())
+  // Cross-period reimbursable totals — populated for deferral SOURCE
+  // periods (so when we render Block 4 of March, we know the per-client
+  // total from Jan and Feb that's being rolled into March's invoice).
+  // Keyed by `${clientNameLower}|${year}|${month}` → { displayName, total }.
+  const [reimbursableBySourcePeriod, setReimbursableBySourcePeriod] = useState(new Map())
+  // All deferral rows for this company. Small table; load wholesale so
+  // we can answer both "what defers OUT of period X" and "what defers
+  // INTO period X" without re-querying.
+  const [deferrals, setDeferrals] = useState([])
+  // Defer-target picker modal state. null = closed. Otherwise:
+  //   { client, sourceYear, sourceMonth, targetYear, targetMonth, busy, error }
+  const [deferModal, setDeferModal] = useState(null)
   // Invoices for the selected company + month, loaded from V21's invoices
   // table. The page renders ONE row per active client per applicable type;
   // those rows are auto-drafted as placeholders in the UI and only get
@@ -151,6 +163,54 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             .eq('period_month', selectedMonth)
           if (invErr) throw invErr
           if (!cancelled) setInvoices(inv || [])
+
+          // Deferrals for this company. Small table; load all rows and
+          // filter in memory by source/target period as needed.
+          const { data: defs, error: defErr } = await supabase
+            .from('expense_deferrals')
+            .select('*')
+            .eq('company_id', comp.id)
+          if (defErr && defErr.code !== '42P01') throw defErr  // 42P01 = table not yet created (pre-V24)
+          if (!cancelled) setDeferrals(defs || [])
+
+          // For any deferral whose TARGET = current period, we also need
+          // the reimbursable totals from its SOURCE period to compute
+          // the combined invoice amount + breakdown description. Fetch
+          // those source-period expenses now (one extra query per source
+          // period — usually 0-2 at most).
+          const sourcePeriodsToLoad = (defs || [])
+            .filter(d => d.target_year === selectedYear && d.target_month === selectedMonth)
+            .map(d => `${d.source_year}-${String(d.source_month).padStart(2, '0')}`)
+          const uniqSources = Array.from(new Set(sourcePeriodsToLoad))
+          if (uniqSources.length > 0) {
+            const sourceMap = new Map()
+            for (const ym of uniqSources) {
+              const [y, mo] = ym.split('-').map(Number)
+              const sStart = `${y}-${String(mo).padStart(2, '0')}-01`
+              const sEnd   = new Date(y, mo, 0).toISOString().slice(0, 10)
+              const { data: srcExp, error: srcErr } = await supabase
+                .from('expenses')
+                .select('client_name, amount')
+                .eq('company_id', comp.id)
+                .eq('requires_reimbursement', true)
+                .not('client_name', 'is', null)
+                .gte('date', sStart)
+                .lte('date', sEnd)
+              if (srcErr) throw srcErr
+              for (const row of (srcExp || [])) {
+                const raw = (row.client_name || '').trim()
+                const k = `${raw.toLowerCase()}|${y}|${mo}`
+                if (!k) continue
+                const ex = sourceMap.get(k)
+                const val = Math.abs(Number(row.amount) || 0)
+                if (ex) ex.total += val
+                else sourceMap.set(k, { displayName: raw, total: val })
+              }
+            }
+            if (!cancelled) setReimbursableBySourcePeriod(sourceMap)
+          } else {
+            if (!cancelled) setReimbursableBySourcePeriod(new Map())
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load clients')
@@ -188,6 +248,164 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     const entry = reimbursableByClient.get(tradeKey)
                || reimbursableByClient.get(legalKey)
     return entry?.total || 0
+  }
+
+  // Same as reimbursableFor but for ANY (year, month) — used to look up
+  // amounts in deferral SOURCE periods that roll into the current top
+  // bar. The data was preloaded into reimbursableBySourcePeriod when
+  // the component fetched deferrals.
+  const reimbursableForPeriod = (client, year, month) => {
+    if (!year || !month) return 0
+    // Fast path: if asking about the current top-bar period, use the
+    // existing map (avoids a redundant duplicate query).
+    if (year === selectedYear && month === selectedMonth) {
+      return reimbursableFor(client)
+    }
+    const tradeKey = (client.trade_name || '').trim().toLowerCase()
+    const legalKey = (client.legal_name || '').trim().toLowerCase()
+    const k = (key) => `${key}|${year}|${month}`
+    const entry = reimbursableBySourcePeriod.get(k(tradeKey))
+               || reimbursableBySourcePeriod.get(k(legalKey))
+    return entry?.total || 0
+  }
+
+  // Deferral lookups — both for the current top-bar (selectedYear/Month).
+  // outbound: is this client's CURRENT month deferred away to a later
+  //   month? Returns the deferral row, or null.
+  // inbound:  what client-source-months DEFER INTO the current month?
+  //   Returns an array of { source_year, source_month, amount, deferral_id }
+  //   sorted chronologically.
+  const outboundDeferralFor = (client) =>
+    deferrals.find(d =>
+      d.client_id    === client.id &&
+      d.source_year  === selectedYear &&
+      d.source_month === selectedMonth
+    ) || null
+
+  const inboundDeferralsFor = (client) =>
+    deferrals
+      .filter(d =>
+        d.client_id    === client.id &&
+        d.target_year  === selectedYear &&
+        d.target_month === selectedMonth
+      )
+      .map(d => ({
+        source_year:  d.source_year,
+        source_month: d.source_month,
+        amount:       reimbursableForPeriod(client, d.source_year, d.source_month),
+        deferral_id:  d.id,
+      }))
+      .sort((a, b) =>
+        (a.source_year - b.source_year) ||
+        (a.source_month - b.source_month)
+      )
+
+  // Effective amount to bill THIS month for the client. If the current
+  // month is deferred away, it's 0 (the row renders muted and contributes
+  // nothing to current-month totals). Otherwise: natural amount + sum
+  // of any inbound deferrals.
+  const effectiveReimbursableFor = (client) => {
+    if (outboundDeferralFor(client)) return 0
+    const natural = reimbursableFor(client)
+    const inbound = inboundDeferralsFor(client).reduce((s, d) => s + d.amount, 0)
+    return natural + inbound
+  }
+
+  // Auto-build description string for a combined invoice that includes
+  // deferred-in months. Format (user's preference):
+  //   "Jan (€500) + Feb (€700) + Mar (€420) reimbursable expenses"
+  // Months listed in chronological order; the current top-bar month
+  // is included if its natural amount > 0.
+  const buildDeferralDescription = (client) => {
+    const parts = []
+    for (const d of inboundDeferralsFor(client)) {
+      if (d.amount > 0) {
+        parts.push(`${monthName(d.source_month).slice(0, 3)} (${formatEuro(d.amount)})`)
+      }
+    }
+    const natural = reimbursableFor(client)
+    if (natural > 0) {
+      parts.push(`${monthName(selectedMonth).slice(0, 3)} (${formatEuro(natural)})`)
+    }
+    if (parts.length === 0) return null
+    return `${parts.join(' + ')} reimbursable expenses`
+  }
+
+  // Is a target-month invoice already issued (PF# + Date set)? Used
+  // to lock the deferrals feeding into it so they can't be silently
+  // re-routed after the invoice is out the door.
+  const isTargetInvoiceIssued = (client) => {
+    const inv = invoices.find(i =>
+      i.client_id === client.id && i.invoice_type === 'variable_expense'
+    )
+    return !!(inv && inv.invoice_number && inv.date_issued)
+  }
+
+  // Defer-target picker modal handlers. Source month = current top-bar.
+  // User picks (target_year, target_month); we INSERT one row into
+  // expense_deferrals and refresh local state.
+  const openDeferModal = (client) => {
+    // Default the target picker to the NEXT month after the source —
+    // most common case, user can change it.
+    const nextMonth = selectedMonth === 12 ? 1            : selectedMonth + 1
+    const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
+    setDeferModal({
+      client,
+      sourceYear:  selectedYear,
+      sourceMonth: selectedMonth,
+      targetYear:  nextYear,
+      targetMonth: nextMonth,
+      busy:        false,
+      error:       null,
+    })
+  }
+  const closeDeferModal = () => setDeferModal(null)
+
+  const saveDeferral = async () => {
+    if (!deferModal) return
+    const { client, sourceYear, sourceMonth, targetYear, targetMonth } = deferModal
+    // Sanity: target must be strictly later than source.
+    if (targetYear < sourceYear ||
+        (targetYear === sourceYear && targetMonth <= sourceMonth)) {
+      setDeferModal(d => d ? { ...d, error: 'Target month must be later than the source month.' } : d)
+      return
+    }
+    setDeferModal(d => d ? { ...d, busy: true, error: null } : d)
+    try {
+      const { data: inserted, error: insErr } = await supabase
+        .from('expense_deferrals')
+        .insert([{
+          company_id:   companyId,
+          client_id:    client.id,
+          source_year:  sourceYear,
+          source_month: sourceMonth,
+          target_year:  targetYear,
+          target_month: targetMonth,
+        }])
+        .select('*').single()
+      if (insErr) throw insErr
+      setDeferrals(prev => [...prev, inserted])
+      setDeferModal(null)
+    } catch (err) {
+      // 23505 = unique violation (deferral for this source already exists)
+      const friendly = err.code === '23505'
+        ? 'This client-month already has a deferral. Remove it first or pick a different source month.'
+        : err.message
+      setDeferModal(d => d ? { ...d, busy: false, error: friendly } : d)
+    }
+  }
+
+  const removeDeferral = async (deferralId) => {
+    try {
+      const { error: delErr } = await supabase
+        .from('expense_deferrals')
+        .delete()
+        .eq('id', deferralId)
+      if (delErr) throw delErr
+      setDeferrals(prev => prev.filter(d => d.id !== deferralId))
+    } catch (err) {
+      alert(`Could not remove deferral: ${err.message}`)
+    }
   }
 
   // Helper — compute orphan reimbursable expense groups. These are
@@ -258,9 +476,15 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       vat_rate    = 0  // reimbursements never carry VAT (pass-through cost)
       description = `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
     } else if (invoiceType === 'variable_expense') {
-      amount_net  = reimbursableFor(client)
+      // Effective amount = natural top-bar amount + any inbound deferrals
+      // rolled into this month from earlier source months.
+      amount_net  = effectiveReimbursableFor(client)
       vat_rate    = 0
-      description = `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
+      // When deferrals contribute, auto-build a breakdown description
+      // like "Jan (€500) + Feb (€700) + Mar (€420) reimbursable expenses".
+      // Falls back to the plain period label when no deferrals apply.
+      description = buildDeferralDescription(client)
+                 || `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
     }
     return {
       company_id:    companyId,
@@ -1272,7 +1496,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           !clientIdsByType.get('fixed_expense')?.has(c.id)) {
         placeholderTotal += 1
       }
-      if (reimbursableFor(c) > 0 &&
+      // Use the EFFECTIVE amount (natural + inbound deferrals; 0 if
+      // this month is deferred away) so the placeholder count tracks
+      // what's actually billable this month.
+      if (effectiveReimbursableFor(c) > 0 &&
           !clientIdsByType.get('variable_expense')?.has(c.id)) {
         placeholderTotal += 1
       }
@@ -1282,9 +1509,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     const pending = total - finalized
     const pct = total === 0 ? 0 : Math.round((finalized / total) * 100)
     return { total, finalized, pending, pct }
-    // reimbursableByClient is the underlying state behind reimbursableFor —
-    // recompute when it changes too.
-  }, [invoices, clients, reimbursableByClient])
+    // reimbursableByClient is the underlying state behind reimbursableFor;
+    // deferrals + reimbursableBySourcePeriod feed effectiveReimbursableFor.
+  }, [invoices, clients, reimbursableByClient, reimbursableBySourcePeriod, deferrals])
 
   // ---- Print handler — A4 landscape, same pattern as Client Report ----
   const handlePrint = () => {
@@ -1817,22 +2044,29 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             // All DB invoices of this type for the selected month
             const dbInvoices = invoices.filter(i => i.invoice_type === 'variable_expense')
-            // Auto-draft candidates: active clients with reimbursable expenses
-            // this month who don't have an invoice row yet
-            const reimbursableClients = clients
-              .filter(c => c.active && reimbursableFor(c) > 0)
-              .map(c => ({ c, reimbursable: reimbursableFor(c) }))
-              .sort((a, b) => b.reimbursable - a.reimbursable)
+            // Effective candidates: active clients whose EFFECTIVE amount
+            // (natural + inbound deferrals - 0 if deferred away) is > 0,
+            // AND who don't already have a saved invoice row this month.
+            const effectiveClients = clients
+              .filter(c => c.active && effectiveReimbursableFor(c) > 0)
+              .map(c => ({ c, effective: effectiveReimbursableFor(c) }))
+              .sort((a, b) => b.effective - a.effective)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
-            const placeholderRows = reimbursableClients.filter(({ c }) => !clientIdsWithDbRow.has(c.id))
+            const placeholderRows = effectiveClients.filter(({ c }) => !clientIdsWithDbRow.has(c.id))
+            // Outbound rows: clients who deferred THIS month's expenses
+            // forward — show muted with badge so nothing goes invisible.
+            const outboundClients = clients
+              .filter(c => c.active && outboundDeferralFor(c))
+              .map(c => ({ c, deferral: outboundDeferralFor(c), natural: reimbursableFor(c) }))
+              .sort((a, b) => b.natural - a.natural)
             const clientById = new Map(clients.map(c => [c.id, c]))
             const totalForBlock =
               dbInvoices.reduce((s, i) => s + Number(i.amount_net || 0), 0)
-              + placeholderRows.reduce((s, r) => s + r.reimbursable, 0)
+              + placeholderRows.reduce((s, r) => s + r.effective, 0)
             const periodLabel = selectedMonth && selectedYear
               ? `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
               : 'Reimbursable expenses'
-            const totalRows = dbInvoices.length + placeholderRows.length
+            const totalRows = dbInvoices.length + placeholderRows.length + outboundClients.length
             return (
               <section className="clients-block clients-block-variable">
                 <div className="clients-block-header">
@@ -1925,41 +2159,66 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                         <th style={{ minWidth: 150 }}>Payment Date</th>
                         <th title="Statement of Account updated after payment received">SOA ✓</th>
                         <th>Status</th>
-                        <th></th>
+                        <th title="Defer this month's reimbursables to a later month, or undo a deferral">Defer</th>
                       </tr>
                     </thead>
                     <tbody>
                       {/* No VAT applied — expense reimbursements are
                           pass-through costs, not services. The original
                           expense already had its own VAT treatment. */}
-                      {/* Placeholder rows first (auto-drafted from expenses). */}
-                      {placeholderRows.map(({ c, reimbursable }) => (
-                        <tr key={`placeholder-${c.id}`}>
-                          {renderProjectCell(c)}
-                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
-                          <td style={{ textAlign: 'right' }}>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              className="lifecycle-input lifecycle-input-mono"
-                              style={{ textAlign: 'right', width: 90, color: '#7c2d12' }}
-                              defaultValue={reimbursable}
-                              onBlur={(e) => {
-                                const next = parseFloat(e.target.value)
-                                if (!Number.isNaN(next) && next !== reimbursable) {
-                                  upsertInvoice(c, 'variable_expense', { amount_net: next, vat_rate: 0 })
-                                }
-                              }}
-                            />
-                          </td>
-                          {renderLifecycleCells(c, 'variable_expense')}
-                          <td></td>
-                        </tr>
-                      ))}
-                      {/* DB rows */}
+                      {/* Placeholder rows first (auto-drafted from expenses,
+                          including any inbound deferrals from earlier months). */}
+                      {placeholderRows.map(({ c, effective }) => {
+                        const inbound = inboundDeferralsFor(c)
+                        const hasInbound = inbound.length > 0
+                        // Auto-build description if this row has deferred-in
+                        // months; otherwise plain period label.
+                        const rowDescription = buildDeferralDescription(c) || periodLabel
+                        return (
+                          <tr key={`placeholder-${c.id}`}>
+                            {renderProjectCell(c)}
+                            <td style={{ fontStyle: 'italic', color: '#374151' }}>
+                              {rowDescription}
+                              {hasInbound && (
+                                <div style={{ fontSize: 10, color: '#0891b2', marginTop: 2, fontStyle: 'normal' }}>
+                                  ↪ Includes {inbound.length} deferred month{inbound.length === 1 ? '' : 's'}
+                                </div>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="lifecycle-input lifecycle-input-mono"
+                                style={{ textAlign: 'right', width: 90, color: '#7c2d12' }}
+                                defaultValue={effective}
+                                onBlur={(e) => {
+                                  const next = parseFloat(e.target.value)
+                                  if (!Number.isNaN(next) && next !== effective) {
+                                    upsertInvoice(c, 'variable_expense', { amount_net: next, vat_rate: 0 })
+                                  }
+                                }}
+                              />
+                            </td>
+                            {renderLifecycleCells(c, 'variable_expense')}
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              <button
+                                className="row-btn"
+                                style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4, cursor: 'pointer' }}
+                                title="Postpone this month's reimbursable expenses to a later month"
+                                onClick={() => openDeferModal(c)}
+                              >
+                                → Defer
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      {/* DB rows (saved invoices) */}
                       {dbInvoices.map(inv => {
                         const c = clientById.get(inv.client_id) || {}
+                        const issued = !!(inv.invoice_number && inv.date_issued)
                         return (
                           <tr key={inv.id}>
                             {renderProjectCell(c)}
@@ -1989,6 +2248,71 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             {renderLifecycleCellsForInvoice(inv)}
                             <td style={{ whiteSpace: 'nowrap' }}>
                               <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      {/* Outbound deferral rows — this client's current
+                          month was rolled forward to a later month. The
+                          row is muted, struck-through on the amount, and
+                          has an "Undo" button (disabled if the target
+                          invoice is already issued). */}
+                      {outboundClients.map(({ c, deferral, natural }) => {
+                        const targetLabel = `${monthName(deferral.target_month)} ${deferral.target_year}`
+                        const targetIssued = isTargetInvoiceIssued(c)
+                        return (
+                          <tr key={`outbound-${deferral.id}`} style={{ background: '#f9fafb', color: '#9ca3af' }}>
+                            {renderProjectCell(c)}
+                            <td style={{ fontStyle: 'italic', color: '#9ca3af' }}>
+                              <span style={{ textDecoration: 'line-through' }}>{periodLabel}</span>
+                              <div style={{
+                                display: 'inline-block',
+                                marginLeft: 8,
+                                padding: '1px 8px',
+                                background: '#dbeafe',
+                                color: '#1e40af',
+                                borderRadius: 10,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                fontStyle: 'normal',
+                              }}>
+                                → Deferred to {targetLabel}
+                              </div>
+                            </td>
+                            <td style={{ textAlign: 'right', textDecoration: 'line-through', color: '#9ca3af', fontFamily: 'monospace' }}>
+                              {formatEuro(natural)}
+                            </td>
+                            {/* Empty lifecycle cells for the deferred row — no
+                                invoice to track here (the target month owns it). */}
+                            <td colSpan="6" style={{ textAlign: 'center', fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>
+                              Billed in {targetLabel}
+                            </td>
+                            <td></td>
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              <button
+                                className="row-btn"
+                                disabled={targetIssued}
+                                title={targetIssued
+                                  ? `Locked — the ${targetLabel} invoice is already issued. Clear its Inv# + Date first to undo.`
+                                  : `Cancel the deferral and bring these expenses back to ${monthName(selectedMonth)} ${selectedYear}.`}
+                                style={{
+                                  fontSize: 11,
+                                  padding: '3px 8px',
+                                  background: targetIssued ? '#f3f4f6' : '#fff',
+                                  color: targetIssued ? '#9ca3af' : '#374151',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: 4,
+                                  cursor: targetIssued ? 'not-allowed' : 'pointer',
+                                }}
+                                onClick={() => {
+                                  if (targetIssued) return
+                                  if (window.confirm(`Undo this deferral?\n\n${c.trade_name || c.legal_name}'s ${monthName(selectedMonth)} ${selectedYear} expenses will return to this month.`)) {
+                                    removeDeferral(deferral.id)
+                                  }
+                                }}
+                              >
+                                ↩ Undo
+                              </button>
                             </td>
                           </tr>
                         )
@@ -2723,6 +3047,92 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                 }}
               >
                 {deleting.busy ? '🗑️ Deleting…' : '🗑️ Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Defer-target picker modal ===== */}
+      {/* Opens from the "→ Defer" button in Block 4. User picks the
+          target year+month; we INSERT a row into expense_deferrals.
+          Block 4 of the source month then renders that client's row
+          as muted ("→ Deferred to X"), and Block 4 of the target
+          month sums in the deferred amount. */}
+      {deferModal && (
+        <div className="modal-overlay" onClick={deferModal.busy ? undefined : closeDeferModal}>
+          <div
+            className="modal-content clients-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 480 }}
+          >
+            <div className="modal-header">
+              <h3>→ Defer to a later month</h3>
+              <button className="modal-close" onClick={closeDeferModal} disabled={deferModal.busy}>×</button>
+            </div>
+            <div className="modal-body">
+              {deferModal.error && (
+                <div className="message error" style={{ marginBottom: 12 }}>{deferModal.error}</div>
+              )}
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#6b7280' }}>Postponing reimbursables for:</div>
+                <div style={{ fontSize: 16, fontWeight: 600, marginTop: 2, color: '#111827' }}>
+                  {deferModal.client.trade_name || deferModal.client.legal_name}
+                </div>
+                <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>
+                  Source month: <strong>{monthName(deferModal.sourceMonth)} {deferModal.sourceYear}</strong>
+                  {' '}· amount: <strong>{formatEuro(reimbursableFor(deferModal.client))}</strong>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
+                  Target month
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <select
+                    value={deferModal.targetMonth}
+                    onChange={(e) => setDeferModal(d => d ? { ...d, targetMonth: parseInt(e.target.value, 10) } : d)}
+                    className="form-input"
+                    style={{ flex: 1 }}
+                    disabled={deferModal.busy}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                      <option key={m} value={m}>{monthName(m)}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={deferModal.targetYear}
+                    onChange={(e) => setDeferModal(d => d ? { ...d, targetYear: parseInt(e.target.value, 10) } : d)}
+                    className="form-input"
+                    style={{ width: 120 }}
+                    disabled={deferModal.busy}
+                  >
+                    {/* Current source year + 3 future years usually enough. */}
+                    {[0, 1, 2, 3].map(offset => {
+                      const y = deferModal.sourceYear + offset
+                      return <option key={y} value={y}>{y}</option>
+                    })}
+                  </select>
+                </div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
+                  These expenses will be bundled into the {' '}
+                  <strong>{monthName(deferModal.targetMonth)} {deferModal.targetYear}</strong>{' '}
+                  variable expense invoice for this client.
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={closeDeferModal} className="btn-secondary" disabled={deferModal.busy}>
+                Cancel
+              </button>
+              <button
+                onClick={saveDeferral}
+                className="button"
+                disabled={deferModal.busy}
+              >
+                {deferModal.busy ? 'Saving…' : '→ Defer'}
               </button>
             </div>
           </div>
