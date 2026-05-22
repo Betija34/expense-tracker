@@ -306,14 +306,15 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   // Generic "natural amount this client expects to be billed for this
   // type in this period". Variable expenses come from the expenses
-  // table; monthly fee is a static value on the client record (we treat
-  // it as the same value across all periods since no historical rate
-  // tracking exists).
+  // table; monthly fee + fixed expense reimbursement are static values
+  // on the client record (we treat them as the same value across all
+  // periods since no historical rate tracking exists).
   const naturalForPeriod = (client, year, month, invoiceType) => {
     if (invoiceType === 'monthly_fee') {
-      // Monthly fee is the client's current monthly_fee_net. We use
-      // current rate even for historical periods — keep it simple.
       return Number(client.monthly_fee_net || 0)
+    }
+    if (invoiceType === 'fixed_expense') {
+      return Number(client.monthly_fixed_expense_net || 0)
     }
     // variable_expense (default)
     return reimbursableForPeriod(client, year, month)
@@ -325,9 +326,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // (User-supported case: "this month I bill Jan + Feb that were
   // deferred in, AND I defer this month's own to a later month.")
   const effectiveAmountFor = (client, invoiceType = 'variable_expense') => {
-    const ownNatural = invoiceType === 'monthly_fee'
-      ? Number(client.monthly_fee_net || 0)
-      : reimbursableFor(client)
+    const ownNatural =
+      invoiceType === 'monthly_fee'   ? Number(client.monthly_fee_net || 0) :
+      invoiceType === 'fixed_expense' ? Number(client.monthly_fixed_expense_net || 0) :
+      reimbursableFor(client)
     const naturalCounted = outboundDeferralFor(client, invoiceType) ? 0 : ownNatural
     const inbound = inboundDeferralsFor(client, invoiceType).reduce((s, d) => s + d.amount, 0)
     return naturalCounted + inbound
@@ -344,18 +346,23 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const renderBreakdownCell = (client, savedAmount = null, fallbackText = null, invoiceType = 'variable_expense') => {
     const bk = periodBreakdown(client, invoiceType)
     const periodLbl = (() => {
-      if (!selectedMonth || !selectedYear) return invoiceType === 'monthly_fee' ? 'Monthly fee' : 'Reimbursable expenses'
+      if (!selectedMonth || !selectedYear) {
+        if (invoiceType === 'monthly_fee')   return 'Monthly fee'
+        if (invoiceType === 'fixed_expense') return 'Fixed expense reimbursement'
+        return 'Reimbursable expenses'
+      }
       const m = monthName(selectedMonth)
-      return invoiceType === 'monthly_fee'
-        ? `${m} ${selectedYear} fee`
-        : `${m} ${selectedYear} expenses to be reimbursed`
+      if (invoiceType === 'monthly_fee')   return `${m} ${selectedYear} fee`
+      if (invoiceType === 'fixed_expense') return `${m} ${selectedYear} fixed expenses`
+      return `${m} ${selectedYear} expenses to be reimbursed`
     })()
     const titleText = fallbackText || periodLbl
     const hasInbound  = bk.items.some(i => i.isDeferred)
     const hasOutbound = !!bk.outbound
-    const natural     = invoiceType === 'monthly_fee'
-      ? Number(client.monthly_fee_net || 0)
-      : reimbursableFor(client)
+    const natural     =
+      invoiceType === 'monthly_fee'   ? Number(client.monthly_fee_net || 0) :
+      invoiceType === 'fixed_expense' ? Number(client.monthly_fixed_expense_net || 0) :
+      reimbursableFor(client)
     // Standalone "this month's natural" info chip — surfaced on saved DB
     // rows whenever the saved invoice amount doesn't match this month's
     // natural reimbursables AND we're not already showing it as outbound.
@@ -443,9 +450,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const periodBreakdown = (client, invoiceType = 'variable_expense') => {
     const outbound = outboundDeferralFor(client, invoiceType)
     const inbound  = inboundDeferralsFor(client, invoiceType)
-    const natural  = invoiceType === 'monthly_fee'
-      ? Number(client.monthly_fee_net || 0)
-      : reimbursableFor(client)
+    const natural  =
+      invoiceType === 'monthly_fee'   ? Number(client.monthly_fee_net || 0) :
+      invoiceType === 'fixed_expense' ? Number(client.monthly_fixed_expense_net || 0) :
+      reimbursableFor(client)
     const items = []
     for (const d of inbound) {
       if (d.amount > 0) {
@@ -483,15 +491,19 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         parts.push(`${monthName(d.source_month).slice(0, 3)} (${formatEuro(d.amount)})`)
       }
     }
-    const ownNatural = invoiceType === 'monthly_fee'
-      ? Number(client.monthly_fee_net || 0)
-      : reimbursableFor(client)
+    const ownNatural =
+      invoiceType === 'monthly_fee'   ? Number(client.monthly_fee_net || 0) :
+      invoiceType === 'fixed_expense' ? Number(client.monthly_fixed_expense_net || 0) :
+      reimbursableFor(client)
     const outbound = outboundDeferralFor(client, invoiceType)
     if (!outbound && ownNatural > 0) {
       parts.push(`${monthName(selectedMonth).slice(0, 3)} (${formatEuro(ownNatural)})`)
     }
     if (parts.length === 0) return null
-    const suffix = invoiceType === 'monthly_fee' ? 'fees' : 'reimbursable expenses'
+    const suffix =
+      invoiceType === 'monthly_fee'   ? 'fees' :
+      invoiceType === 'fixed_expense' ? 'fixed expenses' :
+      'reimbursable expenses'
     return `${parts.join(' + ')} ${suffix}`
   }
   // Backward-compat alias used by the legacy variable_expense computeInvoiceDefaults.
@@ -644,9 +656,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       description = buildBreakdownDescription(client, 'monthly_fee')
                  || `${monthName(selectedMonth)} ${selectedYear} fee`
     } else if (invoiceType === 'fixed_expense') {
-      amount_net  = Number(client.monthly_fixed_expense_net || 0)
+      // Effective amount = natural fixed expense + any inbound deferrals.
+      amount_net  = effectiveAmountFor(client, 'fixed_expense')
       vat_rate    = 0  // reimbursements never carry VAT (pass-through cost)
-      description = `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
+      description = buildBreakdownDescription(client, 'fixed_expense')
+                 || `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
     } else if (invoiceType === 'variable_expense') {
       // Effective amount = natural top-bar amount + any inbound deferrals
       // rolled into this month from earlier source months.
@@ -2237,21 +2251,37 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             // All DB invoices of this type for the selected month
             const dbInvoices = invoices.filter(i => i.invoice_type === 'fixed_expense')
-            // Active clients with a default fixed_expense > 0 — they get an
-            // auto-drafted placeholder row when no DB row exists for them yet.
-            const clientsWithDefault = clients.filter(c => c.active && Number(c.monthly_fixed_expense_net || 0) > 0)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
-            // Placeholder rows for clients-with-default who have no DB row yet
-            const placeholderClients = clientsWithDefault.filter(c => !clientIdsWithDbRow.has(c.id))
+            // Effective placeholder candidates — clients whose effective
+            // fixed-expense amount (natural + inbound deferrals) > 0
+            // AND who don't already have a saved invoice. A client
+            // deferred AWAY from this period has effective = 0 and
+            // shows up in the outbound list below.
+            const placeholderClients = clients
+              .filter(c =>
+                c.active &&
+                effectiveAmountFor(c, 'fixed_expense') > 0 &&
+                !clientIdsWithDbRow.has(c.id)
+              )
+            // Outbound-only: client's fixed-expense reimbursement deferred
+            // away AND no inbound + no DB row, so only thing to surface
+            // is the muted "deferred to X" note.
+            const outboundClients = clients
+              .filter(c =>
+                c.active &&
+                outboundDeferralFor(c, 'fixed_expense') &&
+                effectiveAmountFor(c, 'fixed_expense') === 0 &&
+                !clientIdsWithDbRow.has(c.id)
+              )
+              .map(c => ({ c, deferral: outboundDeferralFor(c, 'fixed_expense') }))
             const clientById = new Map(clients.map(c => [c.id, c]))
-            // Total: sum of all DB invoices' net amounts (no VAT) + placeholder defaults
             const totalForBlock =
               dbInvoices.reduce((s, i) => s + Number(i.amount_net || 0), 0)
-              + placeholderClients.reduce((s, c) => s + Number(c.monthly_fixed_expense_net || 0), 0)
+              + placeholderClients.reduce((s, c) => s + effectiveAmountFor(c, 'fixed_expense'), 0)
             const periodLabel = selectedMonth && selectedYear
               ? `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
               : 'Fixed monthly expenses'
-            const totalRows = dbInvoices.length + placeholderClients.length
+            const totalRows = dbInvoices.length + placeholderClients.length + outboundClients.length
             return (
               <section className="clients-block clients-block-fixed">
                 <div className="clients-block-header">
@@ -2287,42 +2317,91 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                         <th style={{ minWidth: 150 }}>Payment Date</th>
                         <th title="Statement of Account updated after payment received">SOA ✓</th>
                         <th>Status</th>
+                        <th title="Defer this month's fixed reimbursement to a later month, or undo a deferral">Defer</th>
                         <th></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* Placeholder rows first (auto-drafted for clients with default). */}
-                      {placeholderClients.map(c => (
-                        <tr key={`placeholder-${c.id}`}>
-                          {renderProjectCell(c)}
-                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
-                          <td style={{ textAlign: 'right' }}>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              className="lifecycle-input lifecycle-input-mono"
-                              style={{ textAlign: 'right', width: 90 }}
-                              defaultValue={Number(c.monthly_fixed_expense_net || 0)}
-                              onBlur={(e) => {
-                                const next = parseFloat(e.target.value)
-                                if (!Number.isNaN(next) && next !== Number(c.monthly_fixed_expense_net || 0)) {
-                                  upsertInvoice(c, 'fixed_expense', { amount_net: next, vat_rate: 0 })
-                                }
-                              }}
-                            />
-                          </td>
-                          {renderLifecycleCells(c, 'fixed_expense')}
-                          <td></td>
-                        </tr>
-                      ))}
-                      {/* DB rows — each is its own invoice (multiple per client allowed for manual catch-up entries). */}
+                      {/* Placeholder rows (auto-drafted with effective amount). */}
+                      {placeholderClients.map(c => {
+                        const effectiveNet = effectiveAmountFor(c, 'fixed_expense')
+                        const bk           = periodBreakdown(c, 'fixed_expense')
+                        return (
+                          <tr key={`placeholder-${c.id}`}>
+                            {renderProjectCell(c)}
+                            <td>
+                              {renderBreakdownCell(c, null, null, 'fixed_expense')}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="lifecycle-input lifecycle-input-mono"
+                                style={{ textAlign: 'right', width: 90 }}
+                                defaultValue={effectiveNet}
+                                onBlur={(e) => {
+                                  const next = parseFloat(e.target.value)
+                                  if (!Number.isNaN(next) && next !== effectiveNet) {
+                                    upsertInvoice(c, 'fixed_expense', { amount_net: next, vat_rate: 0 })
+                                  }
+                                }}
+                              />
+                            </td>
+                            {renderLifecycleCells(c, 'fixed_expense')}
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              {bk.outbound ? (
+                                <button
+                                  className="row-btn"
+                                  disabled={isTargetInvoiceIssued(c, 'fixed_expense')}
+                                  title={isTargetInvoiceIssued(c, 'fixed_expense')
+                                    ? `Locked — target invoice already issued.`
+                                    : `Cancel deferral`}
+                                  style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                  onClick={() => {
+                                    if (isTargetInvoiceIssued(c, 'fixed_expense')) return
+                                    if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                      removeDeferral(bk.outbound.id)
+                                    }
+                                  }}
+                                >
+                                  ↩ Undo
+                                </button>
+                              ) : Number(c.monthly_fixed_expense_net || 0) > 0 ? (
+                                <button
+                                  className="row-btn"
+                                  style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                  title={`Postpone ${monthName(selectedMonth)} ${selectedYear}'s fixed reimbursement to a later month`}
+                                  onClick={() => openDeferModal(c, 'fixed_expense')}
+                                >
+                                  → Defer
+                                </button>
+                              ) : null}
+                            </td>
+                            <td></td>
+                          </tr>
+                        )
+                      })}
+                      {/* DB rows — each is its own invoice. */}
                       {dbInvoices.map(inv => {
                         const c = clientById.get(inv.client_id) || {}
+                        const outbound = outboundDeferralFor(c, 'fixed_expense')
                         return (
                           <tr key={inv.id}>
                             {renderProjectCell(c)}
-                            <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || periodLabel}</td>
+                            <td>
+                              {renderBreakdownCell(c, inv.amount_net, inv.description, 'fixed_expense')}
+                              {outbound && !periodBreakdown(c, 'fixed_expense').outbound && (
+                                <div style={{
+                                  display: 'inline-block', marginTop: 4,
+                                  padding: '1px 8px',
+                                  background: '#dbeafe', color: '#1e40af',
+                                  borderRadius: 10, fontSize: 11, fontWeight: 600,
+                                }}>
+                                  → Also deferred to {monthName(outbound.target_month)} {outbound.target_year}
+                                </div>
+                              )}
+                            </td>
                             <td style={{ textAlign: 'right' }}>
                               <input
                                 type="number"
@@ -2346,9 +2425,93 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               />
                             </td>
                             {renderLifecycleCellsForInvoice(inv)}
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              {outbound ? (
+                                <button
+                                  className="row-btn"
+                                  disabled={isTargetInvoiceIssued(c, 'fixed_expense')}
+                                  title={isTargetInvoiceIssued(c, 'fixed_expense')
+                                    ? `Locked — target invoice already issued.`
+                                    : `Cancel deferral`}
+                                  style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                  onClick={() => {
+                                    if (isTargetInvoiceIssued(c, 'fixed_expense')) return
+                                    if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                      removeDeferral(outbound.id)
+                                    }
+                                  }}
+                                >
+                                  ↩ Undo
+                                </button>
+                              ) : Number(c.monthly_fixed_expense_net || 0) > 0 ? (
+                                <button
+                                  className="row-btn"
+                                  style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                  title={`Route ${monthName(selectedMonth)} ${selectedYear}'s fixed reimbursement to a later month`}
+                                  onClick={() => openDeferModal(c, 'fixed_expense')}
+                                >
+                                  → Defer
+                                </button>
+                              ) : null}
+                            </td>
                             <td style={{ whiteSpace: 'nowrap' }}>
                               <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
                             </td>
+                          </tr>
+                        )
+                      })}
+                      {/* Outbound-only muted rows — fixed reimbursement deferred forward. */}
+                      {outboundClients.map(({ c, deferral }) => {
+                        const targetLabel  = `${monthName(deferral.target_month)} ${deferral.target_year}`
+                        const targetIssued = isTargetInvoiceIssued(c, 'fixed_expense')
+                        return (
+                          <tr key={`outbound-fe-${deferral.id}`} style={{ background: '#f9fafb', color: '#9ca3af' }}>
+                            {renderProjectCell(c)}
+                            <td style={{ fontStyle: 'italic', color: '#9ca3af' }}>
+                              <span style={{ textDecoration: 'line-through' }}>
+                                {monthName(selectedMonth)} {selectedYear} fixed expenses
+                              </span>
+                              <div style={{
+                                display: 'inline-block', marginLeft: 8,
+                                padding: '1px 8px',
+                                background: '#dbeafe', color: '#1e40af',
+                                borderRadius: 10, fontSize: 11, fontWeight: 600,
+                                fontStyle: 'normal',
+                              }}>
+                                → Deferred to {targetLabel}
+                              </div>
+                            </td>
+                            <td style={{ textAlign: 'right', textDecoration: 'line-through', color: '#9ca3af', fontFamily: 'monospace' }}>
+                              {formatEuro(Number(c.monthly_fixed_expense_net || 0))}
+                            </td>
+                            <td colSpan="6" style={{ textAlign: 'center', fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>
+                              Billed in {targetLabel}
+                            </td>
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              <button
+                                className="row-btn"
+                                disabled={targetIssued}
+                                title={targetIssued
+                                  ? `Locked — ${targetLabel} invoice already issued.`
+                                  : `Bring ${monthName(selectedMonth)} ${selectedYear}'s fixed reimbursement back here.`}
+                                style={{
+                                  fontSize: 11, padding: '3px 6px',
+                                  background: targetIssued ? '#f3f4f6' : '#fff',
+                                  color: targetIssued ? '#9ca3af' : '#374151',
+                                  border: '1px solid #d1d5db', borderRadius: 4,
+                                  cursor: targetIssued ? 'not-allowed' : 'pointer',
+                                }}
+                                onClick={() => {
+                                  if (targetIssued) return
+                                  if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    removeDeferral(deferral.id)
+                                  }
+                                }}
+                              >
+                                ↩ Undo
+                              </button>
+                            </td>
+                            <td></td>
                           </tr>
                         )
                       })}
