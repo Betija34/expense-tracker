@@ -643,18 +643,27 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   // Compute the auto-filled defaults for a new invoice row based on the
   // client master + invoice type + selected period. Used at INSERT time.
-  const computeInvoiceDefaults = (client, invoiceType) => {
+  // computeInvoiceDefaults — now optionally takes a representsPeriod
+  // ({year, month}) for monthly_fee splits. When provided, the invoice
+  // represents just that source month's standard fee (not the combined
+  // total of all deferred-in + current). Other types ignore this param.
+  const computeInvoiceDefaults = (client, invoiceType, representsPeriod = null) => {
     let amount_net = 0
     let vat_rate   = 0
     let description = ''
     if (invoiceType === 'monthly_fee') {
-      // Effective amount = natural monthly fee + any inbound deferrals.
-      // (Equivalent to a bare monthly_fee_net when no deferrals apply.)
-      amount_net  = effectiveAmountFor(client, 'monthly_fee')
-      vat_rate    = Number(client.vat_rate || 0)
-      // Auto-build "Jan + Feb + Mar 2026 fees" when deferrals contribute.
-      description = buildBreakdownDescription(client, 'monthly_fee')
-                 || `${monthName(selectedMonth)} ${selectedYear} fee`
+      vat_rate = Number(client.vat_rate || 0)
+      if (representsPeriod) {
+        // Per-month split: this invoice is for ONE specific source
+        // month's fee (e.g. "January 2026 fee" billed in March).
+        amount_net  = Number(client.monthly_fee_net || 0)
+        description = `${monthName(representsPeriod.month)} ${representsPeriod.year} fee`
+      } else {
+        // Combined/legacy: effective amount = natural + any inbound.
+        amount_net  = effectiveAmountFor(client, 'monthly_fee')
+        description = buildBreakdownDescription(client, 'monthly_fee')
+                   || `${monthName(selectedMonth)} ${selectedYear} fee`
+      }
     } else if (invoiceType === 'fixed_expense') {
       // Effective amount = natural fixed expense + any inbound deferrals.
       amount_net  = effectiveAmountFor(client, 'fixed_expense')
@@ -683,20 +692,41 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       vat_rate,
       amount_total:  amount_net * (1 + vat_rate),
       status:        'planned',
+      // Per-month split marker — only set when caller asked for a split
+      // (e.g. each deferred-in month's monthly fee gets its own DB row).
+      represents_period_year:  representsPeriod ? representsPeriod.year  : null,
+      represents_period_month: representsPeriod ? representsPeriod.month : null,
     }
   }
+
+  // Find a saved DB invoice that represents a specific source period
+  // for a client+type. Used to match per-month-split placeholders to
+  // their DB rows.
+  const getInvoiceForPeriodSplit = (clientId, invoiceType, representsPeriod) =>
+    invoices.find(i =>
+      i.client_id    === clientId &&
+      i.invoice_type === invoiceType &&
+      i.represents_period_year  === representsPeriod.year &&
+      i.represents_period_month === representsPeriod.month
+    ) || null
 
   // Patch one or more fields on an invoice row. INSERTs the row if it
   // doesn't exist yet (lazy-create), UPDATEs in place if it does.
   // Pass `null` for a field to clear it (used when un-ticking a SOA box).
-  const upsertInvoice = async (client, invoiceType, patch) => {
+  // Optional `opts.representsPeriod` — when provided, the upsert scopes
+  // the find/insert to a specific represented source month (per-month
+  // split path used by monthly_fee with deferrals).
+  const upsertInvoice = async (client, invoiceType, patch, opts = {}) => {
+    const { representsPeriod = null } = opts
     try {
-      const existing = getInvoiceFor(client.id, invoiceType)
+      const existing = representsPeriod
+        ? getInvoiceForPeriodSplit(client.id, invoiceType, representsPeriod)
+        : getInvoiceFor(client.id, invoiceType)
       const stamped  = { ...patch, updated_at: new Date().toISOString() }
       // Recompute amount_total whenever amount_net or vat_rate change.
       if (Object.prototype.hasOwnProperty.call(stamped, 'amount_net') ||
           Object.prototype.hasOwnProperty.call(stamped, 'vat_rate')) {
-        const baseRow = existing || computeInvoiceDefaults(client, invoiceType)
+        const baseRow = existing || computeInvoiceDefaults(client, invoiceType, representsPeriod)
         const nextNet = stamped.amount_net != null ? Number(stamped.amount_net) : Number(baseRow.amount_net || 0)
         const nextVat = stamped.vat_rate != null   ? Number(stamped.vat_rate)   : Number(baseRow.vat_rate   || 0)
         stamped.amount_total = nextNet * (1 + nextVat)
@@ -707,7 +737,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         if (updErr) throw updErr
         setInvoices(prev => prev.map(i => i.id === updated.id ? updated : i))
       } else {
-        const defaults = computeInvoiceDefaults(client, invoiceType)
+        const defaults = computeInvoiceDefaults(client, invoiceType, representsPeriod)
         const { data: inserted, error: insErr } = await supabase
           .from('invoices').insert([{ ...defaults, ...stamped }]).select('*').single()
         if (insErr) throw insErr
@@ -1362,12 +1392,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // Render the 6 inline-editable lifecycle cells for one invoice row.
   // Used by Blocks 1 (Monthly Fee), 3 (Fixed Exp), and 4 (Variable Exp).
   // For checkboxes, ticking stores a timestamp; un-ticking sets it to null.
-  const renderLifecycleCells = (client, invoiceType) => {
-    const inv = getInvoiceFor(client.id, invoiceType)
+  // Optional 3rd param `representsPeriod` scopes the lookup/upsert to a
+  // specific represented source month (used by Block 1 monthly_fee
+  // per-month splits — each deferred-in month + the current natural
+  // month each get their own DB invoice).
+  const renderLifecycleCells = (client, invoiceType, representsPeriod = null) => {
+    const inv = representsPeriod
+      ? getInvoiceForPeriodSplit(client.id, invoiceType, representsPeriod)
+      : getInvoiceFor(client.id, invoiceType)
     const status = deriveStatus(inv)
-    const handleField = (field, value) => upsertInvoice(client, invoiceType, { [field]: value })
+    const handleField = (field, value) => upsertInvoice(client, invoiceType, { [field]: value }, { representsPeriod })
     const handleCheckbox = (field, checked) =>
-      upsertInvoice(client, invoiceType, { [field]: checked ? new Date().toISOString() : null })
+      upsertInvoice(client, invoiceType, { [field]: checked ? new Date().toISOString() : null }, { representsPeriod })
     // Suffix-only editing — the YYYY-MM- prefix is rendered as a fixed
     // label so the user only types the trailing sequence (e.g., "001").
     // If the stored value has a different period (legacy), the suffix
@@ -1876,44 +1912,88 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               underlying records.
               ================================================================= */}
           {(() => {
-            // All monthly_fee invoices for the selected period — sorted
-            // so issued invoices (both # + date set) appear first by
-            // numeric suffix; pending DB rows after.
-            const dbInvoices = invoices
+            // V27 changed how Block 1 renders: each deferred-in month +
+            // the current month's natural fee now get their OWN DB row,
+            // so they're invoiced separately (her workflow requirement —
+            // a January fee billed in March can't be merged with a
+            // February fee billed in March into a single invoice).
+            //
+            // The matching key is invoices.represents_period_(year,
+            // month): each per-month split invoice is tagged with the
+            // source month it represents. Legacy invoices created before
+            // V27 have NULL represents_period — they render as combined
+            // rows alongside the per-instance split rows.
+            const allMonthlyFee = invoices
               .filter(i => i.invoice_type === 'monthly_fee')
               .slice()
               .sort(compareIssuedFirst)
-            const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
-            // Effective placeholder candidates: clients whose effective
-            // monthly fee for this period (natural + inbound deferrals)
-            // is > 0 AND who don't already have a saved invoice. A client
-            // deferred AWAY from this period gets effective = 0 and shows
-            // up in the outbound list below instead.
-            const placeholderClients = clients
-              .filter(c =>
-                c.active &&
-                effectiveAmountFor(c, 'monthly_fee') > 0 &&
-                !clientIdsWithDbRow.has(c.id)
-              )
-            // Outbound-only: client's monthly fee deferred away AND no
-            // inbound + no DB row, so the only thing to surface in this
-            // month is the "deferred to X" muted note.
+            const splitInvoices  = allMonthlyFee.filter(i => i.represents_period_year != null)
+            const legacyInvoices = allMonthlyFee.filter(i => i.represents_period_year == null)
+            const clientsWithLegacyDb = new Set(legacyInvoices.map(i => i.client_id))
+
+            // Outbound-only: client's monthly fee deferred forward, no
+            // inbound, no DB invoice (legacy or split) here.
+            const splitClientIds = new Set(splitInvoices.map(i => i.client_id))
             const outboundClients = clients
               .filter(c =>
                 c.active &&
                 outboundDeferralFor(c, 'monthly_fee') &&
                 effectiveAmountFor(c, 'monthly_fee') === 0 &&
-                !clientIdsWithDbRow.has(c.id)
+                !clientsWithLegacyDb.has(c.id) &&
+                !splitClientIds.has(c.id)
               )
               .map(c => ({ c, deferral: outboundDeferralFor(c, 'monthly_fee') }))
-            const clientById = new Map(clients.map(c => [c.id, c]))
+            const outboundClientIds = new Set(outboundClients.map(o => o.c.id))
+
+            // Build per-instance rows for each active client with monthly
+            // fee involvement. Clients with a LEGACY combined DB row are
+            // excluded (they're rendered as standalone rows below — would
+            // double-render if we ALSO generated per-instance rows).
+            const clientById  = new Map(clients.map(c => [c.id, c]))
+            const perInstanceRows = []
+            for (const c of clients) {
+              if (!c.active) continue
+              if (clientsWithLegacyDb.has(c.id)) continue
+              if (outboundClientIds.has(c.id)) continue
+              const inbound = inboundDeferralsFor(c, 'monthly_fee').filter(d => d.amount > 0)
+              const hasOutbound = !!outboundDeferralFor(c, 'monthly_fee')
+              const hasNatural  = !hasOutbound && Number(c.monthly_fee_net || 0) > 0
+              if (!hasNatural && inbound.length === 0) continue
+              const instances = []
+              for (const d of inbound) {
+                instances.push({
+                  year: d.source_year, month: d.source_month,
+                  amount: d.amount, isDeferred: true, deferral: d,
+                })
+              }
+              if (hasNatural) {
+                instances.push({
+                  year: selectedYear, month: selectedMonth,
+                  amount: Number(c.monthly_fee_net || 0), isDeferred: false,
+                })
+              }
+              instances.sort((a, b) => (a.year - b.year) || (a.month - b.month))
+              instances.forEach((inst, idx) => {
+                const representsPeriod = { year: inst.year, month: inst.month }
+                const dbInvoice = getInvoiceForPeriodSplit(c.id, 'monthly_fee', representsPeriod)
+                perInstanceRows.push({
+                  client: c, instance: inst, representsPeriod, dbInvoice,
+                  isFirstForClient: idx === 0,
+                })
+              })
+            }
+
+            // Total = sum of all rows (split DB + per-instance placeholders + legacy DB).
             const totalForBlock =
-              dbInvoices.reduce((s, i) => s + Number(i.amount_total || 0), 0)
-              + placeholderClients.reduce((s, c) => {
-                  const eff = effectiveAmountFor(c, 'monthly_fee')
-                  return s + eff * (1 + Number(c.vat_rate || 0))
+              legacyInvoices.reduce((s, i) => s + Number(i.amount_total || 0), 0)
+              + perInstanceRows.reduce((s, row) => {
+                  const vatRate = Number(row.client.vat_rate || 0)
+                  const net = row.dbInvoice
+                    ? Number(row.dbInvoice.amount_net || 0)
+                    : row.instance.amount
+                  return s + net * (1 + vatRate)
                 }, 0)
-            const totalRows = placeholderClients.length + dbInvoices.length + outboundClients.length
+            const totalRows = perInstanceRows.length + legacyInvoices.length + outboundClients.length
             return (
               <section className="clients-block clients-block-monthly">
                 <div className="clients-block-header">
@@ -1954,31 +2034,53 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {/* Placeholder rows first — one per active client whose
-                        effective monthly-fee amount > 0 this period. The
-                        effective amount honors any inbound deferrals from
-                        earlier months that target this period. */}
-                    {placeholderClients.map(c => {
-                      const effectiveNet = effectiveAmountFor(c, 'monthly_fee')
-                      const vatRate      = Number(c.vat_rate || 0)
-                      const total        = effectiveNet * (1 + vatRate)
-                      const bk           = periodBreakdown(c, 'monthly_fee')
+                    {/* Per-instance rows — one row per (client, source-month)
+                        that contributes to billing this period. Each row's
+                        amount = ONE month's standard fee (€10,000 for Urban
+                        City, etc.), and each generates its own DB invoice
+                        when the user fills lifecycle inputs. The match key
+                        is invoices.represents_period_(year/month). */}
+                    {perInstanceRows.map(row => {
+                      const { client: c, instance: inst, representsPeriod, dbInvoice, isFirstForClient } = row
+                      const vatRate   = Number(c.vat_rate || 0)
+                      const amountNet = dbInvoice ? Number(dbInvoice.amount_net || 0) : inst.amount
+                      const total     = amountNet * (1 + vatRate)
+                      const rowKey    = dbInvoice
+                        ? `db-${dbInvoice.id}`
+                        : `ph-${c.id}-${inst.year}-${inst.month}`
                       return (
-                        <tr key={`placeholder-${c.id}`}>
+                        <tr key={rowKey}>
                           {renderProjectCell(c)}
                           <td>
-                            {renderBreakdownCell(c, null, null, 'monthly_fee')}
+                            <span style={{
+                              fontStyle: 'italic',
+                              color: inst.isDeferred ? '#0891b2' : '#374151',
+                            }}>
+                              {inst.isDeferred ? '↪ ' : '· '}
+                              {monthName(inst.month)} {inst.year} fee
+                              {inst.isDeferred ? ' (deferred in)' : ''}
+                            </span>
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <input
                               type="number" step="0.01" min="0"
                               className="lifecycle-input lifecycle-input-mono"
                               style={{ textAlign: 'right', width: 90 }}
-                              defaultValue={effectiveNet}
+                              defaultValue={amountNet}
                               onBlur={(e) => {
                                 const next = parseFloat(e.target.value)
-                                if (!Number.isNaN(next) && next !== effectiveNet) {
-                                  upsertInvoice(c, 'monthly_fee', { amount_net: next, vat_rate: vatRate })
+                                if (Number.isNaN(next) || next === amountNet) return
+                                if (dbInvoice) {
+                                  const newTotal = next * (1 + vatRate)
+                                  supabase.from('invoices')
+                                    .update({ amount_net: next, amount_total: newTotal, updated_at: new Date().toISOString() })
+                                    .eq('id', dbInvoice.id).select('*').single()
+                                    .then(({ data, error }) => {
+                                      if (error) { alert(`Save failed: ${error.message}`); return }
+                                      setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+                                    })
+                                } else {
+                                  upsertInvoice(c, 'monthly_fee', { amount_net: next, vat_rate: vatRate }, { representsPeriod })
                                 }
                               }}
                             />
@@ -1991,21 +2093,21 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
                             {formatEuro(total)}
                           </td>
-                          {renderLifecycleCells(c, 'monthly_fee')}
-                          {/* Defer column — context-aware button. */}
+                          {/* Lifecycle: scope to representsPeriod so each
+                              instance writes its own DB invoice. */}
+                          {dbInvoice
+                            ? renderLifecycleCellsForInvoice(dbInvoice)
+                            : renderLifecycleCells(c, 'monthly_fee', representsPeriod)}
+                          {/* Defer/Undo — Undo on deferred-in rows; Defer on the current-month natural row. */}
                           <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
-                            {bk.outbound ? (
+                            {inst.isDeferred ? (
                               <button
                                 className="row-btn"
-                                disabled={isTargetInvoiceIssued(c, 'monthly_fee')}
-                                title={isTargetInvoiceIssued(c, 'monthly_fee')
-                                  ? `Locked — ${monthName(bk.outbound.target_month)} ${bk.outbound.target_year} invoice already issued.`
-                                  : `Cancel deferral`}
+                                title="Cancel this deferral and return the fee to its source month"
                                 style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                 onClick={() => {
-                                  if (isTargetInvoiceIssued(c, 'monthly_fee')) return
-                                  if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
-                                    removeDeferral(bk.outbound.deferral_id || bk.outbound.id)
+                                  if (window.confirm(`Undo the deferral of ${monthName(inst.month)} ${inst.year} fee for ${c.trade_name || c.legal_name}?`)) {
+                                    removeDeferral(inst.deferral.deferral_id)
                                   }
                                 }}
                               >
@@ -2022,27 +2124,38 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               </button>
                             ) : null}
                           </td>
+                          {/* Active + Edit/Delete: shown only on the FIRST
+                              instance row for a client to avoid clutter. */}
                           <td>
-                            <label className="active-toggle">
-                              <input
-                                type="checkbox"
-                                checked={!!c.active}
-                                onChange={() => toggleActive(c)}
-                              />
-                              <span>Active</span>
-                            </label>
+                            {isFirstForClient ? (
+                              <label className="active-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={!!c.active}
+                                  onChange={() => toggleActive(c)}
+                                />
+                                <span>Active</span>
+                              </label>
+                            ) : null}
                           </td>
                           <td style={{ whiteSpace: 'nowrap' }}>
-                            <button className="row-btn" onClick={() => openEdit(c)}>✏️</button>
-                            <button className="row-btn danger" onClick={() => handleDelete(c)}>🗑️</button>
+                            {isFirstForClient ? (
+                              <>
+                                <button className="row-btn" onClick={() => openEdit(c)}>✏️</button>
+                                <button className="row-btn danger" onClick={() => handleDelete(c)}>🗑️</button>
+                              </>
+                            ) : (dbInvoice
+                              ? <button className="row-btn danger" onClick={() => deleteOneOff(dbInvoice)}>🗑️</button>
+                              : null
+                            )}
                           </td>
                         </tr>
                       )
                     })}
-                    {/* DB rows — each is its own invoice. May include rows for
-                        clients without a default fee (manually added via the
-                        + Add button) or multiple invoices for the same client. */}
-                    {dbInvoices.map(inv => {
+                    {/* Legacy combined DB rows — invoices created before V27
+                        with NULL represents_period. Render as a single
+                        combined row (the old behavior). */}
+                    {legacyInvoices.map(inv => {
                       const c = clientById.get(inv.client_id) || {}
                       const amountNet = Number(inv.amount_net || 0)
                       const vatRate   = Number(inv.vat_rate || 0)
