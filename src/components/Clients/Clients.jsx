@@ -116,11 +116,21 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             .lte('date', monthEnd)
           if (expErr) throw expErr
           if (!cancelled) {
+            // Map shape: { displayName, total } per lowercased key. The
+            // displayName preserves the original casing from the FIRST
+            // expense with that name (so orphan rows can render the name
+            // as the user actually typed it on the expense).
             const m = new Map()
             for (const row of (exp || [])) {
-              const key = (row.client_name || '').trim().toLowerCase()
+              const raw = (row.client_name || '').trim()
+              const key = raw.toLowerCase()
               if (!key) continue
-              m.set(key, (m.get(key) || 0) + Math.abs(Number(row.amount) || 0))
+              const existing = m.get(key)
+              if (existing) {
+                existing.total += Math.abs(Number(row.amount) || 0)
+              } else {
+                m.set(key, { displayName: raw, total: Math.abs(Number(row.amount) || 0) })
+              }
             }
             setReimbursableByClient(m)
           }
@@ -166,12 +176,53 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   // Helper — get the reimbursable total for a client by trying trade_name
   // first, then falling back to legal_name. Returns 0 when no match.
+  // (Map value shape is { displayName, total } — pull .total.)
   const reimbursableFor = (client) => {
     const tradeKey = (client.trade_name || '').trim().toLowerCase()
     const legalKey = (client.legal_name || '').trim().toLowerCase()
-    return reimbursableByClient.get(tradeKey)
-        || reimbursableByClient.get(legalKey)
-        || 0
+    const entry = reimbursableByClient.get(tradeKey)
+               || reimbursableByClient.get(legalKey)
+    return entry?.total || 0
+  }
+
+  // Helper — compute orphan reimbursable expense groups. These are
+  // expense client_names that don't match any client record (case-
+  // insensitive). They'd otherwise be invisible in Block 4 since the
+  // current render iterates over clients. Returns [{ name, total }].
+  const orphanReimbursables = useMemo(() => {
+    const matchedKeys = new Set()
+    for (const c of clients) {
+      if (c.trade_name) matchedKeys.add(c.trade_name.trim().toLowerCase())
+      if (c.legal_name) matchedKeys.add(c.legal_name.trim().toLowerCase())
+    }
+    const out = []
+    for (const [key, val] of reimbursableByClient.entries()) {
+      if (!matchedKeys.has(key)) {
+        out.push({ name: val.displayName, total: val.total })
+      }
+    }
+    return out.sort((a, b) => b.total - a.total)
+  }, [reimbursableByClient, clients])
+
+  // Create a client record from an orphan reimbursable expense.
+  // Used by the "+ Create client" button on orphan rows in Block 4.
+  // Opens the full client edit modal pre-filled with the orphan name
+  // so the user can fill in legal name, monthly fee, VAT, email chain,
+  // notes — the full client profile. After save, the orphan row
+  // disappears (matchedKeys recomputes) and Block 4 picks up the
+  // reimbursable amount under the new client's real Block 4 row.
+  const createClientFromOrphan = (rawName) => {
+    if (!rawName?.trim()) return
+    const trimmed = rawName.trim()
+    setForm({
+      ...BLANK_FORM,
+      trade_name: trimmed,
+      legal_name: trimmed,  // default — user typically edits to the full legal entity name
+      active:     true,
+      notes:      `Auto-created from orphan reimbursable expense(s) on ${new Date().toISOString().slice(0, 10)}.`,
+    })
+    setSaveError(null)
+    setEditing({ mode: 'add', client: null })
   }
 
   // ===================================================================
@@ -684,6 +735,28 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       setSaveError('VAT rate must be a decimal between 0 and 1 (e.g. 0.19 for 19%)'); return
     }
 
+    // Duplicate-project guard. trade_name is unique per company
+    // (case-insensitive) — enforced by V22's partial unique index but
+    // we check in the app first so the user gets a friendly message
+    // instead of a raw DB constraint error. legal_name is allowed to
+    // repeat (e.g. one legal entity with multiple project aliases).
+    const tradeName = form.trade_name?.trim() || null
+    if (tradeName) {
+      const existingDup = clients.find(c =>
+        c.trade_name &&
+        c.trade_name.trim().toLowerCase() === tradeName.toLowerCase() &&
+        (editing.mode === 'add' || c.id !== editing.client.id)
+      )
+      if (existingDup) {
+        setSaveError(
+          `A project named "${existingDup.trade_name}" already exists for ${selectedCompany}`
+          + (existingDup.active ? '.' : ' (currently inactive — scroll to the Inactive section at the bottom).')
+          + ' Project names must be unique per company.'
+        )
+        return
+      }
+    }
+
     const row = {
       company_id:      companyId,
       legal_name:      form.legal_name.trim(),
@@ -722,7 +795,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       }
       closeModal()
     } catch (err) {
-      setSaveError(err.message || 'Save failed')
+      // Friendlier error if the DB's unique constraint fires (V22) —
+      // happens if a concurrent insert sneaks in or if local state was
+      // stale. The PostgREST error code for unique violation is 23505.
+      const msg = err.message || ''
+      if (err.code === '23505' || /unique|duplicate/i.test(msg)) {
+        setSaveError(
+          `A project with this name already exists for ${selectedCompany}.\n`
+          + 'Project names must be unique per company. Refresh the page and check the Inactive section at the bottom.'
+        )
+      } else {
+        setSaveError(msg || 'Save failed')
+      }
     } finally {
       setSaving(false)
     }
@@ -1383,6 +1467,55 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     </button>
                   </div>
                 </div>
+                {/* Orphan reimbursable expenses — client_name on the expense
+                    doesn't match any client record. Surfaces them so the
+                    money never goes invisible. One-click "+ Create client"
+                    fixes each orphan. */}
+                {orphanReimbursables.length > 0 && (
+                  <div style={{
+                    background: '#fef3c7',
+                    border: '1px solid #fcd34d',
+                    borderRadius: 4,
+                    padding: '10px 12px',
+                    marginBottom: 10,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#92400e', marginBottom: 6 }}>
+                      ⚠️ {orphanReimbursables.length} unmatched reimbursable expense group{orphanReimbursables.length === 1 ? '' : 's'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#78350f', marginBottom: 8 }}>
+                      These expense rows have a client name that doesn't match any client record.
+                      Click <strong>+ Create client</strong> to add the client and link these expenses to it.
+                    </div>
+                    <table style={{ width: '100%', fontSize: 13 }}>
+                      <tbody>
+                        {orphanReimbursables.map(o => (
+                          <tr key={o.name} style={{ borderTop: '1px solid #fcd34d' }}>
+                            <td style={{ padding: '6px 4px', fontWeight: 600 }}>{o.name}</td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace', color: '#7c2d12' }}>
+                              {formatEuro(o.total)}
+                            </td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right', width: 200 }}>
+                              <button
+                                onClick={() => createClientFromOrphan(o.name)}
+                                style={{
+                                  padding: '4px 10px',
+                                  background: '#fff',
+                                  color: '#92400e',
+                                  border: '1px solid #f59e0b',
+                                  borderRadius: 4,
+                                  cursor: 'pointer',
+                                  fontSize: 12,
+                                }}
+                              >
+                                + Create client "{o.name}"
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
                 {totalRows > 0 && (
                   <div style={{ overflowX: 'auto' }}>
                   <table className="clients-table">

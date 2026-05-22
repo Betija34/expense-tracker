@@ -11,6 +11,7 @@ import {
   buildMainRef,
   uuid,
 } from '../../lib/refUtils'
+import { canonicalizeClientName } from '../../lib/clientNameUtils'
 import '../BankParser/BankParser.css'
 
 /**
@@ -784,9 +785,23 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
         }
       }
 
-      const resolvedClient = form.is_reimbursable
-        ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
-        : null
+      // Resolve client name. When user picked "Other" + typed a custom
+      // name, run through canonicalizeClientName which either matches
+      // an existing client (canonical spelling) or offers to create a
+      // new client record. Keeps client_name canonical across the system
+      // so invoicing matches up later. (See V22 / clientNameUtils.js.)
+      let resolvedClient = null
+      if (form.is_reimbursable) {
+        if (form.client_name === 'Other') {
+          resolvedClient = await canonicalizeClientName(supabase, {
+            companyId,
+            companyName: selectedCompany,
+            rawName:     form.custom_client_name?.trim(),
+          })
+        } else {
+          resolvedClient = form.client_name
+        }
+      }
 
       const expenseRow = {
         company_id:         companyId,

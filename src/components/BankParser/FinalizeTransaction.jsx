@@ -774,6 +774,81 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     return insertedMirror.id
   }
 
+  // -------------------------------------------------------------------
+  // Canonicalize client name — keeps naming consistent across the system
+  // -------------------------------------------------------------------
+  // When the user picks "Other" and types a custom client name, this
+  // helper:
+  //   1. Looks up an existing client by case-insensitive trade_name match
+  //   2. If found → returns the canonical spelling from the clients table
+  //   3. If not found → confirm prompt to create a new client. Yes inserts
+  //      a minimal client record (legal_name = trade_name, active = true,
+  //      0 fees, no email); the user can fill in details later in the
+  //      Client Invoicing tab.
+  //   4. If the user declines to create → returns the typed name as raw
+  //      text (existing behavior). Invoicing won't auto-link to it.
+  //   5. Returns null only when the user explicitly cancels.
+  //
+  // Why: prevents the "Blue Lagoon" vs "blue lagoon" vs "BLUE LAGOON"
+  // sprawl across expenses + invoices. Same idea as the V22 unique index
+  // on the Clients tab — canonical names everywhere.
+  const canonicalizeClientName = async (rawName) => {
+    if (!rawName?.trim()) return rawName
+    const trimmed = rawName.trim()
+    try {
+      // Exact case-insensitive match against existing clients
+      const { data: matches, error: matchErr } = await supabase
+        .from('clients')
+        .select('id, trade_name, legal_name')
+        .eq('company_id', companyId)
+        .ilike('trade_name', trimmed)
+      if (matchErr) throw matchErr
+      if (matches && matches.length > 0) {
+        return matches[0].trade_name
+      }
+      // No match — confirm whether to create the client
+      const ok = window.confirm(
+        `No client named "${trimmed}" exists in your ${companyName} client list.\n\n`
+        + `Create one now?\n`
+        + `  • OK — adds "${trimmed}" to the client list with minimal info. `
+        + `You can edit the legal name, monthly fee, email chain, etc. later in the Client Invoicing tab. `
+        + `Invoices issued to this client will then link up automatically.\n`
+        + `  • Cancel — save the name as free text only for now. No client record is created. `
+        + `(You can add the client later from the Client Invoicing tab.)`
+      )
+      if (!ok) return trimmed  // free-text save
+      const { data: newClient, error: insErr } = await supabase
+        .from('clients')
+        .insert([{
+          company_id:   companyId,
+          legal_name:   trimmed,   // default same as trade_name; user can edit later
+          trade_name:   trimmed,
+          active:       true,
+          notes:        `Auto-created from bank-tx finalization on ${new Date().toISOString().slice(0, 10)}.`,
+        }])
+        .select('trade_name')
+        .single()
+      if (insErr) {
+        // V22's unique index might fire if there's a race condition. Re-fetch
+        // and use whatever's there.
+        if (insErr.code === '23505') {
+          const { data: re } = await supabase
+            .from('clients').select('trade_name')
+            .eq('company_id', companyId).ilike('trade_name', trimmed)
+            .maybeSingle()
+          return re?.trade_name || trimmed
+        }
+        alert(`Could not create client: ${insErr.message}\n\nSaving the name as free text instead.`)
+        return trimmed
+      }
+      return newClient.trade_name
+    } catch (err) {
+      // Lookup failed — fall back to typed name without prompting.
+      console.warn('canonicalizeClientName lookup error:', err)
+      return trimmed
+    }
+  }
+
   const handleSave = async () => {
     setSaveError(null)
 
@@ -933,10 +1008,18 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         }
       }
 
-      // Resolve client name (use custom if "Other" was picked)
-      const resolvedClient = form.is_reimbursable
-        ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
-        : null
+      // Resolve client name. When the user picked "Other" + typed a
+      // custom name, run it through the canonicalizer: existing client →
+      // canonical spelling; no match → confirm-to-create flow → either
+      // canonical new name or the raw typed text.
+      let resolvedClient = null
+      if (form.is_reimbursable) {
+        if (form.client_name === 'Other') {
+          resolvedClient = await canonicalizeClientName(form.custom_client_name?.trim())
+        } else {
+          resolvedClient = form.client_name
+        }
+      }
 
       // ----- Build expense row -----
       const expenseRow = {
