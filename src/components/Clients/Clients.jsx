@@ -1241,6 +1241,59 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return trimmed
   }
 
+  // Extract the trailing numeric portion of an invoice_number for
+  // sorting (e.g., "2026-02-003" → 3, "2026-001" → 1). Returns a very
+  // large sentinel when the value is missing/unparseable so unsorted
+  // rows always go LAST in an ascending sort.
+  const extractInvoiceSuffixNum = (invNum) => {
+    if (!invNum) return Number.MAX_SAFE_INTEGER
+    const m = String(invNum).trim().match(/(\d+)\s*$/)
+    return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER
+  }
+
+  // Sort comparator: rows with BOTH invoice_number AND date_issued set
+  // ("issued") come first, ordered by numeric suffix ascending. Rows
+  // missing either field ("pending") fall through to a stable name-based
+  // order so partial-entry doesn't shuffle them. The split-into-two-
+  // groups behavior is what prevents the "jump on Inv# entry alone"
+  // the user noticed — a row only moves to the sorted section once it
+  // has both fields filled.
+  const compareIssuedFirst = (a, b) => {
+    const aIssued = !!(a.invoice_number && a.date_issued)
+    const bIssued = !!(b.invoice_number && b.date_issued)
+    if (aIssued && !bIssued) return -1
+    if (!aIssued && bIssued) return 1
+    if (aIssued && bIssued) {
+      return extractInvoiceSuffixNum(a.invoice_number) - extractInvoiceSuffixNum(b.invoice_number)
+    }
+    // Both pending — keep insertion-time order via created_at as tiebreaker.
+    return (a.created_at || '').localeCompare(b.created_at || '')
+  }
+
+  // For Blocks 1/3/4 — merges placeholders + pending DB rows into one
+  // "in-progress" section sorted by client name, so transitioning a
+  // placeholder to a saved (but not-yet-issued) DB row doesn't jump
+  // the row out of its alphabetical position. Returns three groups:
+  //   { issued, pending, outbound } (each an array of items already
+  //   tagged with .kind for the renderer to switch on).
+  const groupBlockRows = ({ placeholderClients, dbInvoices, outboundClients = [], clientById, type = 'variable_expense' }) => {
+    const nameOf = (client) => (client?.trade_name || client?.legal_name || '').toLowerCase()
+    const issued = dbInvoices
+      .filter(i => i.invoice_number && i.date_issued)
+      .sort(compareIssuedFirst)
+      .map(inv => ({ kind: 'db', inv, client: clientById.get(inv.client_id) || {} }))
+    const pendingDb = dbInvoices
+      .filter(i => !(i.invoice_number && i.date_issued))
+      .map(inv => ({ kind: 'db', inv, client: clientById.get(inv.client_id) || {} }))
+    const pendingPh = placeholderClients
+      .map(c => ({ kind: 'placeholder', client: c }))
+    const pending = [...pendingDb, ...pendingPh].sort(
+      (a, b) => nameOf(a.client).localeCompare(nameOf(b.client))
+    )
+    const outbound = outboundClients.map(o => ({ kind: 'outbound', ...o }))
+    return { issued, pending, outbound }
+  }
+
   const validateInvoiceNumber = (value, invoiceType) => {
     if (!value || !String(value).trim()) return { ok: true }
     const trimmed = String(value).trim()
@@ -1823,8 +1876,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               underlying records.
               ================================================================= */}
           {(() => {
-            // All monthly_fee invoices for the selected period
-            const dbInvoices = invoices.filter(i => i.invoice_type === 'monthly_fee')
+            // All monthly_fee invoices for the selected period — sorted
+            // so issued invoices (both # + date set) appear first by
+            // numeric suffix; pending DB rows after.
+            const dbInvoices = invoices
+              .filter(i => i.invoice_type === 'monthly_fee')
+              .slice()
+              .sort(compareIssuedFirst)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
             // Effective placeholder candidates: clients whose effective
             // monthly fee for this period (natural + inbound deferrals)
@@ -2152,7 +2210,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             const rows = invoices
               .filter(i => i.invoice_type === 'one_off_service' || i.invoice_type === 'one_off_reimbursement')
-              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+              .sort(compareIssuedFirst)
             const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
             const clientById = new Map(clients.map(c => [c.id, c]))
             return (
@@ -2249,8 +2307,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               in a single month.
               ================================================================= */}
           {(() => {
-            // All DB invoices of this type for the selected month
-            const dbInvoices = invoices.filter(i => i.invoice_type === 'fixed_expense')
+            // All DB invoices of this type for the selected month —
+            // sorted so issued invoices appear first by numeric suffix.
+            const dbInvoices = invoices
+              .filter(i => i.invoice_type === 'fixed_expense')
+              .slice()
+              .sort(compareIssuedFirst)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
             // Effective placeholder candidates — clients whose effective
             // fixed-expense amount (natural + inbound deferrals) > 0
@@ -2533,8 +2595,14 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               can track which expenses have already been invoiced.
               ================================================================= */}
           {(() => {
-            // All DB invoices of this type for the selected month
-            const dbInvoices = invoices.filter(i => i.invoice_type === 'variable_expense')
+            // All DB invoices of this type for the selected month —
+            // sorted so issued invoices (both # + date) appear first by
+            // numeric suffix, pending DB rows after. Prevents the row
+            // from jumping to its sorted position on Inv# entry alone.
+            const dbInvoices = invoices
+              .filter(i => i.invoice_type === 'variable_expense')
+              .slice()
+              .sort(compareIssuedFirst)
             // Effective candidates: active clients whose EFFECTIVE amount
             // (natural + inbound deferrals - 0 if deferred away) is > 0,
             // AND who don't already have a saved invoice row this month.
@@ -2924,7 +2992,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             const rows = invoices
               .filter(i => i.invoice_type === 'credit_note')
-              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+              .sort(compareIssuedFirst)
             const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
             const clientById = new Map(clients.map(c => [c.id, c]))
             return (
@@ -3019,7 +3087,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             const rows = invoices
               .filter(i => i.invoice_type === 'pro_forma')
-              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+              .sort(compareIssuedFirst)
             const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
             const clientById = new Map(clients.map(c => [c.id, c]))
             return (
