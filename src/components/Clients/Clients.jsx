@@ -269,30 +269,34 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return entry?.total || 0
   }
 
-  // Deferral lookups — both for the current top-bar (selectedYear/Month).
+  // Deferral lookups — type-aware.
   // outbound: is this client's CURRENT month deferred away to a later
-  //   month? Returns the deferral row, or null.
-  // inbound:  what client-source-months DEFER INTO the current month?
-  //   Returns an array of { source_year, source_month, amount, deferral_id }
+  //   month for the given invoice type? Returns the deferral row, or null.
+  // inbound:  which client-source-months defer INTO the current month
+  //   for this type? Array of { source_year, source_month, amount, deferral_id }
   //   sorted chronologically.
-  const outboundDeferralFor = (client) =>
+  // Default invoiceType is 'variable_expense' for backward compatibility
+  // with the original V24-era call sites.
+  const outboundDeferralFor = (client, invoiceType = 'variable_expense') =>
     deferrals.find(d =>
-      d.client_id    === client.id &&
-      d.source_year  === selectedYear &&
-      d.source_month === selectedMonth
+      d.client_id     === client.id &&
+      d.source_year   === selectedYear &&
+      d.source_month  === selectedMonth &&
+      (d.invoice_type || 'variable_expense') === invoiceType
     ) || null
 
-  const inboundDeferralsFor = (client) =>
+  const inboundDeferralsFor = (client, invoiceType = 'variable_expense') =>
     deferrals
       .filter(d =>
         d.client_id    === client.id &&
         d.target_year  === selectedYear &&
-        d.target_month === selectedMonth
+        d.target_month === selectedMonth &&
+        (d.invoice_type || 'variable_expense') === invoiceType
       )
       .map(d => ({
         source_year:  d.source_year,
         source_month: d.source_month,
-        amount:       reimbursableForPeriod(client, d.source_year, d.source_month),
+        amount:       naturalForPeriod(client, d.source_year, d.source_month, invoiceType),
         deferral_id:  d.id,
       }))
       .sort((a, b) =>
@@ -300,17 +304,36 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         (a.source_month - b.source_month)
       )
 
-  // Effective amount to bill THIS month for the client. Natural top-bar
-  // amount is excluded if this month is deferred away — but ANY inbound
-  // deferrals from earlier months still count, since they belong here.
-  // (User explicitly supports the case: "this month I bill Jan + Feb
-  // that were deferred in, AND I defer this month's own expenses to a
-  // later month.")
-  const effectiveReimbursableFor = (client) => {
-    const naturalCounted = outboundDeferralFor(client) ? 0 : reimbursableFor(client)
-    const inbound = inboundDeferralsFor(client).reduce((s, d) => s + d.amount, 0)
+  // Generic "natural amount this client expects to be billed for this
+  // type in this period". Variable expenses come from the expenses
+  // table; monthly fee is a static value on the client record (we treat
+  // it as the same value across all periods since no historical rate
+  // tracking exists).
+  const naturalForPeriod = (client, year, month, invoiceType) => {
+    if (invoiceType === 'monthly_fee') {
+      // Monthly fee is the client's current monthly_fee_net. We use
+      // current rate even for historical periods — keep it simple.
+      return Number(client.monthly_fee_net || 0)
+    }
+    // variable_expense (default)
+    return reimbursableForPeriod(client, year, month)
+  }
+
+  // Effective amount to bill THIS month for the client (type-aware).
+  // Natural top-bar amount is excluded if this month is deferred away
+  // — but ANY inbound deferrals from earlier months still count.
+  // (User-supported case: "this month I bill Jan + Feb that were
+  // deferred in, AND I defer this month's own to a later month.")
+  const effectiveAmountFor = (client, invoiceType = 'variable_expense') => {
+    const ownNatural = invoiceType === 'monthly_fee'
+      ? Number(client.monthly_fee_net || 0)
+      : reimbursableFor(client)
+    const naturalCounted = outboundDeferralFor(client, invoiceType) ? 0 : ownNatural
+    const inbound = inboundDeferralsFor(client, invoiceType).reduce((s, d) => s + d.amount, 0)
     return naturalCounted + inbound
   }
+  // Backward-compat alias used by existing variable_expense call sites.
+  const effectiveReimbursableFor = (client) => effectiveAmountFor(client, 'variable_expense')
 
   // Render the per-month breakdown cell content. Used in BOTH placeholder
   // rows and saved DB rows of Block 4 so the user always sees the
@@ -318,15 +341,21 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // own). Takes an explicit `savedAmount` so DB rows can flag a
   // mismatch if the saved invoice total doesn't match the current
   // breakdown sum (e.g. deferrals changed after the invoice was saved).
-  const renderBreakdownCell = (client, savedAmount = null, fallbackText = null) => {
-    const bk = reimbursableBreakdown(client)
-    const periodLbl = selectedMonth && selectedYear
-      ? `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
-      : 'Reimbursable expenses'
+  const renderBreakdownCell = (client, savedAmount = null, fallbackText = null, invoiceType = 'variable_expense') => {
+    const bk = periodBreakdown(client, invoiceType)
+    const periodLbl = (() => {
+      if (!selectedMonth || !selectedYear) return invoiceType === 'monthly_fee' ? 'Monthly fee' : 'Reimbursable expenses'
+      const m = monthName(selectedMonth)
+      return invoiceType === 'monthly_fee'
+        ? `${m} ${selectedYear} fee`
+        : `${m} ${selectedYear} expenses to be reimbursed`
+    })()
     const titleText = fallbackText || periodLbl
     const hasInbound  = bk.items.some(i => i.isDeferred)
     const hasOutbound = !!bk.outbound
-    const natural     = reimbursableFor(client)
+    const natural     = invoiceType === 'monthly_fee'
+      ? Number(client.monthly_fee_net || 0)
+      : reimbursableFor(client)
     // Standalone "this month's natural" info chip — surfaced on saved DB
     // rows whenever the saved invoice amount doesn't match this month's
     // natural reimbursables AND we're not already showing it as outbound.
@@ -405,18 +434,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     )
   }
 
-  // Per-month breakdown for the description cell. Returns the list of
-  // contributing months (deferred-in plus the current month if its
-  // natural amount counts) and the total. Used to render an itemised
-  // line-by-line view like:
+  // Per-month breakdown for the description cell — type-aware. Used to
+  // render an itemised line-by-line view like:
   //   Jan 2026 (deferred): €500
   //   Feb 2026 (deferred): €700
   //   Mar 2026 (this month): €420
   //   Total:                 €1,620
-  const reimbursableBreakdown = (client) => {
-    const outbound = outboundDeferralFor(client)
-    const inbound  = inboundDeferralsFor(client)
-    const natural  = reimbursableFor(client)
+  const periodBreakdown = (client, invoiceType = 'variable_expense') => {
+    const outbound = outboundDeferralFor(client, invoiceType)
+    const inbound  = inboundDeferralsFor(client, invoiceType)
+    const natural  = invoiceType === 'monthly_fee'
+      ? Number(client.monthly_fee_net || 0)
+      : reimbursableFor(client)
     const items = []
     for (const d of inbound) {
       if (d.amount > 0) {
@@ -439,47 +468,58 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     const total = items.reduce((s, i) => s + i.amount, 0)
     return { items, total, outbound, natural }
   }
+  // Backward-compat alias for existing variable_expense call sites.
+  const reimbursableBreakdown = (client) => periodBreakdown(client, 'variable_expense')
 
-  // Auto-build description string for a combined invoice that includes
-  // deferred-in months. Format (user's preference):
-  //   "Jan (€500) + Feb (€700) + Mar (€420) reimbursable expenses"
-  // Months listed in chronological order; the current top-bar month
-  // is included if its natural amount > 0.
-  const buildDeferralDescription = (client) => {
+  // Auto-build description for a combined invoice (type-aware). Format:
+  //   variable_expense → "Jan (€500) + Feb (€700) + Mar (€420) reimbursable expenses"
+  //   monthly_fee      → "Jan (€10,000) + Feb (€10,000) + Mar (€10,000) fees"
+  // Months listed in chronological order; the current top-bar month is
+  // included if its natural amount > 0 AND it isn't deferred away.
+  const buildBreakdownDescription = (client, invoiceType = 'variable_expense') => {
     const parts = []
-    for (const d of inboundDeferralsFor(client)) {
+    for (const d of inboundDeferralsFor(client, invoiceType)) {
       if (d.amount > 0) {
         parts.push(`${monthName(d.source_month).slice(0, 3)} (${formatEuro(d.amount)})`)
       }
     }
-    const natural = reimbursableFor(client)
-    if (natural > 0) {
-      parts.push(`${monthName(selectedMonth).slice(0, 3)} (${formatEuro(natural)})`)
+    const ownNatural = invoiceType === 'monthly_fee'
+      ? Number(client.monthly_fee_net || 0)
+      : reimbursableFor(client)
+    const outbound = outboundDeferralFor(client, invoiceType)
+    if (!outbound && ownNatural > 0) {
+      parts.push(`${monthName(selectedMonth).slice(0, 3)} (${formatEuro(ownNatural)})`)
     }
     if (parts.length === 0) return null
-    return `${parts.join(' + ')} reimbursable expenses`
+    const suffix = invoiceType === 'monthly_fee' ? 'fees' : 'reimbursable expenses'
+    return `${parts.join(' + ')} ${suffix}`
   }
+  // Backward-compat alias used by the legacy variable_expense computeInvoiceDefaults.
+  const buildDeferralDescription = (client) => buildBreakdownDescription(client, 'variable_expense')
 
   // Is a target-month invoice already issued (PF# + Date set)? Used
   // to lock the deferrals feeding into it so they can't be silently
-  // re-routed after the invoice is out the door.
-  const isTargetInvoiceIssued = (client) => {
+  // re-routed after the invoice is out the door. Type-aware: a
+  // monthly_fee deferral's lock check looks at monthly_fee invoices;
+  // variable_expense looks at variable_expense invoices.
+  const isTargetInvoiceIssued = (client, invoiceType = 'variable_expense') => {
     const inv = invoices.find(i =>
-      i.client_id === client.id && i.invoice_type === 'variable_expense'
+      i.client_id === client.id && i.invoice_type === invoiceType
     )
     return !!(inv && inv.invoice_number && inv.date_issued)
   }
 
   // Defer-target picker modal handlers. Source month = current top-bar.
   // User picks (target_year, target_month); we INSERT one row into
-  // expense_deferrals and refresh local state.
-  const openDeferModal = (client) => {
-    // Default the target picker to the NEXT month after the source —
-    // most common case, user can change it.
+  // expense_deferrals tagged with the right invoice_type and refresh
+  // local state. Type defaults to 'variable_expense' for back-compat
+  // (Block 4 callers), and Block 1 passes 'monthly_fee' explicitly.
+  const openDeferModal = (client, invoiceType = 'variable_expense') => {
     const nextMonth = selectedMonth === 12 ? 1            : selectedMonth + 1
     const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
     setDeferModal({
       client,
+      invoiceType,
       sourceYear:  selectedYear,
       sourceMonth: selectedMonth,
       targetYear:  nextYear,
@@ -492,8 +532,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   const saveDeferral = async () => {
     if (!deferModal) return
-    const { client, sourceYear, sourceMonth, targetYear, targetMonth } = deferModal
-    // Sanity: target must be strictly later than source.
+    const { client, invoiceType, sourceYear, sourceMonth, targetYear, targetMonth } = deferModal
     if (targetYear < sourceYear ||
         (targetYear === sourceYear && targetMonth <= sourceMonth)) {
       setDeferModal(d => d ? { ...d, error: 'Target month must be later than the source month.' } : d)
@@ -506,6 +545,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         .insert([{
           company_id:   companyId,
           client_id:    client.id,
+          invoice_type: invoiceType,
           source_year:  sourceYear,
           source_month: sourceMonth,
           target_year:  targetYear,
@@ -516,9 +556,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       setDeferrals(prev => [...prev, inserted])
       setDeferModal(null)
     } catch (err) {
-      // 23505 = unique violation (deferral for this source already exists)
       const friendly = err.code === '23505'
-        ? 'This client-month already has a deferral. Remove it first or pick a different source month.'
+        ? 'This client-month already has a deferral of this type. Remove it first or pick a different source month.'
         : err.message
       setDeferModal(d => d ? { ...d, busy: false, error: friendly } : d)
     }
@@ -597,9 +636,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     let vat_rate   = 0
     let description = ''
     if (invoiceType === 'monthly_fee') {
-      amount_net  = Number(client.monthly_fee_net || 0)
+      // Effective amount = natural monthly fee + any inbound deferrals.
+      // (Equivalent to a bare monthly_fee_net when no deferrals apply.)
+      amount_net  = effectiveAmountFor(client, 'monthly_fee')
       vat_rate    = Number(client.vat_rate || 0)
-      description = `${monthName(selectedMonth)} ${selectedYear} fee`
+      // Auto-build "Jan + Feb + Mar 2026 fees" when deferrals contribute.
+      description = buildBreakdownDescription(client, 'monthly_fee')
+                 || `${monthName(selectedMonth)} ${selectedYear} fee`
     } else if (invoiceType === 'fixed_expense') {
       amount_net  = Number(client.monthly_fixed_expense_net || 0)
       vat_rate    = 0  // reimbursements never carry VAT (pass-through cost)
@@ -1768,16 +1811,37 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           {(() => {
             // All monthly_fee invoices for the selected period
             const dbInvoices = invoices.filter(i => i.invoice_type === 'monthly_fee')
-            const clientsWithDefault = clients.filter(c => c.active && Number(c.monthly_fee_net || 0) > 0)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
-            // Placeholder rows: clients with default + no DB invoice yet
-            const placeholderClients = clientsWithDefault.filter(c => !clientIdsWithDbRow.has(c.id))
+            // Effective placeholder candidates: clients whose effective
+            // monthly fee for this period (natural + inbound deferrals)
+            // is > 0 AND who don't already have a saved invoice. A client
+            // deferred AWAY from this period gets effective = 0 and shows
+            // up in the outbound list below instead.
+            const placeholderClients = clients
+              .filter(c =>
+                c.active &&
+                effectiveAmountFor(c, 'monthly_fee') > 0 &&
+                !clientIdsWithDbRow.has(c.id)
+              )
+            // Outbound-only: client's monthly fee deferred away AND no
+            // inbound + no DB row, so the only thing to surface in this
+            // month is the "deferred to X" muted note.
+            const outboundClients = clients
+              .filter(c =>
+                c.active &&
+                outboundDeferralFor(c, 'monthly_fee') &&
+                effectiveAmountFor(c, 'monthly_fee') === 0 &&
+                !clientIdsWithDbRow.has(c.id)
+              )
+              .map(c => ({ c, deferral: outboundDeferralFor(c, 'monthly_fee') }))
             const clientById = new Map(clients.map(c => [c.id, c]))
             const totalForBlock =
               dbInvoices.reduce((s, i) => s + Number(i.amount_total || 0), 0)
-              + placeholderClients.reduce((s, c) =>
-                  s + Number(c.monthly_fee_net || 0) * (1 + Number(c.vat_rate || 0)), 0)
-            const totalRows = placeholderClients.length + dbInvoices.length
+              + placeholderClients.reduce((s, c) => {
+                  const eff = effectiveAmountFor(c, 'monthly_fee')
+                  return s + eff * (1 + Number(c.vat_rate || 0))
+                }, 0)
+            const totalRows = placeholderClients.length + dbInvoices.length + outboundClients.length
             return (
               <section className="clients-block clients-block-monthly">
                 <div className="clients-block-header">
@@ -1812,34 +1876,36 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                       <th style={{ minWidth: 150 }}>Payment Date</th>
                       <th title="Statement of Account updated after payment received">SOA ✓</th>
                       <th>Status</th>
+                      <th title="Defer this month's fee to a later month, or undo a deferral">Defer</th>
                       <th>Active</th>
                       <th>Edit / Delete</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {/* Placeholder rows first — one per active client with a default
-                        monthly fee who hasn't yet had an invoice created for this
-                        period. Has client Edit/Delete + Active toggle. */}
+                    {/* Placeholder rows first — one per active client whose
+                        effective monthly-fee amount > 0 this period. The
+                        effective amount honors any inbound deferrals from
+                        earlier months that target this period. */}
                     {placeholderClients.map(c => {
-                      const amountNet = Number(c.monthly_fee_net || 0)
-                      const vatRate   = Number(c.vat_rate || 0)
-                      const total     = amountNet * (1 + vatRate)
-                      const periodLabel = selectedMonth && selectedYear
-                        ? `${monthName(selectedMonth)} ${selectedYear} fee`
-                        : 'Monthly fee'
+                      const effectiveNet = effectiveAmountFor(c, 'monthly_fee')
+                      const vatRate      = Number(c.vat_rate || 0)
+                      const total        = effectiveNet * (1 + vatRate)
+                      const bk           = periodBreakdown(c, 'monthly_fee')
                       return (
                         <tr key={`placeholder-${c.id}`}>
                           {renderProjectCell(c)}
-                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{periodLabel}</td>
+                          <td>
+                            {renderBreakdownCell(c, null, null, 'monthly_fee')}
+                          </td>
                           <td style={{ textAlign: 'right' }}>
                             <input
                               type="number" step="0.01" min="0"
                               className="lifecycle-input lifecycle-input-mono"
                               style={{ textAlign: 'right', width: 90 }}
-                              defaultValue={amountNet}
+                              defaultValue={effectiveNet}
                               onBlur={(e) => {
                                 const next = parseFloat(e.target.value)
-                                if (!Number.isNaN(next) && next !== amountNet) {
+                                if (!Number.isNaN(next) && next !== effectiveNet) {
                                   upsertInvoice(c, 'monthly_fee', { amount_net: next, vat_rate: vatRate })
                                 }
                               }}
@@ -1854,6 +1920,36 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             {formatEuro(total)}
                           </td>
                           {renderLifecycleCells(c, 'monthly_fee')}
+                          {/* Defer column — context-aware button. */}
+                          <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                            {bk.outbound ? (
+                              <button
+                                className="row-btn"
+                                disabled={isTargetInvoiceIssued(c, 'monthly_fee')}
+                                title={isTargetInvoiceIssued(c, 'monthly_fee')
+                                  ? `Locked — ${monthName(bk.outbound.target_month)} ${bk.outbound.target_year} invoice already issued.`
+                                  : `Cancel deferral`}
+                                style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                onClick={() => {
+                                  if (isTargetInvoiceIssued(c, 'monthly_fee')) return
+                                  if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    removeDeferral(bk.outbound.deferral_id || bk.outbound.id)
+                                  }
+                                }}
+                              >
+                                ↩ Undo
+                              </button>
+                            ) : Number(c.monthly_fee_net || 0) > 0 ? (
+                              <button
+                                className="row-btn"
+                                style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                title={`Postpone ${monthName(selectedMonth)} ${selectedYear}'s fee to a later month`}
+                                onClick={() => openDeferModal(c, 'monthly_fee')}
+                              >
+                                → Defer
+                              </button>
+                            ) : null}
+                          </td>
                           <td>
                             <label className="active-toggle">
                               <input
@@ -1879,10 +1975,23 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                       const amountNet = Number(inv.amount_net || 0)
                       const vatRate   = Number(inv.vat_rate || 0)
                       const total     = Number(inv.amount_total || amountNet * (1 + vatRate))
+                      const outbound  = outboundDeferralFor(c, 'monthly_fee')
                       return (
                         <tr key={inv.id}>
                           {renderProjectCell(c)}
-                          <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || '—'}</td>
+                          <td>
+                            {renderBreakdownCell(c, inv.amount_net, inv.description, 'monthly_fee')}
+                            {outbound && !periodBreakdown(c, 'monthly_fee').outbound && (
+                              <div style={{
+                                display: 'inline-block', marginTop: 4,
+                                padding: '1px 8px',
+                                background: '#dbeafe', color: '#1e40af',
+                                borderRadius: 10, fontSize: 11, fontWeight: 600,
+                              }}>
+                                → Also deferred to {monthName(outbound.target_month)} {outbound.target_year}
+                              </div>
+                            )}
+                          </td>
                           <td style={{ textAlign: 'right' }}>
                             <input
                               type="number" step="0.01" min="0"
@@ -1913,10 +2022,100 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             {formatEuro(total)}
                           </td>
                           {renderLifecycleCellsForInvoice(inv)}
+                          {/* Defer column — Undo if outbound exists, else Defer if natural fee > 0 */}
+                          <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                            {outbound ? (
+                              <button
+                                className="row-btn"
+                                disabled={isTargetInvoiceIssued(c, 'monthly_fee')}
+                                title={isTargetInvoiceIssued(c, 'monthly_fee')
+                                  ? `Locked — target invoice already issued.`
+                                  : `Cancel deferral`}
+                                style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                onClick={() => {
+                                  if (isTargetInvoiceIssued(c, 'monthly_fee')) return
+                                  if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    removeDeferral(outbound.id)
+                                  }
+                                }}
+                              >
+                                ↩ Undo
+                              </button>
+                            ) : Number(c.monthly_fee_net || 0) > 0 ? (
+                              <button
+                                className="row-btn"
+                                style={{ fontSize: 11, padding: '3px 8px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4 }}
+                                title={`Route ${monthName(selectedMonth)} ${selectedYear}'s fee to a later month`}
+                                onClick={() => openDeferModal(c, 'monthly_fee')}
+                              >
+                                → Defer
+                              </button>
+                            ) : null}
+                          </td>
                           <td></td>
                           <td style={{ whiteSpace: 'nowrap' }}>
                             <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
                           </td>
+                        </tr>
+                      )
+                    })}
+                    {/* Outbound-only muted rows — client's monthly fee for
+                        this period was deferred forward AND no inbound, no
+                        DB invoice this month. Just shows the deferred state. */}
+                    {outboundClients.map(({ c, deferral }) => {
+                      const targetLabel = `${monthName(deferral.target_month)} ${deferral.target_year}`
+                      const targetIssued = isTargetInvoiceIssued(c, 'monthly_fee')
+                      return (
+                        <tr key={`outbound-mf-${deferral.id}`} style={{ background: '#f9fafb', color: '#9ca3af' }}>
+                          {renderProjectCell(c)}
+                          <td style={{ fontStyle: 'italic', color: '#9ca3af' }}>
+                            <span style={{ textDecoration: 'line-through' }}>
+                              {monthName(selectedMonth)} {selectedYear} fee
+                            </span>
+                            <div style={{
+                              display: 'inline-block', marginLeft: 8,
+                              padding: '1px 8px',
+                              background: '#dbeafe', color: '#1e40af',
+                              borderRadius: 10, fontSize: 11, fontWeight: 600,
+                              fontStyle: 'normal',
+                            }}>
+                              → Deferred to {targetLabel}
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'right', textDecoration: 'line-through', color: '#9ca3af', fontFamily: 'monospace' }}>
+                            {formatEuro(Number(c.monthly_fee_net || 0))}
+                          </td>
+                          <td></td>
+                          <td></td>
+                          <td colSpan="6" style={{ textAlign: 'center', fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>
+                            Billed in {targetLabel}
+                          </td>
+                          <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                            <button
+                              className="row-btn"
+                              disabled={targetIssued}
+                              title={targetIssued
+                                ? `Locked — ${targetLabel} invoice already issued.`
+                                : `Bring ${monthName(selectedMonth)} ${selectedYear}'s fee back here.`}
+                              style={{
+                                fontSize: 11, padding: '3px 6px',
+                                background: targetIssued ? '#f3f4f6' : '#fff',
+                                color: targetIssued ? '#9ca3af' : '#374151',
+                                border: '1px solid #d1d5db', borderRadius: 4,
+                                cursor: targetIssued ? 'not-allowed' : 'pointer',
+                              }}
+                              onClick={() => {
+                                if (targetIssued) return
+                                if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                  removeDeferral(deferral.id)
+                                }
+                              }}
+                            >
+                              ↩ Undo
+                            </button>
+                          </td>
+                          <td></td>
+                          <td></td>
                         </tr>
                       )
                     })}
