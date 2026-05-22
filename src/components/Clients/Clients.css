@@ -103,6 +103,21 @@
 .lifecycle-input[type="date"] {
   width: 140px;
 }
+/* While the issue-date input is still showing the auto-prefilled 1st
+   of the period (placeholder state), grey it out so the user knows
+   the day still needs to be picked. The moment they interact, the
+   data attribute flips to "false" (via onInput) and the text darkens. */
+.lifecycle-input[type="date"][data-placeholder-date="true"] {
+  color: #9ca3af;
+  font-style: italic;
+}
+.lifecycle-input[type="date"][data-placeholder-date="true"]::-webkit-datetime-edit {
+  color: #9ca3af;
+}
+.lifecycle-input[type="date"][data-placeholder-date="false"] {
+  color: #111827;
+  font-style: normal;
+}
 .lifecycle-input:focus {
   outline: none;
   border-color: #3b82f6;
@@ -110,6 +125,48 @@
 }
 .lifecycle-input-mono {
   font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+/* Invoice number split-input — period prefix as a fixed label, suffix
+   as the editable part. Visually one box (border + radius on wrapper). */
+.invoice-num-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid #d1d5db;
+  border-radius: 3px;
+  background: #fff;
+  overflow: hidden;
+  width: 130px;
+  box-sizing: border-box;
+}
+.invoice-num-wrap:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.invoice-num-prefix {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 12px;
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+  border-right: 1px solid #d1d5db;
+  user-select: none;
+  white-space: nowrap;
+}
+.invoice-num-suffix {
+  flex: 1;
+  min-width: 0;        /* allow input to shrink inside flex */
+  padding: 3px 5px;
+  border: 0;
+  outline: none;
+  font-size: 12px;
+  background: transparent;
+  box-sizing: border-box;
+}
+.invoice-num-suffix:focus {
+  outline: none;
 }
 
 /* Status badges — derived from which lifecycle fields are filled */

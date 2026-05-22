@@ -473,38 +473,64 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         })
     const handleField = (field, value) => patch(field, value)
     const handleCheckbox = (field, checked) => patch(field, checked ? new Date().toISOString() : null)
+    const initialSuffix = extractInvoiceSuffix(invoice.invoice_number || '')
     return (
       <>
         <td>
-          <input type="text" className="lifecycle-input lifecycle-input-mono"
-            placeholder={`${expectedYearMonth}-NNN`} defaultValue={invoice.invoice_number || ''}
-            onBlur={(e) => {
-              const next = e.target.value.trim() || null
-              if (next) {
-                const v = validateInvoiceNumber(next)
-                if (!v.ok) {
-                  alert(v.error)
-                  e.target.value = invoice.invoice_number || ''  // revert
-                  return
+          <div className="invoice-num-wrap">
+            <span className="invoice-num-prefix">{expectedPrefix}</span>
+            <input
+              type="text"
+              className="invoice-num-suffix lifecycle-input-mono"
+              placeholder="001"
+              defaultValue={initialSuffix}
+              onBlur={(e) => {
+                const suffix = e.target.value.trim()
+                let next = null
+                if (suffix) {
+                  next = /^\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]/.test(suffix)
+                    ? suffix
+                    : `${expectedPrefix}${suffix}`
                 }
-              }
-              if (next !== (invoice.invoice_number || null)) handleField('invoice_number', next)
-            }} />
+                if (next) {
+                  const v = validateInvoiceNumber(next)
+                  if (!v.ok) {
+                    alert(v.error)
+                    e.target.value = initialSuffix   // revert
+                    return
+                  }
+                }
+                if (next !== (invoice.invoice_number || null)) handleField('invoice_number', next)
+              }}
+            />
+          </div>
         </td>
         <td>
-          <input type="date" className="lifecycle-input" defaultValue={invoice.date_issued || ''}
+          <input
+            type="date"
+            className="lifecycle-input"
+            min={periodFirstDay}
+            max={periodLastDay}
+            defaultValue={invoice.date_issued || periodFirstDay}
+            data-placeholder-date={invoice.date_issued ? 'false' : 'true'}
             onBlur={(e) => {
               const next = e.target.value || null
+              const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
+              if (wasPlaceholder && next === periodFirstDay && !invoice.date_issued) {
+                return
+              }
               if (next) {
                 const v = validateIssueDate(next)
                 if (!v.ok) {
                   alert(v.error)
-                  e.target.value = invoice.date_issued || ''  // revert
+                  e.target.value = invoice.date_issued || periodFirstDay
                   return
                 }
               }
               if (next !== (invoice.date_issued || null)) handleField('date_issued', next)
-            }} />
+            }}
+            onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
+          />
         </td>
         <td style={{ textAlign: 'center' }}>
           <input type="checkbox" checked={!!invoice.soa_updated_at_issue}
@@ -515,11 +541,30 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             onChange={(e) => handleCheckbox('email_sent_at', e.target.checked)} />
         </td>
         <td>
-          <input type="date" className="lifecycle-input" defaultValue={invoice.date_paid || ''}
-            onBlur={(e) => {
-              const next = e.target.value || null
-              if (next !== (invoice.date_paid || null)) handleField('date_paid', next)
-            }} />
+          {(() => {
+            // Payment date placeholder: anchor on the issue date if set
+            // (payment usually >= issue), otherwise the period's 1st.
+            // Greyed-italic via CSS until the user picks. No min/max here —
+            // payment can fall in a different month from issue.
+            const paidPlaceholder = invoice.date_issued || periodFirstDay
+            return (
+              <input
+                type="date"
+                className="lifecycle-input"
+                defaultValue={invoice.date_paid || paidPlaceholder}
+                data-placeholder-date={invoice.date_paid ? 'false' : 'true'}
+                onBlur={(e) => {
+                  const next = e.target.value || null
+                  const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
+                  if (wasPlaceholder && next === paidPlaceholder && !invoice.date_paid) {
+                    return  // user tabbed through without picking
+                  }
+                  if (next !== (invoice.date_paid || null)) handleField('date_paid', next)
+                }}
+                onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
+              />
+            )
+          })()}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input type="checkbox" checked={!!invoice.soa_updated_at_payment}
@@ -542,6 +587,36 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // viewing April would create a filing mismatch.
 
   const expectedYearMonth = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+
+  // --- Period helpers for the prefix UI + date range ---
+  // For the locked invoice-number prefix and the date input's min/max range.
+  // expectedPrefix renders the literal text "YYYY-MM-" the user sees.
+  // periodFirstDay / periodLastDay constrain the date picker so only days
+  // within the top-bar month are pickable.
+  const expectedPrefix   = `${expectedYearMonth}-`
+  const periodFirstDay   = (selectedMonth && selectedYear) ? `${expectedYearMonth}-01` : ''
+  const periodLastDay    = (selectedMonth && selectedYear)
+    ? new Date(selectedYear, selectedMonth, 0).toISOString().slice(0, 10)  // last day
+    : ''
+
+  // Given a full invoice number ("2026-02-001"), return just the suffix
+  // ("001"). Lenient on separators (matches validateInvoiceNumber rules).
+  // If the stored value doesn't match the current top-bar period (e.g.
+  // user opened an old invoice from another month), returns the full
+  // value so it stays visible in the input and the period-mismatch
+  // validation can fire on next save.
+  const extractInvoiceSuffix = (fullValue) => {
+    if (!fullValue) return ''
+    const trimmed = String(fullValue).trim()
+    const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(.+)$/)
+    if (!m) return trimmed
+    const y  = parseInt(m[1])
+    const mo = parseInt(m[2])
+    if (y === selectedYear && mo === selectedMonth) {
+      return m[3].trim()
+    }
+    return trimmed
+  }
 
   const validateInvoiceNumber = (value) => {
     if (!value || !String(value).trim()) return { ok: true }
@@ -595,47 +670,72 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     const handleField = (field, value) => upsertInvoice(client, invoiceType, { [field]: value })
     const handleCheckbox = (field, checked) =>
       upsertInvoice(client, invoiceType, { [field]: checked ? new Date().toISOString() : null })
+    // Suffix-only editing — the YYYY-MM- prefix is rendered as a fixed
+    // label so the user only types the trailing sequence (e.g., "001").
+    // If the stored value has a different period (legacy), the suffix
+    // helper returns the full value so it stays editable.
+    const initialSuffix = extractInvoiceSuffix(inv?.invoice_number || '')
     return (
       <>
         <td>
-          <input
-            type="text"
-            className="lifecycle-input lifecycle-input-mono"
-            placeholder={`${expectedYearMonth}-NNN`}
-            defaultValue={inv?.invoice_number || ''}
-            onBlur={(e) => {
-              const next = e.target.value.trim() || null
-              // Validate against the top-bar period before saving.
-              if (next) {
-                const v = validateInvoiceNumber(next)
-                if (!v.ok) {
-                  alert(v.error)
-                  e.target.value = inv?.invoice_number || ''  // revert
-                  return
+          <div className="invoice-num-wrap">
+            <span className="invoice-num-prefix">{expectedPrefix}</span>
+            <input
+              type="text"
+              className="invoice-num-suffix lifecycle-input-mono"
+              placeholder="001"
+              defaultValue={initialSuffix}
+              onBlur={(e) => {
+                const suffix = e.target.value.trim()
+                // Empty suffix = clear the invoice number.
+                // If the user pasted a full "YYYY-MM-SEQ", keep it as-is
+                // (validate against period); otherwise rebuild with prefix.
+                let next = null
+                if (suffix) {
+                  next = /^\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]/.test(suffix)
+                    ? suffix
+                    : `${expectedPrefix}${suffix}`
                 }
-              }
-              if (next !== (inv?.invoice_number || null)) handleField('invoice_number', next)
-            }}
-          />
+                if (next) {
+                  const v = validateInvoiceNumber(next)
+                  if (!v.ok) {
+                    alert(v.error)
+                    e.target.value = initialSuffix   // revert
+                    return
+                  }
+                }
+                if (next !== (inv?.invoice_number || null)) handleField('invoice_number', next)
+              }}
+            />
+          </div>
         </td>
         <td>
           <input
             type="date"
             className="lifecycle-input"
-            defaultValue={inv?.date_issued || ''}
+            min={periodFirstDay}
+            max={periodLastDay}
+            defaultValue={inv?.date_issued || periodFirstDay}
+            data-placeholder-date={inv?.date_issued ? 'false' : 'true'}
             onBlur={(e) => {
               const next = e.target.value || null
-              // Issue date must fall within the top-bar month.
+              // If still showing the auto-prefill (1st of month) and the
+              // user never touched it, treat as empty (don't save).
+              const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
+              if (wasPlaceholder && next === periodFirstDay && !inv?.date_issued) {
+                return  // user tabbed through without picking — leave blank
+              }
               if (next) {
                 const v = validateIssueDate(next)
                 if (!v.ok) {
                   alert(v.error)
-                  e.target.value = inv?.date_issued || ''  // revert
+                  e.target.value = inv?.date_issued || periodFirstDay  // revert
                   return
                 }
               }
               if (next !== (inv?.date_issued || null)) handleField('date_issued', next)
             }}
+            onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
           />
         </td>
         <td style={{ textAlign: 'center' }}>
@@ -659,15 +759,28 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           />
         </td>
         <td>
-          <input
-            type="date"
-            className="lifecycle-input"
-            defaultValue={inv?.date_paid || ''}
-            onBlur={(e) => {
-              const next = e.target.value || null
-              if (next !== (inv?.date_paid || null)) handleField('date_paid', next)
-            }}
-          />
+          {(() => {
+            // Same placeholder logic as Block 2: anchor on issue date if
+            // set, otherwise the period's 1st. Greyed-italic until picked.
+            const paidPlaceholder = inv?.date_issued || periodFirstDay
+            return (
+              <input
+                type="date"
+                className="lifecycle-input"
+                defaultValue={inv?.date_paid || paidPlaceholder}
+                data-placeholder-date={inv?.date_paid ? 'false' : 'true'}
+                onBlur={(e) => {
+                  const next = e.target.value || null
+                  const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
+                  if (wasPlaceholder && next === paidPlaceholder && !inv?.date_paid) {
+                    return
+                  }
+                  if (next !== (inv?.date_paid || null)) handleField('date_paid', next)
+                }}
+                onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
+              />
+            )
+          })()}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input
