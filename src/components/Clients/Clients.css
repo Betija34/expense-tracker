@@ -98,10 +98,76 @@
   width: 110px;
   box-sizing: border-box;
 }
-/* Date pickers need extra width because the browser's calendar icon
-   and the day/month/year spinners take a chunk of visible width. */
+/* Date pickers — the browser's day/month/year spinners take some
+   horizontal width; the calendar-picker icon used to take more, but
+   we hide it now (the input itself is still click-to-open). */
 .lifecycle-input[type="date"] {
-  width: 140px;
+  width: 120px;
+}
+/* Hide the WebKit calendar-picker icon site-wide on the Clients page.
+   Kill it through every property the browser uses to render it —
+   display, visibility, opacity, dimensions, background. Belt and
+   braces, because some Safari/Chrome versions ignore some of these.
+   Clicking the input itself still opens the native date picker, so
+   no loss of function. */
+.clients-page input[type="date"]::-webkit-calendar-picker-indicator,
+.lifecycle-input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator {
+  display: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: none !important;
+  background-image: none !important;
+  color: transparent !important;
+  pointer-events: none !important;
+}
+/* Also kill any other intrinsic date-input chrome (spinners, clear
+   button, list button) in case the browser swaps which one it
+   displays. */
+.clients-page input[type="date"]::-webkit-inner-spin-button,
+.clients-page input[type="date"]::-webkit-clear-button,
+.clients-page input[type="date"]::-webkit-list-button,
+.lifecycle-input[type="date"]::-webkit-inner-spin-button,
+.lifecycle-input[type="date"]::-webkit-clear-button,
+.lifecycle-input[type="date"]::-webkit-list-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+}
+/* The "treat as textfield" approach — known Safari workaround.
+   Setting appearance: textfield (rather than none) tells WebKit to
+   render the date input AS IF it were a plain text input, which
+   strips the calendar-picker icon entirely. Picker still opens on
+   focus because the underlying input type is still "date". */
+.clients-page input[type="date"],
+.lifecycle-input[type="date"] {
+  -webkit-appearance: textfield !important;
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}
+
+/* Same treatment for number inputs — the up/down spinner arrows on
+   "Amount (net)" cells add visual noise the user doesn't need. They
+   just type the amount manually. */
+.clients-page input[type="number"],
+.lifecycle-input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.clients-page input[type="number"]::-webkit-inner-spin-button,
+.clients-page input[type="number"]::-webkit-outer-spin-button,
+.lifecycle-input[type="number"]::-webkit-inner-spin-button,
+.lifecycle-input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0 !important;
+  display: none !important;
 }
 /* While the issue-date input is still showing the auto-prefilled 1st
    of the period (placeholder state), grey it out so the user knows
@@ -167,6 +233,52 @@
 }
 .invoice-num-suffix:focus {
   outline: none;
+}
+
+/* Day-only date input — used for ISSUE dates that lock to the top-bar
+   month/year. Visual layout: [DD input on the left] - MM - YYYY label
+   on the right. Day comes first (European reading order), the
+   "-MM-YYYY" tail is a fixed grey label that can't be edited. */
+.day-date-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid #d1d5db;
+  border-radius: 3px;
+  background: #fff;
+  overflow: hidden;
+  width: 110px;
+  box-sizing: border-box;
+}
+.day-date-wrap:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.day-date-input {
+  flex: 0 0 32px;
+  width: 32px;
+  padding: 3px 4px;
+  border: 0;
+  border-right: 1px solid #d1d5db;
+  outline: none;
+  font-size: 12px;
+  background: transparent;
+  text-align: center;
+  box-sizing: border-box;
+}
+.day-date-input:focus {
+  outline: none;
+}
+.day-date-suffix {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 12px;
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+  user-select: none;
+  white-space: nowrap;
 }
 
 /* Status badges — derived from which lifecycle fields are filled */
@@ -446,13 +558,21 @@
   body, .clients-page {
     background: #fff !important;
     color: #000 !important;
-    font-size: 9pt !important;
+    font-size: 8pt !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .clients-page { max-width: none; padding: 0; }
+  /* Let the page use the full printable area (no padding stealing width,
+     no max-width clipping anything off). */
+  .clients-page {
+    max-width: none !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
 
-  /* Keep each invoice block on one page where possible. */
+  /* Keep each invoice block on one page where possible. break-inside
+     is the modern property; page-break-inside is the legacy fallback. */
   .clients-block {
     page-break-inside: avoid;
     break-inside: avoid;
@@ -460,20 +580,178 @@
     border-left-width: 4px !important;
     margin-bottom: 10pt;
   }
+  /* Block 3 (Fixed Expense Reimbursement) starts a new page, then
+     Block 4 (Variable Expense Reimbursement) follows on the same page.
+     Both reimbursement blocks live together. Fixed Expense is small
+     enough that it never crowds Variable off the sheet. */
+  .clients-block-fixed {
+    page-break-before: always;
+    break-before: page;
+  }
+  /* Block 5 (Credit Notes) starts a new page — and Block 6 (Pro Forma)
+     follows immediately after it on the SAME page (no forced break on
+     6). User preference: keep the two "non-invoice" documents grouped
+     together on one final sheet. */
+  .clients-block-credit {
+    page-break-before: always;
+    break-before: page;
+  }
 
-  /* Tables: compact, no hover, plain borders. */
+  /* Keep section headers stuck to the first row of their table — no
+     orphaned headers at the bottom of a page. */
+  .clients-block-header h3 {
+    page-break-after: avoid;
+    break-after: avoid-page;
+  }
+
+  /* Individual table rows must NEVER split across a page break. This is
+     the main fix for "lines cut in half" — the browser will move the
+     row to the next page instead. */
+  .clients-table tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  /* Table head should repeat at the top of each continuation page so
+     printed tables stay readable. */
+  .clients-table thead {
+    display: table-header-group;
+  }
+
+  /* Tables: compact, no hover, plain borders. Force them to use full
+     printable width and allow long descriptions to wrap rather than
+     pushing the layout off-page. */
   .clients-table {
-    font-size: 8pt !important;
+    font-size: 7.5pt !important;
     border: 1px solid #cbd5e1 !important;
+    width: 100% !important;
+    table-layout: auto;
+  }
+  /* Inline minWidth attributes (set in JSX, e.g. 240px on description)
+     would otherwise push tables wider than the printable area. Override
+     them with auto. Default to nowrap so numeric values (€5,000.00) and
+     invoice numbers (2026-04-002) never get split character-by-character
+     by an over-eager word-breaker. Specific cells (Description, Project)
+     opt back in to wrapping below, using whole-word breaks. */
+  .clients-table th,
+  .clients-table td {
+    min-width: 0 !important;
+    white-space: nowrap;
+  }
+  /* Description cells use fontStyle:italic in JSX — easy to target.
+     Project cell (first column) also benefits from wrapping for long
+     legal names. Both wrap at word boundaries, not mid-word. */
+  .clients-table td[style*="italic"],
+  .clients-table td:first-child {
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: break-word;
+  }
+
+  /* Hide the rightmost column on every block — it's the Edit/Delete
+     button column, useless on paper. The buttons inside were already
+     hidden, but the cells were still taking width. */
+  .clients-block .clients-table th:last-child,
+  .clients-block .clients-table td:last-child {
+    display: none !important;
+  }
+  /* Block 1 (Monthly Fee) has TWO trailing UI columns: Active toggle
+     + Edit/Delete. Hide the Active column too (nth-last-child(2)). */
+  .clients-block-monthly .clients-table th:nth-last-child(2),
+  .clients-block-monthly .clients-table td:nth-last-child(2) {
+    display: none !important;
+  }
+
+  /* Strip browser chrome from input controls so cells show plain text:
+     - Number inputs: hide spinner arrows
+     - Date inputs: hide the calendar-picker icon
+     These were eating column width in print previews. */
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0 !important;
+    display: none !important;
+  }
+  /* Date input chrome — broad attack because different browsers expose
+     different pseudo-elements for the icon. opacity:0 + width:0 ensures
+     it's gone even if display:none isn't honored. */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="date"]::-webkit-inner-spin-button,
+  input[type="date"]::-webkit-clear-button {
+    display: none !important;
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  /* Date inputs default to a fixed pixel width — relax that on print
+     so they only consume as much space as the actual date text needs. */
+  input[type="date"] {
+    width: auto !important;
+    min-width: 0 !important;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  /* Squeeze the checkbox columns (SOA ✓ + Email ✓) so the wide content
+     columns (Project, Description, Status) get more breathing room.
+     We let the natural column width win (just enough for the header
+     text "SOA ✓" or "Email ✓") and tighten the padding so the column
+     ends up around 32-42px instead of the screen's wider default. */
+  .clients-table th[title*="Statement of Account"],
+  .clients-table th[title*="Email"] {
+    padding-left: 3px !important;
+    padding-right: 3px !important;
+    text-align: center !important;
+    font-size: 7pt !important;
+    width: 1% !important;          /* shrink-to-content trick */
+    white-space: nowrap !important;
+  }
+  /* Center the checkbox in the body cells of these columns too.
+     Width auto-matches the header above. */
+  .clients-table td:has(input[type="checkbox"]:only-child),
+  .clients-table td > input[type="checkbox"]:only-child {
+    padding-left: 3px !important;
+    padding-right: 3px !important;
+    text-align: center !important;
+  }
+
+  /* Status badge: drop its background pill on paper so it doesn't add
+     extra padding/border to a column that's already at the page edge.
+     The badge becomes bold black text — still distinct, takes less width. */
+  .status-badge {
+    background: transparent !important;
+    border: 0 !important;
+    padding: 0 !important;
+    color: #000 !important;
+    font-weight: 600 !important;
+    font-size: 7pt !important;
+    display: inline !important;
+  }
+
+  /* Project column needs enough room for the trade name + legal name
+     to wrap cleanly (2-3 lines), not character-by-character. Bumping
+     its width hint helps the auto-layout give it sensible breathing
+     room versus squeezing it to fit. */
+  .clients-table td:first-child,
+  .clients-table th:first-child {
+    min-width: 110px !important;
+    max-width: 160px !important;
   }
   .clients-table th {
     background: #f3f4f6 !important;
     color: #000 !important;
     border-bottom: 1px solid #cbd5e1 !important;
-    padding: 4px 6px !important;
+    padding: 3px 5px !important;
   }
   .clients-table td {
-    padding: 3px 6px !important;
+    padding: 2px 5px !important;
     border-bottom: 1px solid #e5e7eb !important;
   }
   .clients-table tbody tr:hover { background: transparent !important; }
@@ -484,7 +762,29 @@
     background: transparent !important;
     padding: 0 !important;
     width: auto !important;
-    font-size: 8pt !important;
+    font-size: 7.5pt !important;
+  }
+  /* Invoice-number split-input: render as a single flat value on paper
+     (no border/background). The prefix span + suffix input visually
+     join into "YYYY-MM-NNN" with no chrome. */
+  .invoice-num-wrap {
+    border: 0 !important;
+    background: transparent !important;
+    width: auto !important;
+    display: inline !important;
+  }
+  .invoice-num-prefix {
+    background: transparent !important;
+    border: 0 !important;
+    color: #000 !important;
+    padding: 0 !important;
+  }
+  .invoice-num-suffix {
+    background: transparent !important;
+    border: 0 !important;
+    padding: 0 !important;
+    width: auto !important;
+    color: #000 !important;
   }
 
   /* Don't print the Email Delivery card grid (info already on the page). */

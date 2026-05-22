@@ -346,6 +346,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     fixed_expense:         false,
     variable_expense:      false,
     credit_note:           true,
+    pro_forma:             true,
   }
 
   // Friendly labels for the type dropdown in the modal.
@@ -356,6 +357,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     fixed_expense:         '🔁 Fixed Expense Reimbursement (no VAT — pass-through)',
     variable_expense:      '💸 Variable Expense Reimbursement (no VAT — pass-through)',
     credit_note:           '↩️ Credit Note (reverses a previous invoice)',
+    pro_forma:             '📋 Pro Forma Invoice (not a tax document — no payment tracking)',
   }
 
   // Description placeholder text per type — helps the user write a useful
@@ -367,7 +369,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     one_off_reimbursement: 'e.g. "One-time travel cost advance"',
     fixed_expense:         'e.g. "Late catch-up — November 2025 fixed expenses"',
     variable_expense:      'e.g. "January 2026 reimbursable expenses"',
-    credit_note:           'e.g. "Credit note for invoice 2026-03-001 — overcharge correction"',
+    credit_note:           'e.g. "Credit note for invoice 2026-001 — overcharge correction"',
+    pro_forma:             'e.g. "Pro forma — Q3 advisory engagement, awaiting client approval"',
   }
 
   // Open the modal pre-filled. typePrefill controls which invoice type is
@@ -473,12 +476,20 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         })
     const handleField = (field, value) => patch(field, value)
     const handleCheckbox = (field, checked) => patch(field, checked ? new Date().toISOString() : null)
-    const initialSuffix = extractInvoiceSuffix(invoice.invoice_number || '')
+    // Per-type prefix: credit notes use "YYYY-", everything else "YYYY-MM-".
+    const typePrefix      = prefixForType(invoice.invoice_type)
+    const initialSuffix   = extractInvoiceSuffix(invoice.invoice_number || '', invoice.invoice_type)
+    // Regex that detects whether the user's input ALREADY contains a
+    // valid prefix (so we don't double-prepend). For credit notes, any
+    // leading "YYYY-" qualifies; for everything else we need "YYYY-MM-".
+    const prefixDetector  = invoice.invoice_type === 'credit_note'
+      ? /^\d{4}\s*[-/.]/
+      : /^\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]/
     return (
       <>
         <td>
           <div className="invoice-num-wrap">
-            <span className="invoice-num-prefix">{expectedPrefix}</span>
+            <span className="invoice-num-prefix">{typePrefix}</span>
             <input
               type="text"
               className="invoice-num-suffix lifecycle-input-mono"
@@ -488,12 +499,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                 const suffix = e.target.value.trim()
                 let next = null
                 if (suffix) {
-                  next = /^\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]/.test(suffix)
-                    ? suffix
-                    : `${expectedPrefix}${suffix}`
+                  next = prefixDetector.test(suffix) ? suffix : `${typePrefix}${suffix}`
                 }
                 if (next) {
-                  const v = validateInvoiceNumber(next)
+                  const v = validateInvoiceNumber(next, invoice.invoice_type)
                   if (!v.ok) {
                     alert(v.error)
                     e.target.value = initialSuffix   // revert
@@ -506,31 +515,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           </div>
         </td>
         <td>
-          <input
-            type="date"
-            className="lifecycle-input"
-            min={periodFirstDay}
-            max={periodLastDay}
-            defaultValue={invoice.date_issued || periodFirstDay}
-            data-placeholder-date={invoice.date_issued ? 'false' : 'true'}
-            onBlur={(e) => {
-              const next = e.target.value || null
-              const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
-              if (wasPlaceholder && next === periodFirstDay && !invoice.date_issued) {
-                return
-              }
-              if (next) {
-                const v = validateIssueDate(next)
-                if (!v.ok) {
-                  alert(v.error)
-                  e.target.value = invoice.date_issued || periodFirstDay
-                  return
-                }
-              }
-              if (next !== (invoice.date_issued || null)) handleField('date_issued', next)
-            }}
-            onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
-          />
+          {renderPeriodDayInput({
+            currentValue: invoice.date_issued,
+            onSave: (next) => handleField('date_issued', next),
+            key: `iss-${invoice.id}`,
+          })}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input type="checkbox" checked={!!invoice.soa_updated_at_issue}
@@ -541,34 +530,94 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             onChange={(e) => handleCheckbox('email_sent_at', e.target.checked)} />
         </td>
         <td>
-          {(() => {
-            // Payment date placeholder: anchor on the issue date if set
-            // (payment usually >= issue), otherwise the period's 1st.
-            // Greyed-italic via CSS until the user picks. No min/max here —
-            // payment can fall in a different month from issue.
-            const paidPlaceholder = invoice.date_issued || periodFirstDay
-            return (
-              <input
-                type="date"
-                className="lifecycle-input"
-                defaultValue={invoice.date_paid || paidPlaceholder}
-                data-placeholder-date={invoice.date_paid ? 'false' : 'true'}
-                onBlur={(e) => {
-                  const next = e.target.value || null
-                  const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
-                  if (wasPlaceholder && next === paidPlaceholder && !invoice.date_paid) {
-                    return  // user tabbed through without picking
-                  }
-                  if (next !== (invoice.date_paid || null)) handleField('date_paid', next)
-                }}
-                onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
-              />
-            )
-          })()}
+          {renderFreeDateInput({
+            currentValue: invoice.date_paid,
+            onSave: (next) => handleField('date_paid', next),
+            key: `paid-${invoice.id}`,
+          })}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input type="checkbox" checked={!!invoice.soa_updated_at_payment}
             onChange={(e) => handleCheckbox('soa_updated_at_payment', e.target.checked)} />
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <span className={`status-badge ${status.cls}`}>{status.label}</span>
+        </td>
+      </>
+    )
+  }
+
+  // Render the LITE lifecycle cells for a Pro Forma row. Pro formas
+  // aren't tax documents — no SOA tracking, no payment columns. We only
+  // need: PF# (YYYY-MM-NNN with locked prefix) + Date (locked to top-bar
+  // month) + Email-sent checkbox + Status.
+  const renderProFormaLifecycleCells = (invoice) => {
+    const patch = (field, value) =>
+      supabase.from('invoices').update({ [field]: value, updated_at: new Date().toISOString() })
+        .eq('id', invoice.id).select('*').single()
+        .then(({ data, error }) => {
+          if (error) { alert(`Save failed: ${error.message}`); return }
+          setInvoices(prev => prev.map(i => i.id === data.id ? data : i))
+        })
+    const handleField = (field, value) => patch(field, value)
+    const handleCheckbox = (field, checked) => patch(field, checked ? new Date().toISOString() : null)
+
+    const typePrefix     = prefixForType(invoice.invoice_type)
+    const initialSuffix  = extractInvoiceSuffix(invoice.invoice_number || '', invoice.invoice_type)
+    const prefixDetector = /^\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]/
+
+    // Three-state status: Draft → Issued → Sent (no Paid for pro formas).
+    const status = invoice.email_sent_at
+      ? { label: 'Sent', cls: 'status-paid' }       // green
+      : (invoice.invoice_number && invoice.date_issued
+          ? { label: 'Issued', cls: 'status-issued' }   // blue
+          : { label: 'Draft',  cls: 'status-pending' }) // grey
+
+    return (
+      <>
+        <td>
+          <div className="invoice-num-wrap">
+            <span className="invoice-num-prefix">{typePrefix}</span>
+            <input
+              type="text"
+              className="invoice-num-suffix lifecycle-input-mono"
+              placeholder="001"
+              defaultValue={initialSuffix}
+              onBlur={(e) => {
+                const suffix = e.target.value.trim()
+                let next = null
+                if (suffix) {
+                  next = prefixDetector.test(suffix) ? suffix : `${typePrefix}${suffix}`
+                }
+                if (next) {
+                  const v = validateInvoiceNumber(next, invoice.invoice_type)
+                  if (!v.ok) {
+                    alert(v.error)
+                    e.target.value = initialSuffix
+                    return
+                  }
+                }
+                if (next !== (invoice.invoice_number || null)) handleField('invoice_number', next)
+              }}
+            />
+          </div>
+        </td>
+        <td>
+          {renderPeriodDayInput({
+            currentValue: invoice.date_issued,
+            onSave: (next) => handleField('date_issued', next),
+            key: `pf-iss-${invoice.id}`,
+          })}
+        </td>
+        <td style={{ textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={!!invoice.email_sent_at}
+            onChange={(e) => handleCheckbox('email_sent_at', e.target.checked)}
+            title={invoice.email_sent_at
+              ? `Sent ${new Date(invoice.email_sent_at).toLocaleString()}`
+              : 'Tick when pro forma emailed to client'}
+          />
         </td>
         <td style={{ textAlign: 'center' }}>
           <span className={`status-badge ${status.cls}`}>{status.label}</span>
@@ -599,15 +648,179 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     ? new Date(selectedYear, selectedMonth, 0).toISOString().slice(0, 10)  // last day
     : ''
 
-  // Given a full invoice number ("2026-02-001"), return just the suffix
-  // ("001"). Lenient on separators (matches validateInvoiceNumber rules).
+  // Credit notes get a separate numbering scheme — YYYY-NNN (no month).
+  // VIES still files them in the month they were issued, but the human-
+  // readable sequence runs per year, not per month. Helper returns the
+  // prefix shown in the lifecycle UI for any invoice type.
+  const prefixForType = (invoiceType) => {
+    if (invoiceType === 'credit_note') return `${selectedYear}-`
+    return `${expectedYearMonth}-`
+  }
+
+  // Extract just the DD part from a YYYY-MM-DD date when it falls in
+  // the current top-bar period. Out-of-period values come back as the
+  // full string (e.g. legacy data, or a payment received in a different
+  // month than the current top-bar) so the input still shows them.
+  const extractDayPart = (fullValue) => {
+    if (!fullValue) return ''
+    const m = String(fullValue).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!m) return String(fullValue)
+    const y  = parseInt(m[1])
+    const mo = parseInt(m[2])
+    if (y === selectedYear && mo === selectedMonth) {
+      return m[3]
+    }
+    return String(fullValue)
+  }
+
+  // Render a day-only date input for ISSUE-style dates (locked to the
+  // top-bar month/year — used for Issue Date, Pro Forma Date, Credit
+  // Note Issue Date). Visual order: [DD input] - MM - YYYY (day first,
+  // matching European convention). The MM-YYYY portion is a fixed grey
+  // suffix label; the user only types the day.
+  //
+  // Storage stays as YYYY-MM-DD (Postgres date format) but display
+  // reads as DD-MM-YYYY which is what the user reads naturally.
+  //
+  // Props:
+  //   currentValue: 'YYYY-MM-DD' or null (the saved date)
+  //   onSave: (newValue: string | null) => void
+  //   key: unique React key for the wrap
+  const renderPeriodDayInput = ({ currentValue, onSave, key }) => {
+    const dayPart = extractDayPart(currentValue || '')
+    const isOutOfPeriod = currentValue && dayPart === String(currentValue)
+    const periodLastDayNum = new Date(selectedYear, selectedMonth, 0).getDate()
+    // Suffix shows "-MM-YYYY" in European order (with leading dash so
+    // it visually attaches to the DD input on its left).
+    const suffixLabel = `-${String(selectedMonth).padStart(2, '0')}-${selectedYear}`
+    return (
+      <div className="day-date-wrap" key={key}>
+        <input
+          type="text"
+          inputMode="numeric"
+          maxLength={isOutOfPeriod ? 10 : 2}
+          className="day-date-input lifecycle-input-mono"
+          placeholder="DD"
+          defaultValue={dayPart}
+          onBlur={(e) => {
+            const typed = e.target.value.trim()
+            if (!typed) {
+              if (currentValue) onSave(null)
+              return
+            }
+            // If the user pasted a full ISO date, accept as-is.
+            if (/^\d{4}-\d{2}-\d{2}$/.test(typed)) {
+              if (typed !== currentValue) onSave(typed)
+              return
+            }
+            const day = parseInt(typed, 10)
+            if (Number.isNaN(day) || day < 1 || day > 31) {
+              alert(`Day must be a number between 1 and 31. You typed: "${typed}".`)
+              e.target.value = dayPart
+              return
+            }
+            if (day > periodLastDayNum) {
+              alert(`${monthName(selectedMonth)} ${selectedYear} only has ${periodLastDayNum} days.\nYou typed: ${day}.`)
+              e.target.value = dayPart
+              return
+            }
+            const newValue = `${expectedYearMonth}-${String(day).padStart(2, '0')}`
+            if (newValue !== currentValue) onSave(newValue)
+          }}
+        />
+        <span className="day-date-suffix">{suffixLabel}</span>
+      </div>
+    )
+  }
+
+  // Free-form date input for PAYMENT dates. Payments often arrive in a
+  // different month than the invoice was issued (a January invoice paid
+  // in March, etc.) — so this input does NOT lock to the top-bar period.
+  // The user types the full DD-MM-YYYY (slashes also accepted on input
+  // for tolerance), and we save back as YYYY-MM-DD internally.
+  //
+  // Props:
+  //   currentValue: 'YYYY-MM-DD' or null
+  //   onSave: (newValue: string | null) => void
+  //   key: unique React key
+  const renderFreeDateInput = ({ currentValue, onSave, key }) => {
+    // Display the stored ISO date as DD-MM-YYYY for readability.
+    const displayValue = (() => {
+      if (!currentValue) return ''
+      const m = String(currentValue).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+      if (!m) return String(currentValue)
+      return `${m[3]}-${m[2]}-${m[1]}`
+    })()
+    return (
+      <input
+        type="text"
+        inputMode="numeric"
+        className="lifecycle-input lifecycle-input-mono"
+        placeholder="DD-MM-YYYY"
+        defaultValue={displayValue}
+        key={key}
+        style={{ width: 110, textAlign: 'center' }}
+        onBlur={(e) => {
+          const typed = e.target.value.trim()
+          if (!typed) {
+            if (currentValue) onSave(null)
+            return
+          }
+          // Accept DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY (lenient on
+          // separator). 2-digit year auto-expanded to 20XX.
+          const m = typed.match(/^(\d{1,2})[\-\/.](\d{1,2})[\-\/.](\d{2,4})$/)
+          if (!m) {
+            alert(`Invalid date format. Use DD-MM-YYYY (e.g., 15-03-2026).\nYou typed: "${typed}"`)
+            e.target.value = displayValue
+            return
+          }
+          const day   = parseInt(m[1], 10)
+          const month = parseInt(m[2], 10)
+          let year    = parseInt(m[3], 10)
+          if (m[3].length === 2) year = 2000 + year
+          if (year < 2000 || year > 2100) {
+            alert(`Year ${year} seems out of range (expected 2000-2100).`)
+            e.target.value = displayValue
+            return
+          }
+          if (month < 1 || month > 12) {
+            alert(`Month must be between 1 and 12. You typed: ${month}.`)
+            e.target.value = displayValue
+            return
+          }
+          const lastDay = new Date(year, month, 0).getDate()
+          if (day < 1 || day > lastDay) {
+            alert(`${monthName(month)} ${year} only has ${lastDay} days.\nYou typed day ${day}.`)
+            e.target.value = displayValue
+            return
+          }
+          const isoValue = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+          if (isoValue !== currentValue) onSave(isoValue)
+        }}
+      />
+    )
+  }
+
+  // Given a full invoice number, return just the suffix the user types.
+  // Behavior depends on invoice_type:
+  //   - credit_note: "2026-001" → "001"
+  //   - everything else: "2026-02-001" → "001"
   // If the stored value doesn't match the current top-bar period (e.g.
-  // user opened an old invoice from another month), returns the full
-  // value so it stays visible in the input and the period-mismatch
-  // validation can fire on next save.
-  const extractInvoiceSuffix = (fullValue) => {
+  // legacy credit notes still in YYYY-MM-NNN), returns the full value
+  // so it stays visible and the validation can fire on next save.
+  const extractInvoiceSuffix = (fullValue, invoiceType) => {
     if (!fullValue) return ''
     const trimmed = String(fullValue).trim()
+    if (invoiceType === 'credit_note') {
+      // YYYY-SEQ (where SEQ can itself contain anything — including legacy
+      // MM-NNN from before the format change). Only strip the leading year
+      // if it matches the top-bar year.
+      const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(.+)$/)
+      if (!m) return trimmed
+      const y = parseInt(m[1])
+      if (y === selectedYear) return m[2].trim()
+      return trimmed
+    }
     const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(.+)$/)
     if (!m) return trimmed
     const y  = parseInt(m[1])
@@ -618,9 +831,31 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return trimmed
   }
 
-  const validateInvoiceNumber = (value) => {
+  const validateInvoiceNumber = (value, invoiceType) => {
     if (!value || !String(value).trim()) return { ok: true }
     const trimmed = String(value).trim()
+
+    if (invoiceType === 'credit_note') {
+      // YYYY-NNN format only checks the year matches the top bar.
+      // The sequence portion is free text (the user may use "001" or
+      // "CN-12" or whatever convention they've used historically).
+      const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(.+)$/)
+      if (!m) {
+        return {
+          ok: false,
+          error: `Credit note number must start with the year.\nExpected format: ${selectedYear}-001 (separators: - / .)`,
+        }
+      }
+      const y = parseInt(m[1])
+      if (y !== selectedYear) {
+        return {
+          ok: false,
+          error: `Credit note year is ${y} but the top bar is on ${selectedYear}.\nSwitch the top bar to ${y} or correct the credit note number.`,
+        }
+      }
+      return { ok: true }
+    }
+
     // Lenient on separators: accept "-", "/", "." between year/month/seq.
     const m = trimmed.match(/^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(.+)$/)
     if (!m) {
@@ -674,7 +909,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     // label so the user only types the trailing sequence (e.g., "001").
     // If the stored value has a different period (legacy), the suffix
     // helper returns the full value so it stays editable.
-    const initialSuffix = extractInvoiceSuffix(inv?.invoice_number || '')
+    // This per-client renderer is only used by Blocks 1/3/4 — never for
+    // credit notes (handled by renderLifecycleCellsForInvoice) — so the
+    // prefix is always YYYY-MM-. Passing invoiceType keeps things future
+    // proof if we ever wire a credit-note-style type through here.
+    const initialSuffix = extractInvoiceSuffix(inv?.invoice_number || '', invoiceType)
     return (
       <>
         <td>
@@ -697,7 +936,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     : `${expectedPrefix}${suffix}`
                 }
                 if (next) {
-                  const v = validateInvoiceNumber(next)
+                  const v = validateInvoiceNumber(next, invoiceType)
                   if (!v.ok) {
                     alert(v.error)
                     e.target.value = initialSuffix   // revert
@@ -710,33 +949,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           </div>
         </td>
         <td>
-          <input
-            type="date"
-            className="lifecycle-input"
-            min={periodFirstDay}
-            max={periodLastDay}
-            defaultValue={inv?.date_issued || periodFirstDay}
-            data-placeholder-date={inv?.date_issued ? 'false' : 'true'}
-            onBlur={(e) => {
-              const next = e.target.value || null
-              // If still showing the auto-prefill (1st of month) and the
-              // user never touched it, treat as empty (don't save).
-              const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
-              if (wasPlaceholder && next === periodFirstDay && !inv?.date_issued) {
-                return  // user tabbed through without picking — leave blank
-              }
-              if (next) {
-                const v = validateIssueDate(next)
-                if (!v.ok) {
-                  alert(v.error)
-                  e.target.value = inv?.date_issued || periodFirstDay  // revert
-                  return
-                }
-              }
-              if (next !== (inv?.date_issued || null)) handleField('date_issued', next)
-            }}
-            onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
-          />
+          {renderPeriodDayInput({
+            currentValue: inv?.date_issued,
+            onSave: (next) => handleField('date_issued', next),
+            key: `iss-${client.id}-${invoiceType}`,
+          })}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input
@@ -759,28 +976,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           />
         </td>
         <td>
-          {(() => {
-            // Same placeholder logic as Block 2: anchor on issue date if
-            // set, otherwise the period's 1st. Greyed-italic until picked.
-            const paidPlaceholder = inv?.date_issued || periodFirstDay
-            return (
-              <input
-                type="date"
-                className="lifecycle-input"
-                defaultValue={inv?.date_paid || paidPlaceholder}
-                data-placeholder-date={inv?.date_paid ? 'false' : 'true'}
-                onBlur={(e) => {
-                  const next = e.target.value || null
-                  const wasPlaceholder = e.target.dataset.placeholderDate === 'true'
-                  if (wasPlaceholder && next === paidPlaceholder && !inv?.date_paid) {
-                    return
-                  }
-                  if (next !== (inv?.date_paid || null)) handleField('date_paid', next)
-                }}
-                onInput={(e) => { e.target.dataset.placeholderDate = 'false' }}
-              />
-            )
-          })()}
+          {renderFreeDateInput({
+            currentValue: inv?.date_paid,
+            onSave: (next) => handleField('date_paid', next),
+            key: `paid-${client.id}-${invoiceType}`,
+          })}
         </td>
         <td style={{ textAlign: 'center' }}>
           <input
@@ -1033,10 +1233,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // SOA-payment). Placeholder rows count toward total but never as finalized
   // (they're invoices that haven't been started yet).
   const progress = useMemo(() => {
-    const isFinalized = (inv) =>
-      !!(inv.invoice_number && inv.date_issued &&
+    // Pro forma rows have a lighter lifecycle (no SOA, no payment) and
+    // aren't tax documents — they shouldn't drag the progress %. We
+    // count them as "finalized" once PF# + Date + Email ✓ are set.
+    // Everything else uses the standard 6-field rule.
+    const isFinalized = (inv) => {
+      if (inv.invoice_type === 'pro_forma') {
+        return !!(inv.invoice_number && inv.date_issued && inv.email_sent_at)
+      }
+      return !!(inv.invoice_number && inv.date_issued &&
          inv.soa_updated_at_issue && inv.email_sent_at &&
          inv.date_paid && inv.soa_updated_at_payment)
+    }
 
     // Index DB invoices by (type, client_id) so we can quickly tell which
     // clients still need a placeholder row.
@@ -1081,14 +1289,19 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // ---- Print handler — A4 landscape, same pattern as Client Report ----
   const handlePrint = () => {
     const styleEl = document.createElement('style')
+    // Tightened margins to maximize printable width (A4 landscape is
+    // already only ~28cm wide and the page has ~14 columns). 0.6cm
+    // left/right gives an extra 0.8cm of width vs the old 1cm margins,
+    // which is enough to stop the rightmost column being clipped.
+    // Bottom margin slightly bigger to leave room for the page counter.
     styleEl.textContent = `
       @media print {
         @page {
           size: A4 landscape;
-          margin: 1cm 1cm 1.5cm 1cm;
+          margin: 0.7cm 0.6cm 1.1cm 0.6cm;
           @bottom-right {
             content: "Page " counter(page) " of " counter(pages);
-            font-size: 10px;
+            font-size: 9px;
             color: #6b7280;
           }
         }
@@ -1279,7 +1492,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           <td style={{ textAlign: 'right' }}>
                             {vatRate === 0
                               ? <span style={{ color: '#9ca3af' }}>—</span>
-                              : `${(vatRate * 100).toFixed(0)}%`}
+                              : <span style={{ fontSize: 10, color: '#6b7280' }}>{(vatRate * 100).toFixed(0)}%</span>}
                           </td>
                           <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
                             {formatEuro(total)}
@@ -1338,7 +1551,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           <td style={{ textAlign: 'right' }}>
                             {vatRate === 0
                               ? <span style={{ color: '#9ca3af' }}>—</span>
-                              : `${(vatRate * 100).toFixed(0)}%`}
+                              : <span style={{ fontSize: 10, color: '#6b7280' }}>{(vatRate * 100).toFixed(0)}%</span>}
                           </td>
                           <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
                             {formatEuro(total)}
@@ -1868,6 +2081,100 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 {formatEuro(inv.amount_total)}
                               </td>
                               {renderLifecycleCellsForInvoice(inv)}
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )
+          })()}
+
+          {/* =================================================================
+              BLOCK 6 — Pro Forma Invoices (live)
+              Pro formas are quotes/previews, NOT tax documents. They never
+              file with VIES/VAT and never get "paid" — the matching real
+              invoice (separate row, issued once the client accepts) handles
+              all that. So this block has a lighter lifecycle: PF# + Date +
+              Email sent. Status flow: Draft → Issued → Sent.
+
+              Numbering: YYYY-MM-NNN (same shape as regular invoices) but
+              in its own per-month sequence within this block. Date is
+              locked to the top-bar month (consistent UX with Block 1).
+              ================================================================= */}
+          {(() => {
+            const rows = invoices
+              .filter(i => i.invoice_type === 'pro_forma')
+              .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+            const totalForBlock = rows.reduce((s, i) => s + Number(i.amount_total || 0), 0)
+            const clientById = new Map(clients.map(c => [c.id, c]))
+            return (
+              <section className="clients-block clients-block-proforma">
+                <div className="clients-block-header">
+                  <h3>
+                    📋 Pro Forma Invoices
+                    {selectedMonth && selectedYear && (
+                      <span style={{ fontWeight: 400, fontSize: 14, color: '#6b7280', marginLeft: 8 }}>
+                        — {monthName(selectedMonth)} {selectedYear}
+                      </span>
+                    )}
+                  </h3>
+                  <div className="block-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {rows.length === 0
+                        ? 'No pro forma invoices for this month yet.'
+                        : <>{rows.length} pro forma{rows.length === 1 ? '' : 's'} · total <strong>{formatEuro(totalForBlock)}</strong></>}
+                    </span>
+                    <button className="button" style={{ padding: '6px 12px' }} onClick={() => openOneOffModal('', 'pro_forma')}>
+                      + Add pro forma
+                    </button>
+                  </div>
+                  <small style={{ color: '#6b7280', fontSize: 11, fontStyle: 'italic', display: 'block', marginTop: 4 }}>
+                    Pro formas aren't tax documents — no VIES/VAT filing, no payment tracking. They're quotes/previews.
+                    The real invoice gets issued separately (Block 1 or 2) once the client accepts.
+                  </small>
+                </div>
+                {rows.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="clients-table">
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          <th style={{ minWidth: 240 }}>Description</th>
+                          <th style={{ textAlign: 'right' }}>Amount (net)</th>
+                          <th style={{ textAlign: 'right' }}>VAT</th>
+                          <th style={{ textAlign: 'right' }}>Total</th>
+                          <th style={{ minWidth: 120 }}>PF #</th>
+                          <th style={{ minWidth: 150 }}>Date</th>
+                          <th title="Email with pro forma sent to client">Email ✓</th>
+                          <th>Status</th>
+                          <th>Delete</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(inv => {
+                          const c = clientById.get(inv.client_id) || {}
+                          return (
+                            <tr key={inv.id}>
+                              {renderProjectCell(c)}
+                              <td style={{ fontStyle: 'italic', color: '#374151' }}>
+                                {inv.description || '—'}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{formatEuro(inv.amount_net)}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                {Number(inv.vat_rate || 0) === 0
+                                  ? <span style={{ color: '#9ca3af' }}>—</span>
+                                  : `${(Number(inv.vat_rate) * 100).toFixed(0)}%`}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>
+                                {formatEuro(inv.amount_total)}
+                              </td>
+                              {renderProFormaLifecycleCells(inv)}
                               <td style={{ whiteSpace: 'nowrap' }}>
                                 <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
                               </td>
