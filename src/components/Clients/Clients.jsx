@@ -312,6 +312,99 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return naturalCounted + inbound
   }
 
+  // Render the per-month breakdown cell content. Used in BOTH placeholder
+  // rows and saved DB rows of Block 4 so the user always sees the
+  // line-by-line contribution per month (deferred-in + this month's
+  // own). Takes an explicit `savedAmount` so DB rows can flag a
+  // mismatch if the saved invoice total doesn't match the current
+  // breakdown sum (e.g. deferrals changed after the invoice was saved).
+  const renderBreakdownCell = (client, savedAmount = null, fallbackText = null) => {
+    const bk = reimbursableBreakdown(client)
+    const periodLbl = selectedMonth && selectedYear
+      ? `${monthName(selectedMonth)} ${selectedYear} expenses to be reimbursed`
+      : 'Reimbursable expenses'
+    const titleText = fallbackText || periodLbl
+    const hasInbound  = bk.items.some(i => i.isDeferred)
+    const hasOutbound = !!bk.outbound
+    const natural     = reimbursableFor(client)
+    // Standalone "this month's natural" info chip — surfaced on saved DB
+    // rows whenever the saved invoice amount doesn't match this month's
+    // natural reimbursables AND we're not already showing it as outbound.
+    // The classic case: Jan saved invoice was for Nov+Dec expenses; Jan's
+    // own €284.24 are a SEPARATE amount that the user needs to see so she
+    // can decide to defer them or invoice them separately.
+    const showNaturalInfo =
+      savedAmount != null
+      && natural > 0
+      && !hasOutbound
+      && Math.abs(Number(savedAmount) - natural) > 0.005
+
+    if (!hasInbound && !hasOutbound && !showNaturalInfo) {
+      // Nothing special — plain description (saved or generated).
+      return <span style={{ fontStyle: 'italic', color: '#374151' }}>{titleText}</span>
+    }
+
+    return (
+      <div>
+        <div style={{ fontStyle: 'italic', color: '#374151' }}>{titleText}</div>
+
+        {/* Inbound breakdown — itemized list of deferred-in months + the
+            current month's own natural amount (when not deferred away). */}
+        {(hasInbound || (!hasOutbound && natural > 0 && !showNaturalInfo)) && bk.items.length > 0 && (
+          <ul style={{ margin: '4px 0 0 0', padding: '0 0 0 4px', listStyle: 'none', fontSize: 11, color: '#374151' }}>
+            {bk.items.map((item, i) => (
+              <li key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '1px 0' }}>
+                <span style={{ color: item.isDeferred ? '#0891b2' : '#111827' }}>
+                  {item.isDeferred ? '↪ ' : '· '}
+                  {monthName(item.month)} {item.year}
+                  {item.isDeferred ? ' (deferred in)' : ' (this month)'}
+                </span>
+                <span style={{ fontFamily: 'monospace', color: '#374151' }}>{formatEuro(item.amount)}</span>
+              </li>
+            ))}
+            <li style={{
+              display: 'flex', justifyContent: 'space-between', gap: 8,
+              borderTop: '1px solid #e5e7eb', marginTop: 3, paddingTop: 3,
+              fontWeight: 600, color: '#111827',
+            }}>
+              <span>Total</span>
+              <span style={{ fontFamily: 'monospace' }}>{formatEuro(bk.total)}</span>
+            </li>
+          </ul>
+        )}
+
+        {/* Outbound badge — this month's natural was deferred to a later month. */}
+        {hasOutbound && (
+          <div style={{
+            fontSize: 10, color: '#92400e', marginTop: 4,
+            background: '#fef3c7', padding: '2px 6px', borderRadius: 3,
+          }}>
+            ⚠ This month's own expenses ({formatEuro(bk.natural)}) deferred to {monthName(bk.outbound.target_month)} {bk.outbound.target_year}
+          </div>
+        )}
+
+        {/* Natural-info chip — saved invoice represents some other period;
+            this is the actual natural reimbursable for the current month. */}
+        {showNaturalInfo && (
+          <div style={{
+            fontSize: 11, color: '#7c2d12', marginTop: 6,
+            background: '#fef3c7', padding: '5px 8px', borderRadius: 4,
+            border: '1px solid #fcd34d',
+          }}>
+            <div style={{ fontWeight: 600 }}>
+              📋 {monthName(selectedMonth)} {selectedYear} natural reimbursables: {formatEuro(natural)}
+            </div>
+            <div style={{ fontSize: 10, marginTop: 2, color: '#92400e' }}>
+              Separate from the saved invoice ({formatEuro(savedAmount)}).
+              Use <strong>→ Defer</strong> to route them to a future month, or
+              <strong> + Add variable reimbursement</strong> to invoice them separately this month.
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   // Per-month breakdown for the description cell. Returns the list of
   // contributing months (deferred-in plus the current month if its
   // natural amount counts) and the total. Used to render an itemised
@@ -2089,16 +2182,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               .sort((a, b) => b.effective - a.effective)
             const clientIdsWithDbRow = new Set(dbInvoices.map(i => i.client_id))
             const placeholderRows = effectiveClients.filter(({ c }) => !clientIdsWithDbRow.has(c.id))
-            // Outbound-ONLY rows: clients who deferred this month's expenses
-            // away AND have nothing inbound (so the effective bill is 0).
-            // If they also have inbound from earlier months, they stay in
-            // the effective rows above — the outbound is shown as a
-            // footnote inside that effective row's description.
+            // Outbound-ONLY rows (rendered as muted muted-with-badge rows):
+            // - client deferred this month's expenses forward
+            // - has nothing inbound (effective bill is 0)
+            // - has no saved DB invoice this month either (those get the
+            //   deferral indicator + Defer/Undo button inline instead, to
+            //   avoid rendering the same client twice in different styles)
             const outboundClients = clients
               .filter(c =>
                 c.active &&
                 outboundDeferralFor(c) &&
-                effectiveReimbursableFor(c) === 0
+                effectiveReimbursableFor(c) === 0 &&
+                !clientIdsWithDbRow.has(c.id)
               )
               .map(c => ({ c, deferral: outboundDeferralFor(c), natural: reimbursableFor(c) }))
               .sort((a, b) => b.natural - a.natural)
@@ -2213,52 +2308,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           including any inbound deferrals from earlier months). */}
                       {placeholderRows.map(({ c, effective }) => {
                         const bk = reimbursableBreakdown(c)
-                        const hasBreakdown = bk.items.length > 1 || !!bk.outbound
                         const targetIssued = isTargetInvoiceIssued(c)
                         return (
                           <tr key={`placeholder-${c.id}`}>
                             {renderProjectCell(c)}
                             <td style={{ color: '#374151' }}>
-                              {!hasBreakdown ? (
-                                // Plain period label — no deferrals involved.
-                                <span style={{ fontStyle: 'italic' }}>{periodLabel}</span>
-                              ) : (
-                                // Per-month breakdown so the user can verify
-                                // exactly which months are being billed here.
-                                <div>
-                                  <div style={{ fontWeight: 500, fontSize: 12 }}>
-                                    {bk.items.length} month{bk.items.length === 1 ? '' : 's'} of reimbursable expenses
-                                  </div>
-                                  <ul style={{ margin: '4px 0 0 0', padding: '0 0 0 4px', listStyle: 'none', fontSize: 11, color: '#374151' }}>
-                                    {bk.items.map((item, i) => (
-                                      <li key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '1px 0' }}>
-                                        <span style={{ color: item.isDeferred ? '#0891b2' : '#111827' }}>
-                                          {item.isDeferred ? '↪ ' : '· '}
-                                          {monthName(item.month)} {item.year}
-                                          {item.isDeferred ? ' (deferred in)' : ' (this month)'}
-                                        </span>
-                                        <span style={{ fontFamily: 'monospace', color: '#374151' }}>{formatEuro(item.amount)}</span>
-                                      </li>
-                                    ))}
-                                    <li style={{
-                                      display: 'flex', justifyContent: 'space-between', gap: 8,
-                                      borderTop: '1px solid #e5e7eb', marginTop: 3, paddingTop: 3,
-                                      fontWeight: 600, color: '#111827',
-                                    }}>
-                                      <span>Total</span>
-                                      <span style={{ fontFamily: 'monospace' }}>{formatEuro(bk.total)}</span>
-                                    </li>
-                                  </ul>
-                                  {bk.outbound && (
-                                    <div style={{
-                                      fontSize: 10, color: '#92400e', marginTop: 4,
-                                      background: '#fef3c7', padding: '2px 6px', borderRadius: 3,
-                                    }}>
-                                      ⚠ This month's own expenses ({formatEuro(bk.natural)}) deferred to {monthName(bk.outbound.target_month)} {bk.outbound.target_year}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
+                              {renderBreakdownCell(c)}
                             </td>
                             <td style={{ textAlign: 'right' }}>
                               <input
@@ -2319,14 +2374,39 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           </tr>
                         )
                       })}
-                      {/* DB rows (saved invoices) */}
+                      {/* DB rows (saved invoices). Render the same per-month
+                          breakdown UI as placeholder rows so the user keeps
+                          seeing the line-by-line contribution per month even
+                          after an invoice is created. Pass the saved amount
+                          so we can flag a mismatch if deferrals changed.
+                          Also: defer/undo this client-month even after the
+                          invoice exists — the saved amount stays put; the
+                          deferral is informational ("these expenses ALSO
+                          appear in target month's invoice"). */}
                       {dbInvoices.map(inv => {
                         const c = clientById.get(inv.client_id) || {}
-                        const issued = !!(inv.invoice_number && inv.date_issued)
+                        const outbound = outboundDeferralFor(c)
+                        const natural  = reimbursableFor(c)
+                        const targetIssued = outbound ? isTargetInvoiceIssued(c) : false
                         return (
                           <tr key={inv.id}>
                             {renderProjectCell(c)}
-                            <td style={{ fontStyle: 'italic', color: '#374151' }}>{inv.description || periodLabel}</td>
+                            <td style={{ color: '#374151' }}>
+                              {renderBreakdownCell(c, inv.amount_net, inv.description)}
+                              {/* Outbound deferral badge — shown when THIS
+                                  month's expenses have been routed forward,
+                                  in addition to whatever this invoice covers. */}
+                              {outbound && !reimbursableBreakdown(c).outbound && (
+                                <div style={{
+                                  display: 'inline-block', marginTop: 4,
+                                  padding: '1px 8px',
+                                  background: '#dbeafe', color: '#1e40af',
+                                  borderRadius: 10, fontSize: 11, fontWeight: 600,
+                                }}>
+                                  → Also deferred to {monthName(outbound.target_month)} {outbound.target_year}
+                                </div>
+                              )}
+                            </td>
                             <td style={{ textAlign: 'right' }}>
                               <input
                                 type="number"
@@ -2350,8 +2430,47 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               />
                             </td>
                             {renderLifecycleCellsForInvoice(inv)}
-                            <td style={{ whiteSpace: 'nowrap' }}>
-                              <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                            {/* Two stacked actions: Defer/Undo + Delete.
+                                Defer is for routing this month's expenses
+                                forward (independent of the saved invoice
+                                amount); Delete removes the invoice row. */}
+                            <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'center' }}>
+                                {outbound ? (
+                                  <button
+                                    className="row-btn"
+                                    disabled={targetIssued}
+                                    title={targetIssued
+                                      ? `Locked — the ${monthName(outbound.target_month)} ${outbound.target_year} invoice is already issued.`
+                                      : `Cancel the deferral and bring ${monthName(selectedMonth)}'s expenses back here.`}
+                                    style={{
+                                      fontSize: 11, padding: '3px 6px',
+                                      background: targetIssued ? '#f3f4f6' : '#fff',
+                                      color: targetIssued ? '#9ca3af' : '#374151',
+                                      border: '1px solid #d1d5db', borderRadius: 4,
+                                      cursor: targetIssued ? 'not-allowed' : 'pointer',
+                                    }}
+                                    onClick={() => {
+                                      if (targetIssued) return
+                                      if (window.confirm(`Undo the deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                        removeDeferral(outbound.id)
+                                      }
+                                    }}
+                                  >
+                                    ↩ Undo
+                                  </button>
+                                ) : natural > 0 ? (
+                                  <button
+                                    className="row-btn"
+                                    style={{ fontSize: 11, padding: '3px 6px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 4, cursor: 'pointer' }}
+                                    title={`Route ${monthName(selectedMonth)} ${selectedYear}'s reimbursables to a later month's invoice (the saved invoice here is unchanged).`}
+                                    onClick={() => openDeferModal(c)}
+                                  >
+                                    → Defer
+                                  </button>
+                                ) : null}
+                                <button className="row-btn danger" onClick={() => deleteOneOff(inv)}>🗑️</button>
+                              </div>
                             </td>
                           </tr>
                         )
