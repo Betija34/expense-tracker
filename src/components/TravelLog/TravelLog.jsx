@@ -90,9 +90,13 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         if (expErr) throw expErr
         if (cancelled) return
 
-        const travel = (expData || []).filter(e =>
-          e.expense_categories?.name === 'Travel Expenses' || e.sub_ref_series === 'T'
-        )
+        // Only T-series expenses belong in the Travel Log. Reimbursable
+        // expenses (sub_ref_series='R') — even when their category is
+        // "Travel Expenses" — are NOT travel; they're client work the
+        // company will be reimbursed for. The 'R' series wins over 'T'
+        // when is_reimbursable=true (see decideSubRefSeries in refUtils),
+        // so filtering on sub_ref_series='T' cleanly excludes them.
+        const travel = (expData || []).filter(e => e.sub_ref_series === 'T')
         setTravelExpenses(travel)
       } catch (e) {
         console.error('TravelLog load error:', e)
