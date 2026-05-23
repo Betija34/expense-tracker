@@ -293,22 +293,45 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     if (fxRateLocked) return  // user typed a rate themselves; don't overwrite
     let cancelled = false
     setFxFetching(true); setFxFetchError(null)
-    // Frankfurter accepts 'latest' or a YYYY-MM-DD date string.
+    // Two free FX APIs with CORS support. We try Frankfurter (ECB rates,
+    // supports historical dates) first; if the browser blocks it (some
+    // ad blockers categorize it, or specific networks don't allow it),
+    // we fall back to open.er-api.com (today's rate only — no historical).
     const dateStr = form.date && /^\d{4}-\d{2}-\d{2}$/.test(form.date) ? form.date : 'latest'
-    const url = `https://api.frankfurter.app/${dateStr}?from=${form.fx_currency}&to=EUR&amount=1`
-    fetch(url)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`API ${r.status}`)))
-      .then(data => {
-        if (cancelled) return
-        const rate = data?.rates?.EUR
-        if (typeof rate === 'number') {
-          setForm(f => f.fx_currency === 'EUR' ? f : { ...f, fx_rate: String(rate) })
-        } else {
-          setFxFetchError('Rate not available for that date — using last business day if possible.')
+    // Frankfurter API moved to api.frankfurter.dev (with /v1/ path) —
+    // the old api.frankfurter.app domain is no longer reachable.
+    const tryFrankfurter = () =>
+      fetch(`https://api.frankfurter.dev/v1/${dateStr}?from=${form.fx_currency}&to=EUR&amount=1`)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(`Frankfurter ${r.status}`)))
+        .then(data => data?.rates?.EUR ?? null)
+    const tryOpenErApi = () =>
+      fetch(`https://open.er-api.com/v6/latest/${form.fx_currency}`)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(`open.er-api ${r.status}`)))
+        .then(data => data?.rates?.EUR ?? null)
+    ;(async () => {
+      let rate = null
+      let errMsg = null
+      try {
+        rate = await tryFrankfurter()
+      } catch (e1) {
+        // Frankfurter failed — try the fallback. Don't surface the
+        // technical NetworkError; just keep trying.
+        try {
+          rate = await tryOpenErApi()
+          if (rate && dateStr !== 'latest') {
+            errMsg = 'Used today\'s rate (historical lookup unavailable from fallback). Override if needed.'
+          }
+        } catch (e2) {
+          errMsg = 'Couldn\'t reach a live FX rate API. Type the rate manually — it can be found on xe.com or your bank statement.'
         }
-      })
-      .catch(err => { if (!cancelled) setFxFetchError(`Couldn't fetch live rate (${err.message}). Type the rate manually.`) })
-      .finally(() => { if (!cancelled) setFxFetching(false) })
+      }
+      if (cancelled) return
+      if (typeof rate === 'number' && rate > 0) {
+        setForm(f => f.fx_currency === 'EUR' ? f : { ...f, fx_rate: String(rate) })
+      }
+      setFxFetchError(errMsg)
+      setFxFetching(false)
+    })()
     return () => { cancelled = true }
   }, [form.fx_currency, form.date, fxRateLocked])
 
