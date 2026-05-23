@@ -559,26 +559,98 @@ function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdat
         amountSign="positive-in"
       />
 
-      {/* Catch-all warnings if there's anything that didn't fit subcategory patterns */}
+      {/* Catch-all warnings if there's anything that didn't fit subcategory
+          patterns. Lists each item with its reference number, date, vendor,
+          and amount so the user can navigate directly to the entry and fix
+          the subcategory if needed. */}
       {(stats.otherBankOutgoing.length > 0 || stats.otherIncoming.length > 0) && (
         <div style={{
           marginTop: 12, padding: 10,
           background: '#fef3c7', border: '1px solid #fcd34d',
           borderRadius: 4, fontSize: 12, color: '#92400e',
         }}>
-          ⚠ Items tagged with {code} that didn't match section patterns (informational — NOT counted in balance below):
-          <ul style={{ margin: '4px 0 0 18px' }}>
-            {stats.otherBankOutgoing.length > 0 && (
-              <li>
-                {stats.otherBankOutgoing.length} bank outgoing ({fmt(stats.sumOtherOut)}) — review the subcategory.
-                If this should debit {code}, change it to a Bank Transfer or Payment on Behalf subcategory so it lands in section 1 or 2.
-                (Note: bank-paid Travel expenses tagged with {code} are auto-excluded — they show in the Travel Log only, as intended.)
-              </li>
-            )}
-            {stats.otherIncoming.length > 0 && (
-              <li>{stats.otherIncoming.length} incoming ({fmt(stats.sumOtherIn)}) — not "Shareholder Funding" but tagged with {code}.</li>
-            )}
-          </ul>
+          ⚠ Items tagged with {code} that didn't match section patterns (informational — NOT counted in balance below).
+          Review each to decide if the subcategory should be changed:
+          <div style={{ fontSize: 11, color: '#78350f', marginTop: 4, marginBottom: 6 }}>
+            If something here should debit {code}, change its subcategory to a Bank Transfer or Payment on Behalf so it lands in section 1 or 2.
+            Bank-paid Travel expenses tagged with {code} are auto-excluded (they show in the Travel Log only, as intended).
+          </div>
+          {stats.otherBankOutgoing.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                {stats.otherBankOutgoing.length} bank outgoing — total {fmt(stats.sumOtherOut)}
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, color: '#7c2d12' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #fcd34d' }}>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Ref</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Date</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Vendor</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Category / Subcat</th>
+                    <th style={{ textAlign: 'right', padding: '3px 6px', fontWeight: 600 }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.otherBankOutgoing.map(r => (
+                    <tr key={r.id} style={{ borderTop: '1px dotted #fcd34d' }}>
+                      <td style={{ padding: '3px 6px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {r.reference_number || '—'}
+                      </td>
+                      <td style={{ padding: '3px 6px', whiteSpace: 'nowrap' }}>{fmtDate(r.date)}</td>
+                      <td style={{ padding: '3px 6px' }}>{r.vendor || '—'}</td>
+                      <td style={{ padding: '3px 6px' }}>
+                        {r.expense_categories?.name || '—'}
+                        {r.subcategory_name && (
+                          <span style={{ color: '#a16207' }}> → {r.subcategory_name}</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+                        {fmt(r.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {stats.otherIncoming.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                {stats.otherIncoming.length} incoming — total {fmt(stats.sumOtherIn)} (not "Shareholder Funding" but tagged with {code})
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, color: '#7c2d12' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #fcd34d' }}>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Ref</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Date</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Vendor</th>
+                    <th style={{ textAlign: 'left',  padding: '3px 6px', fontWeight: 600 }}>Category / Subcat</th>
+                    <th style={{ textAlign: 'right', padding: '3px 6px', fontWeight: 600 }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.otherIncoming.map(r => (
+                    <tr key={r.id} style={{ borderTop: '1px dotted #fcd34d' }}>
+                      <td style={{ padding: '3px 6px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {r.reference_number || '—'}
+                      </td>
+                      <td style={{ padding: '3px 6px', whiteSpace: 'nowrap' }}>{fmtDate(r.date)}</td>
+                      <td style={{ padding: '3px 6px' }}>{r.vendor || '—'}</td>
+                      <td style={{ padding: '3px 6px' }}>
+                        {r.expense_categories?.name || '—'}
+                        {r.subcategory_name && (
+                          <span style={{ color: '#a16207' }}> → {r.subcategory_name}</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+                        {fmt(r.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
