@@ -734,7 +734,14 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
       manual_sub_ref_month: expense.sub_ref_series === 'S' ? String(expense.sub_ref_month || '') : '',
       manual_sub_ref_seq:   expense.sub_ref_series === 'S' ? String(expense.sub_ref_seq || '')   : '',
       expected_travel_month: expense.expected_travel_month || '',
+      // Currency converter — saved expenses are always EUR (we don't store
+      // FX details). Reset to EUR mode so the FX panel stays hidden during edit.
+      fx_currency: 'EUR',
+      fx_amount:   '',
+      fx_rate:     '',
     })
+    // Also re-enable the auto-fetch flag so future currency switches work normally.
+    setFxRateLocked(false)
     // Editing always uses single mode (split editing is out of scope for v1)
     setIsSplit(false)
     setPortions(blankPortions)
@@ -1450,8 +1457,8 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
               )}
               <div style={{ marginTop: 4, fontSize: 10, color: '#9ca3af' }}>
                 Rates from{' '}
-                <a href="https://www.frankfurter.app/docs/" target="_blank" rel="noreferrer"
-                   style={{ color: '#6b7280' }}>frankfurter.app</a>{' '}
+                <a href="https://frankfurter.dev/" target="_blank" rel="noreferrer"
+                   style={{ color: '#6b7280' }}>frankfurter.dev</a>{' '}
                 (ECB official daily rates). Saved value: EUR only.
               </div>
             </div>
