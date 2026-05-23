@@ -228,10 +228,20 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
     const sumOtherOut = sum(otherBankOutgoing)
     const sumOtherIn  = sum(otherIncoming)
 
-    // Net Balance — positive = company owes shareholder
+    // Net Balance — positive = company owes shareholder.
+    //
+    // Bank-paid outgoings ONLY affect the shareholder balance when their
+    // subcategory makes the intent explicit:
+    //   - Bank Transfer (matchesTransferSubcat)   → debits shareholder
+    //   - Payment on Behalf (matchesBehalfSubcat) → debits shareholder
+    // Everything else tagged with shareholder_code (e.g. Travel Expenses
+    // where the tag is only for Travel Log attribution) is a COMPANY
+    // expense and must NOT charge the shareholder. sumOtherOut therefore
+    // stays informational (rendered in section 6 with a warning) and is
+    // explicitly excluded from the balance.
     const balance =
       sumFrom + sumCash + allowanceTotal + sumOtherIn
-      - sumTo - sumBehalf - sumOtherOut
+      - sumTo - sumBehalf
 
     return {
       transfersTo, sumTo,
@@ -546,10 +556,13 @@ function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdat
           background: '#fef3c7', border: '1px solid #fcd34d',
           borderRadius: 4, fontSize: 12, color: '#92400e',
         }}>
-          ⚠ Items tagged with {code} that didn't match section patterns (included in balance but not listed in sections 1–5 above):
+          ⚠ Items tagged with {code} that didn't match section patterns (informational — NOT counted in balance below):
           <ul style={{ margin: '4px 0 0 18px' }}>
             {stats.otherBankOutgoing.length > 0 && (
-              <li>{stats.otherBankOutgoing.length} bank outgoing ({fmt(stats.sumOtherOut)}) — categorize via subcategory to land in section 1 or 2.</li>
+              <li>
+                {stats.otherBankOutgoing.length} bank outgoing ({fmt(stats.sumOtherOut)}) — these are company expenses (e.g. Travel paid by company, tagged with {code} for Travel Log attribution).
+                If something here should debit {code}, recategorize its subcategory as a Bank Transfer or Payment on Behalf so it lands in section 1 or 2.
+              </li>
             )}
             {stats.otherIncoming.length > 0 && (
               <li>{stats.otherIncoming.length} incoming ({fmt(stats.sumOtherIn)}) — not "Shareholder Funding" but tagged with {code}.</li>
@@ -769,7 +782,14 @@ function NetBalanceCard({ code, stats, companyName }) {
           <BreakdownRow label="Transfers to Shareholder" value={-stats.sumTo} />
           <BreakdownRow label="Payments on Behalf"        value={-stats.sumBehalf} />
           {stats.sumOtherOut > 0 && (
-            <BreakdownRow label="Other bank outgoing tagged" value={-stats.sumOtherOut} />
+            <div style={{
+              display: 'flex', justifyContent: 'space-between',
+              fontSize: 12, color: '#9ca3af', fontStyle: 'italic',
+              borderTop: '1px dashed #e5e7eb', paddingTop: 6, marginTop: 2,
+            }}>
+              <span>Other bank outgoing tagged (not counted)</span>
+              <span style={{ fontFamily: 'monospace' }}>{fmt(stats.sumOtherOut)}</span>
+            </div>
           )}
         </div>
 

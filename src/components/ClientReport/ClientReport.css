@@ -174,11 +174,17 @@
     border-bottom: 1.5px solid #1f2937 !important;
   }
 
-  /* Repeat column headings on each page when a table spans multiple pages.
-     NOTE: deliberately NOT setting `display: table-footer-group` on tfoot —
-     Firefox has a known bug where repeated footers can drop the last column. */
+  /* Repeat column headings on each page when a table spans multiple pages. */
   .client-report thead {
     display: table-header-group !important;
+  }
+  /* Make tfoot behave like a regular row group so the TOTAL line only
+     appears ONCE at the bottom of the actual table content, not at the
+     bottom of every page (the browser's default `table-footer-group`
+     repeats the footer on each page break — user noticed the duplicated
+     TOTAL on multi-page client reports). */
+  .client-report table tfoot {
+    display: table-row-group !important;
   }
   .client-report tr {
     page-break-inside: avoid !important;
