@@ -181,17 +181,23 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
   // -------------------------------------------------------------
   const computeStats = (code) => {
     const sum = (arr) => arr.reduce((s, e) => s + Number(e.amount || 0), 0)
-    // Bank-paid Travel expenses tagged with a shareholder are COMPANY
-    // expenses — the tag exists only so Travel Log can attribute the
-    // trip to that shareholder. They must NOT appear anywhere in the
-    // Shareholder Report (no balance impact, no warning, no row).
-    // Cash travel (account_id IS NULL) still counts — that IS the
-    // shareholder paying out-of-pocket for travel.
-    const isBankPaidTravel = (e) =>
-      !!e.account_id && e.expense_categories?.sub_ref_series === 'T'
+    // Bank-paid expenses tagged with a shareholder are COMPANY expenses
+    // when the category exists primarily for OTHER attribution purposes:
+    //   - Travel   (sub_ref_series='T') → tag attributes the trip to the
+    //                                     traveler for Travel Log
+    //   - Salary   (sub_ref_series='S') → tag attributes the payroll line
+    //                                     to whose salary it is (e.g. "Salary BK")
+    // In both cases the company paid; the tag is informational and must
+    // NOT appear in the Shareholder Report (no balance impact, no
+    // warning, no row). Cash variants (account_id IS NULL) still count
+    // — that IS the shareholder paying out-of-pocket.
+    const isBankPaidCompanyAttribution = (e) =>
+      !!e.account_id &&
+      (e.expense_categories?.sub_ref_series === 'T' ||
+       e.expense_categories?.sub_ref_series === 'S')
     const my = expenses
       .filter(e => e.shareholder_code === code)
-      .filter(e => !isBankPaidTravel(e))
+      .filter(e => !isBankPaidCompanyAttribution(e))
     const outgoing = my.filter(e => e.direction === 'out')
     const incoming = my.filter(e => e.direction === 'in')
 
@@ -573,7 +579,7 @@ function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdat
           Review each to decide if the subcategory should be changed:
           <div style={{ fontSize: 11, color: '#78350f', marginTop: 4, marginBottom: 6 }}>
             If something here should debit {code}, change its subcategory to a Bank Transfer or Payment on Behalf so it lands in section 1 or 2.
-            Bank-paid Travel expenses tagged with {code} are auto-excluded (they show in the Travel Log only, as intended).
+            Bank-paid Travel expenses and Salary payments tagged with {code} are auto-excluded — they're company expenses; the tag just attributes them for Travel Log / payroll tracking.
           </div>
           {stats.otherBankOutgoing.length > 0 && (
             <div style={{ marginTop: 8 }}>
