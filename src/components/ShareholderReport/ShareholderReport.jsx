@@ -63,7 +63,7 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
         // Shareholder Funding (which is always shareholder-tagged anyway)
         const { data: exps, error: expErr } = await supabase
           .from('expenses')
-          .select('*, expense_categories(name), accounts(name)')
+          .select('*, expense_categories(name, sub_ref_series), accounts(name)')
           .eq('company_id', comp.id)
           .eq('main_ref_year', selectedYear)
           .eq('main_ref_month', selectedMonth)
@@ -181,7 +181,17 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
   // -------------------------------------------------------------
   const computeStats = (code) => {
     const sum = (arr) => arr.reduce((s, e) => s + Number(e.amount || 0), 0)
-    const my = expenses.filter(e => e.shareholder_code === code)
+    // Bank-paid Travel expenses tagged with a shareholder are COMPANY
+    // expenses — the tag exists only so Travel Log can attribute the
+    // trip to that shareholder. They must NOT appear anywhere in the
+    // Shareholder Report (no balance impact, no warning, no row).
+    // Cash travel (account_id IS NULL) still counts — that IS the
+    // shareholder paying out-of-pocket for travel.
+    const isBankPaidTravel = (e) =>
+      !!e.account_id && e.expense_categories?.sub_ref_series === 'T'
+    const my = expenses
+      .filter(e => e.shareholder_code === code)
+      .filter(e => !isBankPaidTravel(e))
     const outgoing = my.filter(e => e.direction === 'out')
     const incoming = my.filter(e => e.direction === 'in')
 
@@ -560,8 +570,9 @@ function ShareholderBlock({ code, stats, allowance, saving, companyName, onUpdat
           <ul style={{ margin: '4px 0 0 18px' }}>
             {stats.otherBankOutgoing.length > 0 && (
               <li>
-                {stats.otherBankOutgoing.length} bank outgoing ({fmt(stats.sumOtherOut)}) — these are company expenses (e.g. Travel paid by company, tagged with {code} for Travel Log attribution).
-                If something here should debit {code}, recategorize its subcategory as a Bank Transfer or Payment on Behalf so it lands in section 1 or 2.
+                {stats.otherBankOutgoing.length} bank outgoing ({fmt(stats.sumOtherOut)}) — review the subcategory.
+                If this should debit {code}, change it to a Bank Transfer or Payment on Behalf subcategory so it lands in section 1 or 2.
+                (Note: bank-paid Travel expenses tagged with {code} are auto-excluded — they show in the Travel Log only, as intended.)
               </li>
             )}
             {stats.otherIncoming.length > 0 && (
