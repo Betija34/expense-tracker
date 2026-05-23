@@ -253,18 +253,41 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     init()
   }, [selectedCompany])
 
-  // Load subcategories for the selected category (single mode)
+  // Load subcategories for the selected category (single mode).
+  // IMPORTANT: only clear subcategory_id when the current selection is
+  // NOT a valid child of the new category. This prevents the Edit flow
+  // from wiping the saved subcategory the moment the category populates
+  // (previously: setForm(subcategory:'') ran unconditionally on every
+  // category change, including programmatic ones from startEdit).
   useEffect(() => {
-    setSubcats([])
-    setForm(f => ({ ...f, subcategory_id: '', subcategory_name: '' }))
-    if (!form.category_id) return
+    if (!form.category_id) {
+      setSubcats([])
+      setForm(f =>
+        (f.subcategory_id || f.subcategory_name)
+          ? { ...f, subcategory_id: '', subcategory_name: '' }
+          : f
+      )
+      return
+    }
     ;(async () => {
       const { data, error } = await supabase
         .from('expense_subcategories')
         .select('*')
         .eq('category_id', form.category_id)
         .order('sort_order')
-      if (!error) setSubcats(data || [])
+      if (error) return
+      const subs = data || []
+      setSubcats(subs)
+      // Only clear if the current subcategory_id doesn't belong to this
+      // category. For Edit loads, the saved subcategory_id IS a valid
+      // child → it stays. For user-initiated category switches, the old
+      // subcategory_id wouldn't match → it gets cleared as before.
+      const validIds = new Set(subs.map(s => s.id))
+      setForm(f =>
+        f.subcategory_id && !validIds.has(f.subcategory_id)
+          ? { ...f, subcategory_id: '', subcategory_name: '' }
+          : f
+      )
     })()
   }, [form.category_id])
 
