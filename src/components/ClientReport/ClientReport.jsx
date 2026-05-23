@@ -146,9 +146,27 @@ export function ClientReport({ selectedCompany, selectedMonth, selectedYear, onS
 
     const sum = (arr) => arr.reduce((s, e) => s + Number(e.amount || 0), 0)
 
+    // Sort comparator by main_ref_seq ascending. All rows in this view
+    // share the same (year, month) since the query filters by them, so
+    // ordering by seq alone is enough to get 1, 2, 3, ... ordering.
+    // Rows without a seq go to the end (shouldn't happen in practice).
+    const bySeq = (a, b) => {
+      const sa = Number(a.main_ref_seq ?? Number.MAX_SAFE_INTEGER)
+      const sb = Number(b.main_ref_seq ?? Number.MAX_SAFE_INTEGER)
+      return sa - sb
+    }
     const perClient = clientList.map(name => {
-      const expenses = monthExpenses.filter(e => (e.client_name || '').trim() === name)
-      const received = monthReceived.filter(e => (e.subcategory_name || '').trim() === name)
+      // Sort each client's expenses + received rows by reference number
+      // (ascending) so the printable Expense Support tables read 1 → 2 → 3
+      // top-to-bottom, matching the user's archive order.
+      const expenses = monthExpenses
+        .filter(e => (e.client_name || '').trim() === name)
+        .slice()
+        .sort(bySeq)
+      const received = monthReceived
+        .filter(e => (e.subcategory_name || '').trim() === name)
+        .slice()
+        .sort(bySeq)
       const expensesTotal = sum(expenses)
       const receivedTotal = sum(received)
       return {
