@@ -92,6 +92,13 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     // Expected travel month for prepaid travel. Only relevant when the
     // category is Travel Expenses. Blank = use payment month.
     expected_travel_month: '',
+    // Currency converter — UI-only state. When fx_currency !== 'EUR',
+    // user types fx_amount (the foreign amount on the receipt) and the
+    // system fetches fx_rate from Frankfurter (ECB rates) for the
+    // expense date. Saved value (form.amount) is always EUR.
+    fx_currency: 'EUR',  // 'EUR' | 'USD' | 'GBP' | 'ILS'
+    fx_amount:   '',     // foreign amount (kept separate from form.amount)
+    fx_rate:     '',     // multiplier: foreign × rate = EUR
   }
   const [form, setForm] = useState(blankForm)
 
@@ -267,6 +274,58 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     setDuplicatesAcknowledged(false)
     setDuplicates([])
   }, [form.amount, form.date, form.vendor])
+
+  // -------------------------------------------------------------
+  // Currency converter — auto-fetch ECB rate from Frankfurter API
+  // when fx_currency != EUR. Triggered on currency change OR date
+  // change. User can override the rate (we only refetch when the
+  // RATE itself wasn't manually edited; tracked via fx_rate_locked).
+  // -------------------------------------------------------------
+  const [fxRateLocked, setFxRateLocked] = useState(false)  // true after manual edit
+  const [fxFetching, setFxFetching]     = useState(false)
+  const [fxFetchError, setFxFetchError] = useState(null)
+  useEffect(() => {
+    if (form.fx_currency === 'EUR') {
+      // EUR mode — clear FX state; form.amount is the canonical value.
+      setFxFetching(false); setFxFetchError(null)
+      return
+    }
+    if (fxRateLocked) return  // user typed a rate themselves; don't overwrite
+    let cancelled = false
+    setFxFetching(true); setFxFetchError(null)
+    // Frankfurter accepts 'latest' or a YYYY-MM-DD date string.
+    const dateStr = form.date && /^\d{4}-\d{2}-\d{2}$/.test(form.date) ? form.date : 'latest'
+    const url = `https://api.frankfurter.app/${dateStr}?from=${form.fx_currency}&to=EUR&amount=1`
+    fetch(url)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`API ${r.status}`)))
+      .then(data => {
+        if (cancelled) return
+        const rate = data?.rates?.EUR
+        if (typeof rate === 'number') {
+          setForm(f => f.fx_currency === 'EUR' ? f : { ...f, fx_rate: String(rate) })
+        } else {
+          setFxFetchError('Rate not available for that date — using last business day if possible.')
+        }
+      })
+      .catch(err => { if (!cancelled) setFxFetchError(`Couldn't fetch live rate (${err.message}). Type the rate manually.`) })
+      .finally(() => { if (!cancelled) setFxFetching(false) })
+    return () => { cancelled = true }
+  }, [form.fx_currency, form.date, fxRateLocked])
+
+  // Whenever fx_amount or fx_rate changes (non-EUR mode), recompute
+  // the canonical EUR amount stored in form.amount.
+  useEffect(() => {
+    if (form.fx_currency === 'EUR') return
+    const fa = parseFloat(form.fx_amount)
+    const fr = parseFloat(form.fx_rate)
+    if (!Number.isNaN(fa) && !Number.isNaN(fr) && fa > 0 && fr > 0) {
+      // Round to 2dp for display + storage consistency.
+      const eur = Math.round(fa * fr * 100) / 100
+      setForm(f => ({ ...f, amount: String(eur) }))
+    } else {
+      setForm(f => ({ ...f, amount: '' }))
+    }
+  }, [form.fx_amount, form.fx_rate, form.fx_currency])
 
   // Auto-clear save error / success when the user starts editing again.
   // Avoids the "stale error sitting under a now-valid form" UX problem.
@@ -1262,16 +1321,118 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
           )}
         </div>
         <div className="form-group">
-          <label>Amount (€) *</label>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={form.amount}
-            onChange={(e) => setForm({ ...form, amount: e.target.value })}
-            className="form-input"
-            placeholder="0.00"
-          />
+          <label>
+            Amount {form.fx_currency === 'EUR' ? '(€)' : `(${form.fx_currency})`} *
+          </label>
+          {/* Currency picker + amount input. Default 'EUR' = direct EUR
+              entry (legacy behavior). Non-EUR = type the foreign amount;
+              system auto-fetches the ECB rate and computes EUR equivalent. */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select
+              value={form.fx_currency}
+              onChange={(e) => {
+                const nextCcy = e.target.value
+                setFxRateLocked(false)  // re-enable auto-fetch
+                setForm(f => ({
+                  ...f,
+                  fx_currency: nextCcy,
+                  // Switching to EUR — clear FX inputs (user types amount directly).
+                  // Switching to non-EUR — clear amount (will be recomputed).
+                  fx_amount: nextCcy === 'EUR' ? '' : f.fx_amount,
+                  fx_rate:   nextCcy === 'EUR' ? '' : f.fx_rate,
+                  amount:    nextCcy === 'EUR' ? f.amount : '',
+                }))
+              }}
+              className="form-input"
+              style={{ width: 90, flex: '0 0 90px' }}
+            >
+              <option value="EUR">EUR €</option>
+              <option value="USD">USD $</option>
+              <option value="GBP">GBP £</option>
+              <option value="ILS">ILS ₪</option>
+            </select>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={form.fx_currency === 'EUR' ? form.amount : form.fx_amount}
+              onChange={(e) => {
+                const v = e.target.value
+                if (form.fx_currency === 'EUR') {
+                  setForm(f => ({ ...f, amount: v }))
+                } else {
+                  setForm(f => ({ ...f, fx_amount: v }))
+                }
+              }}
+              className="form-input"
+              style={{ flex: 1 }}
+              placeholder="0.00"
+            />
+          </div>
+          {/* FX details — only shown when non-EUR. Shows rate (auto-fetched
+              from Frankfurter / ECB, editable) and the resulting EUR amount. */}
+          {form.fx_currency !== 'EUR' && (
+            <div style={{
+              marginTop: 6, padding: '6px 8px',
+              background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 4,
+              fontSize: 12, color: '#374151',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ minWidth: 110, color: '#6b7280' }}>
+                  Rate ({form.fx_currency} → EUR):
+                </span>
+                <input
+                  type="number"
+                  step="0.000001"
+                  min="0"
+                  value={form.fx_rate}
+                  onChange={(e) => {
+                    setFxRateLocked(true)  // stop auto-overwriting from API
+                    setForm(f => ({ ...f, fx_rate: e.target.value }))
+                  }}
+                  className="form-input"
+                  style={{ width: 110, padding: '2px 6px', fontSize: 12 }}
+                  placeholder={fxFetching ? 'fetching…' : '0.000000'}
+                />
+                {fxRateLocked && (
+                  <button
+                    type="button"
+                    onClick={() => setFxRateLocked(false)}
+                    style={{
+                      fontSize: 11, padding: '2px 8px',
+                      background: '#fff', border: '1px solid #d1d5db', borderRadius: 4,
+                      cursor: 'pointer', color: '#374151',
+                    }}
+                    title="Reset to the ECB rate auto-fetched for this date"
+                  >
+                    ↻ reset to ECB
+                  </button>
+                )}
+                {fxFetching && !fxRateLocked && (
+                  <span style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>
+                    fetching ECB rate…
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ minWidth: 110, color: '#6b7280' }}>EUR equivalent:</span>
+                <strong style={{ fontFamily: 'monospace', color: '#111827' }}>
+                  €{form.amount ? Number(form.amount).toFixed(2) : '0.00'}
+                </strong>
+              </div>
+              {fxFetchError && (
+                <div style={{ marginTop: 4, color: '#92400e', fontSize: 11 }}>
+                  ⚠ {fxFetchError}
+                </div>
+              )}
+              <div style={{ marginTop: 4, fontSize: 10, color: '#9ca3af' }}>
+                Rates from{' '}
+                <a href="https://www.frankfurter.app/docs/" target="_blank" rel="noreferrer"
+                   style={{ color: '#6b7280' }}>frankfurter.app</a>{' '}
+                (ECB official daily rates). Saved value: EUR only.
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
