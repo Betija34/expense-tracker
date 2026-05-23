@@ -72,7 +72,17 @@ export function formatSubRef({ sub_ref_series, sub_ref_month, sub_ref_seq }) {
 
 /**
  * Returns the next available main-ref sequence for a company in a given year + month.
- * Reads max(main_ref_seq) from expenses WHERE company_id, main_ref_year, main_ref_month.
+ *
+ * Gap-filling behavior (Day 14 update): if previously-used reference numbers
+ * have been freed by deleting their expenses, the smallest such number is
+ * returned BEFORE allocating a brand-new one. This keeps the sequence
+ * contiguous when the user deletes mistaken entries.
+ *
+ * Example:
+ *   Existing seqs in May 2026 = {1, 2, 4, 5}  (seq 3 was deleted)
+ *   nextMainRefSeq → 3   (fills the gap)
+ *   Existing seqs = {1, 2, 3, 4, 5}  (no gaps)
+ *   nextMainRefSeq → 6   (allocates at end)
  */
 export async function nextMainRefSeq(companyId, year, month) {
   const { data, error } = await supabase
@@ -81,25 +91,53 @@ export async function nextMainRefSeq(companyId, year, month) {
     .eq('company_id', companyId)
     .eq('main_ref_year', year)
     .eq('main_ref_month', month)
-    .order('main_ref_seq', { ascending: false })
-    .limit(1)
   if (error) throw error
-  const max = data && data.length > 0 ? Number(data[0].main_ref_seq || 0) : 0
-  return max + 1
+  const taken = new Set((data || []).map(r => Number(r.main_ref_seq)).filter(n => n > 0))
+  let n = 1
+  while (taken.has(n)) n++
+  return n
 }
 
 /**
- * Allocates N consecutive main-ref sequence numbers for split portions.
- * Returns an array of N seqs starting at the next available number.
- *   nextMainRefSeqBatch(companyId, 2026, 1, 3)  →  [4, 5, 6]
+ * Allocates N main-ref sequence numbers for split portions (consecutive
+ * where possible). Tries to fit a consecutive gap of size N first so
+ * that splits remain visually grouped; falls back to allocating at the
+ * end if no gap fits.
+ *   Existing seqs = {1, 2, 4, 5}, count = 2  →  {3} can only fit 1, so allocates [6, 7]
+ *   Existing seqs = {1, 5, 6}, count = 3      →  [2, 3, 4]  (gap fits)
  */
 export async function nextMainRefSeqBatch(companyId, year, month, count) {
-  const start = await nextMainRefSeq(companyId, year, month)
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('main_ref_seq')
+    .eq('company_id', companyId)
+    .eq('main_ref_year', year)
+    .eq('main_ref_month', month)
+  if (error) throw error
+  const taken = new Set((data || []).map(r => Number(r.main_ref_seq)).filter(n => n > 0))
+  const sorted = Array.from(taken).sort((a, b) => a - b)
+  const max = sorted.length ? sorted[sorted.length - 1] : 0
+  // Scan for a consecutive free run of size `count` starting from 1.
+  let candidate = 1
+  while (candidate <= max + 1) {
+    let allFree = true
+    for (let i = 0; i < count; i++) {
+      if (taken.has(candidate + i)) { allFree = false; break }
+    }
+    if (allFree) {
+      return Array.from({ length: count }, (_, i) => candidate + i)
+    }
+    candidate++
+  }
+  // Shouldn't reach here, but as a safety net allocate strictly past the max.
+  const start = max + 1
   return Array.from({ length: count }, (_, i) => start + i)
 }
 
 /**
  * Returns the next available sub-ref sequence for a company + series + month.
+ * Same gap-filling behavior as nextMainRefSeq — deleted sub-refs are
+ * reused on the next insert before allocating a fresh one.
  * Used for auto-assigning T (Travel) and R (Reimbursable) sub-references.
  */
 export async function nextSubRefSeq(companyId, series, month) {
@@ -109,11 +147,11 @@ export async function nextSubRefSeq(companyId, series, month) {
     .eq('company_id', companyId)
     .eq('sub_ref_series', series)
     .eq('sub_ref_month', month)
-    .order('sub_ref_seq', { ascending: false })
-    .limit(1)
   if (error) throw error
-  const max = data && data.length > 0 ? Number(data[0].sub_ref_seq || 0) : 0
-  return max + 1
+  const taken = new Set((data || []).map(r => Number(r.sub_ref_seq)).filter(n => n > 0))
+  let n = 1
+  while (taken.has(n)) n++
+  return n
 }
 
 /**
