@@ -153,8 +153,16 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       alert('Failed to update period: ' + error.message)
       return
     }
-    // Optimistic: update local state without reloading
-    setPeriods(prev => prev.map(p => p.id === periodId ? { ...p, ...patch } : p))
+    // Optimistic: update local state and re-sort by from_date ascending so
+    // editing a period's date immediately reorders it within the list
+    // (without waiting for a full reload). The initial load already sorts
+    // via .order('from_date'), but a from_date change here would leave the
+    // row in its old slot until next reload otherwise.
+    setPeriods(prev =>
+      prev
+        .map(p => p.id === periodId ? { ...p, ...patch } : p)
+        .sort(byFromDateAsc)
+    )
   }
 
   const deletePeriod = async (periodId) => {
@@ -1492,6 +1500,21 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
 // =============================================================
 // Helpers
 // =============================================================
+// Sort comparator used after optimistic period updates so editing a
+// period's From Date immediately reorders it within the list. ISO date
+// strings (YYYY-MM-DD) sort correctly with plain string comparison.
+// Periods without a from_date sink to the bottom.
+function byFromDateAsc(a, b) {
+  const af = a.from_date || '9999-12-31'
+  const bf = b.from_date || '9999-12-31'
+  if (af !== bf) return af < bf ? -1 : 1
+  // Tie-breaker: to_date ASC, so shorter trips appear before longer ones
+  // that start on the same day.
+  const at = a.to_date || '9999-12-31'
+  const bt = b.to_date || '9999-12-31'
+  return at < bt ? -1 : at > bt ? 1 : 0
+}
+
 function daysBetween(fromIso, toIso) {
   if (!fromIso || !toIso) return 0
   const from = new Date(fromIso)
