@@ -135,14 +135,27 @@
      fresh page — matching the user's request for one trip per page.
      A trip with too many expenses to fit on a single page is allowed
      to split internally (page-break-inside: auto) — individual expense
-     cards are still kept whole by the .travel-expense-card rule below. */
+     cards are still kept whole by the .travel-expense-card rule below.
+
+     Belt-and-suspenders: we set BOTH page-break-before on every
+     subsequent period AND page-break-after on every period except
+     the last. Chrome sometimes drops a page-break-before when the
+     preceding sibling has bottom margin (it consumes the break into
+     the margin), so the page-break-after fallback guarantees the
+     split even in that case. margin-bottom is zeroed in print so it
+     can't interfere with the break boundary. */
   .travel-log .travel-period-row {
     page-break-inside: auto !important;
     break-inside: auto !important;
+    margin-bottom: 0 !important;
   }
   .travel-log .travel-period-row + .travel-period-row {
     page-break-before: always !important;
     break-before: page !important;
+  }
+  .travel-log .travel-period-row:not(:last-child) {
+    page-break-after: always !important;
+    break-after: page !important;
   }
 
   /* Editable input fields (where/who/why on expense cards) — render as
