@@ -1368,11 +1368,14 @@ function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selected
   }
 
   return (
-    <div style={{
-      border: `1px solid #e5e7eb`,
-      borderLeft: `4px solid ${accentColor}`,
-      borderRadius: 4, marginBottom: 12, background: 'white',
-    }}>
+    <div
+      className="travel-period-row"
+      style={{
+        border: `1px solid #e5e7eb`,
+        borderLeft: `4px solid ${accentColor}`,
+        borderRadius: 4, marginBottom: 12, background: 'white',
+      }}
+    >
       {/* Period header row */}
       <div style={{
         padding: 10,

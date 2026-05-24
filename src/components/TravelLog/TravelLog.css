@@ -111,11 +111,21 @@
     break-inside: avoid !important;
   }
 
-  /* Each travel period block (header + period info + its expenses) is also
-     kept together where possible — but allows splits if one period has too
-     many expenses to fit on a single page. */
-  .travel-log .period-block {
+  /* Per-period page breaks.
+     The FIRST travel period in each shareholder section stays with the
+     section header (and the top summary on page 1), so the printout
+     opens with context. Every period AFTER the first starts on its own
+     fresh page — matching the user's request for one trip per page.
+     A trip with too many expenses to fit on a single page is allowed
+     to split internally (page-break-inside: auto) — individual expense
+     cards are still kept whole by the .travel-expense-card rule below. */
+  .travel-log .travel-period-row {
+    page-break-inside: auto !important;
     break-inside: auto !important;
+  }
+  .travel-log .travel-period-row + .travel-period-row {
+    page-break-before: always !important;
+    break-before: page !important;
   }
 
   /* Editable input fields (where/who/why on expense cards) — render as
