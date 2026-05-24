@@ -1246,18 +1246,26 @@ function ShareholderTravelSection({
       </div>
 
       {/* Travel Periods & Expenses panel */}
-      <div style={{
-        marginTop: 12,
-        border: `1px solid ${color}`,
-        borderRadius: 4,
-        background: 'white',
-      }}>
-        {/* Panel header with Add button */}
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          padding: '12px 14px', background: bgPanel,
-          borderBottom: `1px solid ${color}`,
-        }}>
+      <div
+        className="periods-panel"
+        style={{
+          marginTop: 12,
+          border: `1px solid ${color}`,
+          borderRadius: 4,
+          background: 'white',
+        }}
+      >
+        {/* Panel header with Add button — hidden in print via the
+            .periods-panel-header rule (h3 + totals above already provide
+            context, and the Add button is no-print anyway). */}
+        <div
+          className="periods-panel-header"
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '12px 14px', background: bgPanel,
+            borderBottom: `1px solid ${color}`,
+          }}
+        >
           <div style={{ fontSize: 15, fontWeight: 700, color }}>
             Travel Periods & Expenses
           </div>
@@ -1275,7 +1283,7 @@ function ShareholderTravelSection({
         </div>
 
         {/* Periods list */}
-        <div style={{ padding: 12 }}>
+        <div className="periods-panel-body" style={{ padding: 12 }}>
           {periods.length === 0 ? (
             <div style={{
               padding: 14, color: '#9ca3af', fontSize: 13, fontStyle: 'italic',

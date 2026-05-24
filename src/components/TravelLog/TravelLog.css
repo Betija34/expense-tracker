@@ -201,4 +201,24 @@
     padding: 0 !important;
     border-radius: 0 !important;
   }
+
+  /* Same treatment for the INNER "Travel Periods & Expenses" panel —
+     in print, drop its colored 1px border, white background, and rounded
+     corners so it doesn't leave an unfinished trailing edge when the
+     periods list overflows to the next page. The colored panel header
+     ("Travel Periods & Expenses" + Add button) is hidden entirely —
+     the section h3 + totals above already provide context, and the
+     Add button is no-print regardless. The body's 12px padding is
+     also zeroed so periods flow flush. */
+  .travel-log .periods-panel {
+    border: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+  }
+  .travel-log .periods-panel-header {
+    display: none !important;
+  }
+  .travel-log .periods-panel-body {
+    padding: 0 !important;
+  }
 }
