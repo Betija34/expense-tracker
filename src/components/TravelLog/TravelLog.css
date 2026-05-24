@@ -103,6 +103,23 @@
     break-after: auto !important;
   }
 
+  /* Pre-paid / Unassigned Travel section.
+     • In a full print: always starts on its own page (after both
+       shareholder sections). The trailing page-break-after from the
+       shareholder-section rule above is harmless because :last-child
+       (the unassigned block) clears it.
+     • In a single-shareholder print (Print YK / Print BK): hidden
+       entirely — that report is just the one traveler's log, no
+       pre-paid block needed. */
+  .travel-log .unassigned-section {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+  body.print-only-YK .travel-log .unassigned-section,
+  body.print-only-BK .travel-log .unassigned-section {
+    display: none !important;
+  }
+
   /* Keep each travel expense card on a single page. If there's not enough
      space for the full card (top row + metadata sub-card), push the whole
      card to the next page rather than splitting it in half. */

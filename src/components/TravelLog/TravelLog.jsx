@@ -1032,7 +1032,12 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
 
   return (
     <div
-      className="shareholder-section"
+      // shareholder-section keeps shared print styles (color preservation,
+      // base layout); unassigned-section is the marker class used to
+      //   • force a page break before this block in full prints, and
+      //   • hide it entirely in single-shareholder (YK-only / BK-only) prints.
+      // See the corresponding rules in TravelLog.css.
+      className="shareholder-section unassigned-section"
       style={{
         marginTop: 20,
         border: '2px solid #6366f1',
