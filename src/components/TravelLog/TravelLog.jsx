@@ -1188,6 +1188,63 @@ function ShareholderTravelSection({
         {code} Travel Log
       </h3>
 
+      {/* Section totals — moved to the TOP of each shareholder section
+          (above the periods panel) so the headline numbers are the
+          first thing the reader sees, both on screen and on the first
+          printed page of each section. */}
+      <div style={{
+        marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
+      }}>
+        <div style={{
+          background: 'white', border: `1px solid ${color}`, borderLeft: `4px solid ${color}`,
+          padding: '10px 12px', borderRadius: 4,
+        }}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+          }}>
+            <span style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}>
+              Total Days Traveled
+            </span>
+            <span style={{ fontSize: 20, fontWeight: 700, color: '#1f2937' }}>
+              {totals.totalDays}
+              <span style={{ fontSize: 12, fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>
+                / {totals.daysInMonth} in month
+              </span>
+            </span>
+          </div>
+          {/* Show note when sum != unique so the user understands the math */}
+          {(totals.hasOverlap || totals.hasOutOfMonth) && (
+            <div style={{
+              marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e5e7eb',
+              fontSize: 11, color: '#92400e',
+            }}>
+              {totals.hasOverlap && (
+                <div>
+                  ⚠ Periods overlap — counted {totals.sumPeriodDays} days across periods, but only {totals.totalDays} are unique days in the month.
+                </div>
+              )}
+              {totals.hasOutOfMonth && (
+                <div>
+                  ⚠ One or more periods extend beyond this month — only days within the month count toward the total.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{
+          background: 'white', border: `1px solid ${color}`, borderLeft: `4px solid ${color}`,
+          padding: '10px 12px', borderRadius: 4,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+        }}>
+          <span style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}>
+            Total Company-Paid Travel Expenses
+          </span>
+          <span style={{ fontSize: 20, fontWeight: 700, color }}>
+            {fmt(totals.totalCompanyPaid)}
+          </span>
+        </div>
+      </div>
+
       {/* Travel Periods & Expenses panel */}
       <div style={{
         marginTop: 12,
@@ -1248,60 +1305,6 @@ function ShareholderTravelSection({
           {/* Per-shareholder orphan warnings were removed — those expenses now
               appear in the global "Pre-paid / Unassigned Travel" section at
               the bottom of the page, which gives a cleaner unified view. */}
-        </div>
-      </div>
-
-      {/* Section totals */}
-      <div style={{
-        marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
-      }}>
-        <div style={{
-          background: 'white', border: `1px solid ${color}`, borderLeft: `4px solid ${color}`,
-          padding: '10px 12px', borderRadius: 4,
-        }}>
-          <div style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-          }}>
-            <span style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}>
-              Total Days Traveled
-            </span>
-            <span style={{ fontSize: 20, fontWeight: 700, color: '#1f2937' }}>
-              {totals.totalDays}
-              <span style={{ fontSize: 12, fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>
-                / {totals.daysInMonth} in month
-              </span>
-            </span>
-          </div>
-          {/* Show note when sum != unique so the user understands the math */}
-          {(totals.hasOverlap || totals.hasOutOfMonth) && (
-            <div style={{
-              marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e5e7eb',
-              fontSize: 11, color: '#92400e',
-            }}>
-              {totals.hasOverlap && (
-                <div>
-                  ⚠ Periods overlap — counted {totals.sumPeriodDays} days across periods, but only {totals.totalDays} are unique days in the month.
-                </div>
-              )}
-              {totals.hasOutOfMonth && (
-                <div>
-                  ⚠ One or more periods extend beyond this month — only days within the month count toward the total.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div style={{
-          background: 'white', border: `1px solid ${color}`, borderLeft: `4px solid ${color}`,
-          padding: '10px 12px', borderRadius: 4,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-        }}>
-          <span style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}>
-            Total Company-Paid Travel Expenses
-          </span>
-          <span style={{ fontSize: 20, fontWeight: 700, color }}>
-            {fmt(totals.totalCompanyPaid)}
-          </span>
         </div>
       </div>
     </div>
