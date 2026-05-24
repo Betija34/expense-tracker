@@ -81,9 +81,13 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         // key — the expense always belongs to the Travel Log of the month it
         // was paid. Otherwise it would disappear from the month where you
         // actually need to see the outflow.
+        // Pull accounts(name) too — the new compact identity line on each
+        // travel-expense card displays which account paid (Current /
+        // Mastercard / Cash). expense_categories(name) is still needed for
+        // the T-series filter + the displayed Category label.
         const { data: expData, error: expErr } = await supabase
           .from('expenses')
-          .select('*, expense_categories(name)')
+          .select('*, expense_categories(name), accounts(name)')
           .eq('company_id', comp.id)
           .eq('main_ref_year', selectedYear)
           .eq('main_ref_month', selectedMonth)
@@ -275,30 +279,47 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       }
       rows.push([])
       rows.push([`${s.code} TRAVEL EXPENSES`])
-      rows.push(['Date', 'Reference', 'Sub-Ref', 'Vendor', 'Subcategory', 'Where', 'Who', 'Why', 'Amount', 'Reimbursable', 'Client'])
+      // Columns mirror the new on-screen identity line + the single Notes
+      // box: Account · Ref · Sub-Ref · Invoice Date · Date Paid · Vendor ·
+      // Description · Category · Subcategory · Amount · Reimbursable ·
+      // Client · Notes. The Notes column carries the merged value so the
+      // export reflects what the user actually sees on the page.
+      rows.push([
+        'Account', 'Reference', 'Sub-Ref', 'Invoice Date', 'Date Paid',
+        'Vendor', 'Description', 'Category', 'Subcategory', 'Amount',
+        'Reimbursable', 'Client', 'Notes',
+      ])
       for (const e of myExpenses) {
         const subRef = e.sub_ref_series
           ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
           : ''
+        const notes = [
+          (e.travel_why   || '').trim(),
+          (e.travel_where || '').trim() ? `Where: ${e.travel_where.trim()}` : '',
+          (e.travel_who   || '').trim() ? `Who: ${e.travel_who.trim()}` : '',
+        ].filter(Boolean).join('\n')
         rows.push([
-          e.date || '',
+          e.accounts?.name || '',
           e.reference_number || '',
           subRef,
+          e.invoice_date || '',
+          e.date || '',
           e.vendor || '',
+          e.description || '',
+          e.expense_categories?.name || '',
           e.subcategory_name || '',
-          e.travel_where || '',
-          e.travel_who || '',
-          e.travel_why || '',
           Number(e.amount || 0),
           e.is_reimbursable ? 'Yes' : '',
           e.client_name || '',
+          notes,
         ])
       }
 
       const ws = XLSX.utils.aoa_to_sheet(rows)
       ws['!cols'] = [
-        { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }, { wch: 18 },
-        { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 18 },
+        { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
+        { wch: 22 }, { wch: 26 }, { wch: 18 }, { wch: 18 }, { wch: 11 },
+        { wch: 12 }, { wch: 18 }, { wch: 40 },
       ]
       XLSX.utils.book_append_sheet(wb, ws, `${s.code} Travel`)
     }
@@ -330,28 +351,47 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
           ['PRE-PAID / UNASSIGNED TRAVEL'],
           ['Travel expenses paid this month that don\'t match a current-month trip.'],
           [],
-          ['Shareholder', 'Date', 'Reference', 'Sub-Ref', 'Vendor', 'Subcategory', 'Amount', 'Reimbursable', 'Client'],
+          // Same column shape as the per-shareholder sheets, with an
+          // extra Shareholder column up front.
+          [
+            'Shareholder', 'Account', 'Reference', 'Sub-Ref',
+            'Invoice Date', 'Date Paid', 'Vendor', 'Description',
+            'Category', 'Subcategory', 'Amount', 'Reimbursable',
+            'Client', 'Notes',
+          ],
         ]
         for (const e of looseExpenses) {
           const subRef = e.sub_ref_series
             ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
             : ''
+          const notes = [
+            (e.travel_why   || '').trim(),
+            (e.travel_where || '').trim() ? `Where: ${e.travel_where.trim()}` : '',
+            (e.travel_who   || '').trim() ? `Who: ${e.travel_who.trim()}` : '',
+          ].filter(Boolean).join('\n')
           rows.push([
             e.shareholder_code || '(none)',
-            e.date || '',
+            e.accounts?.name || '',
             e.reference_number || '',
             subRef,
+            e.invoice_date || '',
+            e.date || '',
             e.vendor || '',
+            e.description || '',
+            e.expense_categories?.name || '',
             e.subcategory_name || '',
             Number(e.amount || 0),
             e.is_reimbursable ? 'Yes' : '',
             e.client_name || '',
+            notes,
           ])
         }
         const ws = XLSX.utils.aoa_to_sheet(rows)
         ws['!cols'] = [
-          { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 26 },
-          { wch: 18 }, { wch: 11 }, { wch: 12 }, { wch: 18 },
+          { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
+          { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 26 },
+          { wch: 18 }, { wch: 18 }, { wch: 11 }, { wch: 12 },
+          { wch: 18 }, { wch: 40 },
         ]
         XLSX.utils.book_append_sheet(wb, ws, 'Pre-paid Travel')
       }
@@ -563,58 +603,78 @@ function TravelLogSummaryBar({ periods, travelExpenses }) {
 //     to jump to the underlying expense for editing date / amount / etc.
 // =============================================================
 function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateExpense, onViewExpense }) {
-  // Local state for the three free-text trip-note fields. Synced from
-  // props whenever the parent re-renders with new data (optimistic
-  // saves keep this in sync), and committed back on blur.
-  const [where, setWhere] = useState(e.travel_where || '')
-  const [who,   setWho]   = useState(e.travel_who   || '')
-  const [why,   setWhy]   = useState(e.travel_why   || '')
+  // Same single-textarea pattern as TravelExpenseCard above. Merge any
+  // legacy where/who content into the displayed note, save back to
+  // travel_why on blur. See the long comment over TravelExpenseCard
+  // for the full rationale.
+  const mergedNote = useMemo(() => {
+    const why   = (e.travel_why   || '').trim()
+    const where = (e.travel_where || '').trim()
+    const who   = (e.travel_who   || '').trim()
+    if (why && !where && !who) return why
+    const parts = []
+    if (why)   parts.push(why)
+    if (where && !why.includes(where)) parts.push(`Where: ${where}`)
+    if (who   && !why.includes(who))   parts.push(`Who: ${who}`)
+    return parts.join('\n')
+  }, [e.travel_why, e.travel_where, e.travel_who])
 
-  useEffect(() => { setWhere(e.travel_where || '') }, [e.travel_where])
-  useEffect(() => { setWho(e.travel_who   || '') }, [e.travel_who])
-  useEffect(() => { setWhy(e.travel_why   || '') }, [e.travel_why])
+  const [note, setNote] = useState(mergedNote)
+  useEffect(() => { setNote(mergedNote) }, [mergedNote])
 
-  const commitField = (field, value, currentValue) => {
-    if (value === currentValue) return
-    onUpdateExpense && onUpdateExpense(e.id, { [field]: value || null })
+  const commitNote = () => {
+    if (note === mergedNote) return
+    onUpdateExpense && onUpdateExpense(e.id, { travel_why: note || null })
   }
 
+  const accountName = e.accounts?.name || '—'
+  const categoryName = e.expense_categories?.name || '—'
   const subRef = e.sub_ref_series
     ? `${e.sub_ref_series}${e.sub_ref_month}/${e.sub_ref_seq}`
     : ''
 
-  const inpStyle = {
-    padding: '4px 8px',
-    fontSize: 11,
-    border: '1px solid #e5e7eb',
-    borderRadius: 4,
-    width: '100%',
-    background: '#fafbff',
-  }
+  const Cell = ({ label, children, mono = false, align = 'left', minWidth }) => (
+    <div style={{ minWidth, textAlign: align }}>
+      <div style={{
+        fontSize: 9, color: '#6b7280', textTransform: 'uppercase',
+        letterSpacing: 0.4, fontWeight: 600, marginBottom: 2,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 12, color: '#1f2937', fontWeight: 500,
+        fontFamily: mono ? 'monospace' : 'inherit',
+        whiteSpace: 'normal', wordBreak: 'break-word',
+      }}>
+        {children}
+      </div>
+    </div>
+  )
 
   return (
     <div style={{
-      padding: '8px 12px',
-      fontSize: 12,
+      padding: '10px 12px',
       borderTop: '1px solid #f3f4f6',
-      color: '#374151',
     }}>
-      {/* Identity strip */}
+      {/* Identity strip — same column layout as TravelExpenseCard so the
+          two render visually consistent. We add a "future trip" badge
+          inline with the Vendor cell when expected_travel_month is set. */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '90px 70px 1fr 110px',
+        gridTemplateColumns:
+          '90px 80px 70px 85px 85px 1.2fr 1.5fr 1.4fr 90px',
         gap: 8,
-        alignItems: 'baseline',
+        alignItems: 'flex-start',
+        paddingBottom: 8,
+        borderBottom: '1px dashed #e5e7eb',
       }}>
-        <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>{fmtDate(e.date)}</span>
-        <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>{subRef}</span>
-        <span>
+        <Cell label="Account">{accountName}</Cell>
+        <Cell label="Ref No" mono>{e.reference_number || '—'}</Cell>
+        <Cell label="Sub Ref" mono>{subRef || '—'}</Cell>
+        <Cell label="Invoice Date" mono>{fmtDate(e.invoice_date)}</Cell>
+        <Cell label="Date Paid" mono>{fmtDate(e.date)}</Cell>
+        <Cell label="Vendor">
           <strong>{e.vendor || '—'}</strong>
-          {e.subcategory_name && <span style={{ color: '#9ca3af' }}> · {e.subcategory_name}</span>}
-          <span style={{ fontFamily: 'monospace', color: '#9ca3af', marginLeft: 6 }}>
-            {e.reference_number}
-          </span>
-          {/* Multi-month "future trip" badges. */}
           {e.expected_travel_month && (e.expected_travel_month.split(',')
             .map(s => s.trim())
             .filter(Boolean)
@@ -622,13 +682,9 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
               <span
                 key={token}
                 style={{
-                  marginLeft: 6,
-                  padding: '1px 7px',
-                  background: '#ede9fe',
-                  color: '#6d28d9',
-                  fontSize: 11,
-                  borderRadius: 999,
-                  fontWeight: 600,
+                  display: 'inline-block', marginLeft: 4, marginTop: 2,
+                  padding: '1px 6px', background: '#ede9fe', color: '#6d28d9',
+                  fontSize: 10, borderRadius: 999, fontWeight: 600,
                   whiteSpace: 'nowrap',
                 }}
               >
@@ -636,54 +692,59 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
               </span>
             ))
           )}
-        </span>
-        <span style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(e.amount)}</span>
+        </Cell>
+        <Cell label="Description">
+          {e.description
+            ? <span style={{ fontStyle: 'italic', color: '#4b5563' }}>{e.description}</span>
+            : '—'}
+        </Cell>
+        <Cell label="Category · Subcategory">
+          {categoryName}
+          {e.subcategory_name && (
+            <span style={{ color: '#9ca3af' }}> · {e.subcategory_name}</span>
+          )}
+        </Cell>
+        <Cell label="Amount" align="right">
+          <strong>{fmt(e.amount)}</strong>
+          {e.is_reimbursable && (
+            <div style={{
+              display: 'inline-block', marginTop: 2,
+              background: '#fed7aa', color: '#7c2d12',
+              padding: '1px 6px', borderRadius: 999, fontSize: 10, fontWeight: 600,
+            }}>
+              Reimbursable
+            </div>
+          )}
+        </Cell>
       </div>
 
-      {/* Description on its own line. */}
-      {e.description && (
-        <div style={{
-          marginTop: 2,
-          paddingLeft: 168,
-          color: '#6b7280',
-          fontStyle: 'italic',
+      {/* One freestyle Notes textarea — same data model as the main
+          TravelExpenseCard so notes entered here flow straight into
+          reports once a trip is assigned. */}
+      <div style={{ marginTop: 8 }}>
+        <label style={{
+          display: 'block', fontSize: 11, color: '#3730a3',
+          fontWeight: 600, marginBottom: 4,
         }}>
-          {e.description}
-        </div>
-      )}
-
-      {/* Trip-note editors — three side-by-side text inputs. Same data
-          model as the YK/BK trip expense cards, so anything entered here
-          flows straight into reports. */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 6,
-        marginTop: 8,
-      }}>
-        <input
-          type="text"
-          placeholder="Destination (where)"
-          value={where}
-          onChange={(ev) => setWhere(ev.target.value)}
-          onBlur={() => commitField('travel_where', where, e.travel_where)}
-          style={inpStyle}
-        />
-        <input
-          type="text"
-          placeholder="Travelers (who)"
-          value={who}
-          onChange={(ev) => setWho(ev.target.value)}
-          onBlur={() => commitField('travel_who', who, e.travel_who)}
-          style={inpStyle}
-        />
-        <input
-          type="text"
-          placeholder="Reason / purpose (why)"
-          value={why}
-          onChange={(ev) => setWhy(ev.target.value)}
-          onBlur={() => commitField('travel_why', why, e.travel_why)}
-          style={inpStyle}
+          Notes — what was done, who attended, for which meeting, etc.
+        </label>
+        <textarea
+          rows={2}
+          placeholder="e.g. Flight booked in advance for July sales conference in Athens. BK + YK."
+          value={note}
+          onChange={(ev) => setNote(ev.target.value)}
+          onBlur={commitNote}
+          style={{
+            width: '100%',
+            padding: '6px 8px',
+            border: '1px solid #c7d2fe',
+            borderRadius: 4,
+            fontSize: 13,
+            fontFamily: 'inherit',
+            resize: 'vertical',
+            boxSizing: 'border-box',
+            background: '#f5f7ff',
+          }}
         />
       </div>
 
@@ -1248,115 +1309,155 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
 }
 
 // =============================================================
-// One travel-expense card with conditional metadata fields
+// One travel-expense card — new design (Day 14 redesign)
+// -------------------------------------------------------------
+// Layout:
+//   • Top: a single identity line mirroring the View Expenses row —
+//       Account · Main Ref · Sub Ref · Invoice Date · Date Paid ·
+//       Vendor · Description · Category / Subcategory · Amount ·
+//       Reimbursable badge (when applicable).
+//   • Bottom: ONE freestyle Notes textarea (replaces the previous
+//     three Where/Who/Why inputs). Existing data in travel_where /
+//     travel_who / travel_why is auto-merged into the displayed
+//     value on first render so nothing is lost. On save we write
+//     only to travel_why — the most generic of the three. The old
+//     where/who columns remain in the DB (unchanged) but are no
+//     longer surfaced in the Travel Log UI.
 // =============================================================
 function TravelExpenseCard({ expense, index, onUpdate }) {
-  const subName = (expense.subcategory_name || '').toLowerCase()
-  const isAccommodation = subName.includes('accommodation') || subName.includes('hotel') || subName.includes('lodging')
-  const isTransportation = subName.includes('transportation') || subName.includes('travel') || subName.includes('flight') || subName.includes('taxi')
+  // Merge any pre-existing where/who/why content into one note string.
+  // Order: why first (it's the field we'll save to going forward), then
+  // where and who if present and not already substrings of why. We don't
+  // try to be too clever — the user can clean it up once and re-save.
+  const mergedNote = useMemo(() => {
+    const why   = (expense.travel_why   || '').trim()
+    const where = (expense.travel_where || '').trim()
+    const who   = (expense.travel_who   || '').trim()
+    if (why && !where && !who) return why
+    const parts = []
+    if (why)   parts.push(why)
+    if (where && !why.includes(where)) parts.push(`Where: ${where}`)
+    if (who   && !why.includes(who))   parts.push(`Who: ${who}`)
+    return parts.join('\n')
+  }, [expense.travel_why, expense.travel_where, expense.travel_who])
 
-  // Labels switch based on subcategory
-  const labels = isAccommodation
-    ? { where: 'Location', who: 'Participants', why: 'Purpose',
-        wherePh: 'e.g., Plaza Hotel in London',
-        whoPh: 'e.g., John Smith and Sarah Jones',
-        whyPh: 'e.g., Client Meetings' }
-    : isTransportation
-      ? { where: 'Travel Route (from location → end location)', who: 'Travelers', why: 'Purpose',
-          wherePh: 'e.g., Flight from London to New York OR Taxi from Office to Airport',
-          whoPh: 'e.g., John Smith and Sarah Jones',
-          whyPh: 'e.g., Client meeting and project visit' }
-      : { where: 'Where', who: 'Who', why: 'Purpose',
-          wherePh: 'Location / route detail',
-          whoPh: 'Participants / travelers',
-          whyPh: 'Reason for this expense' }
+  const [note, setNote] = useState(mergedNote)
+  // Re-sync when the underlying expense changes (e.g. optimistic save
+  // bubbles back through props, or month switches).
+  useEffect(() => { setNote(mergedNote) }, [mergedNote])
 
-  const [where, setWhere] = useState(expense.travel_where || '')
-  const [who, setWho]     = useState(expense.travel_who   || '')
-  const [why, setWhy]     = useState(expense.travel_why   || '')
-
-  useEffect(() => { setWhere(expense.travel_where || '') }, [expense.travel_where])
-  useEffect(() => { setWho(expense.travel_who || '') },     [expense.travel_who])
-  useEffect(() => { setWhy(expense.travel_why || '') },     [expense.travel_why])
-
-  const commit = (field, value, original) => {
-    if (value !== (original || '')) onUpdate({ [field]: value })
+  const commitNote = () => {
+    if (note === mergedNote) return
+    onUpdate({ travel_why: note || null })
   }
+
+  const accountName = expense.accounts?.name || '—'
+  const categoryName = expense.expense_categories?.name || '—'
+  const subRef = expense.sub_ref_series
+    ? `${expense.sub_ref_series}${expense.sub_ref_month}/${expense.sub_ref_seq}`
+    : ''
+
+  // Identity-line cells. Each one renders label-on-top, value-below so
+  // the row keeps its grid alignment on screen and in print, even when
+  // some values are missing (— for nulls keeps the layout stable).
+  const Cell = ({ label, children, mono = false, align = 'left', minWidth }) => (
+    <div style={{ minWidth, textAlign: align }}>
+      <div style={{
+        fontSize: 9, color: '#6b7280', textTransform: 'uppercase',
+        letterSpacing: 0.4, fontWeight: 600, marginBottom: 2,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 12, color: '#1f2937', fontWeight: 500,
+        fontFamily: mono ? 'monospace' : 'inherit',
+        whiteSpace: 'normal', wordBreak: 'break-word',
+      }}>
+        {children}
+      </div>
+    </div>
+  )
 
   return (
     <div className="travel-expense-card" style={{
-      background: '#fef3c7', border: '1px solid #fde68a',
+      background: 'white', border: '1px solid #e5e7eb',
       borderLeft: '4px solid #f59e0b',
       borderRadius: 4, padding: 10, marginBottom: 8,
     }}>
-      {/* Top row: ref, date, vendor, amount, flags */}
+      {/* Identity strip — View Expenses-style row. Grid columns sized to
+          match the data shapes; the wider ones (Vendor, Description,
+          Category/Subcategory) get more room. */}
       <div style={{
-        display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 12,
-        fontSize: 12, color: '#374151', marginBottom: 6,
+        display: 'grid',
+        gridTemplateColumns:
+          // Account | Ref | SubRef | InvDate | PaidDate | Vendor | Desc | Cat/Sub | Amount
+          '90px 80px 70px 85px 85px 1.2fr 1.5fr 1.4fr 90px',
+        gap: 8,
+        alignItems: 'flex-start',
+        paddingBottom: 8,
+        borderBottom: '1px dashed #e5e7eb',
       }}>
-        <span><strong style={{ color: '#92400e' }}>Expense {index}:</strong></span>
-        <span>Ref: <span style={{ fontFamily: 'monospace' }}>{expense.reference_number || '—'}</span>
-          {expense.sub_ref_series && (
-            <span style={{ fontFamily: 'monospace', marginLeft: 4, color: '#0c4a6e' }}>
-              {expense.sub_ref_series}{expense.sub_ref_month}/{expense.sub_ref_seq}
-            </span>
+        <Cell label={`Expense ${index}`}>{accountName}</Cell>
+        <Cell label="Ref No" mono>{expense.reference_number || '—'}</Cell>
+        <Cell label="Sub Ref" mono>{subRef || '—'}</Cell>
+        <Cell label="Invoice Date" mono>{fmtDate(expense.invoice_date)}</Cell>
+        <Cell label="Date Paid" mono>{fmtDate(expense.date)}</Cell>
+        <Cell label="Vendor">
+          <strong>{expense.vendor || '—'}</strong>
+        </Cell>
+        <Cell label="Description">
+          {expense.description
+            ? <span style={{ fontStyle: 'italic', color: '#4b5563' }}>{expense.description}</span>
+            : '—'}
+        </Cell>
+        <Cell label="Category · Subcategory">
+          {categoryName}
+          {expense.subcategory_name && (
+            <span style={{ color: '#9ca3af' }}> · {expense.subcategory_name}</span>
           )}
-        </span>
-        <span>Date: {fmtDate(expense.date)}</span>
-        <span>Vendor: <strong>{expense.vendor || '—'}</strong></span>
-        <span>Amount: <strong>{fmt(expense.amount)}</strong></span>
-        {expense.is_reimbursable && (
-          <span style={{
-            background: '#fed7aa', color: '#7c2d12',
-            padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-          }}>
-            Client Reimbursable{expense.client_name ? ` · ${expense.client_name}` : ''}
-          </span>
-        )}
+        </Cell>
+        <Cell label="Amount" align="right">
+          <strong>{fmt(expense.amount)}</strong>
+          {expense.is_reimbursable && (
+            <div style={{
+              display: 'inline-block', marginTop: 2,
+              background: '#fed7aa', color: '#7c2d12',
+              padding: '1px 6px', borderRadius: 999, fontSize: 10, fontWeight: 600,
+            }}>
+              Reimbursable
+            </div>
+          )}
+        </Cell>
       </div>
-      <div style={{ fontSize: 12, color: '#374151', marginBottom: 4 }}>
-        Subcategory: <strong>{expense.subcategory_name || '—'}</strong>
-      </div>
-      {/* Description — the free-text note set when the expense was finalized
-          (e.g. "Flight TLV-LCA BK and YK"). Often the single most useful piece
-          of context for understanding what this travel expense is for. */}
-      {expense.description && (
-        <div style={{ fontSize: 12, color: '#4b5563', marginBottom: 8, fontStyle: 'italic' }}>
-          {expense.description}
-        </div>
-      )}
 
-      {/* Metadata fields (white background sub-card) */}
-      <div style={{
-        background: 'white', border: '1px solid #e5e7eb',
-        borderRadius: 4, padding: 10,
-      }}>
-        <label style={{ ...lblStyle, color: '#374151' }}>{labels.where}:</label>
-        <input
-          type="text"
-          placeholder={labels.wherePh}
-          value={where}
-          onChange={(e) => setWhere(e.target.value)}
-          onBlur={() => commit('travel_where', where, expense.travel_where)}
-          style={inpStyle}
-        />
-        <label style={{ ...lblStyle, color: '#374151', marginTop: 6 }}>{labels.who}:</label>
-        <input
-          type="text"
-          placeholder={labels.whoPh}
-          value={who}
-          onChange={(e) => setWho(e.target.value)}
-          onBlur={() => commit('travel_who', who, expense.travel_who)}
-          style={inpStyle}
-        />
-        <label style={{ ...lblStyle, color: '#374151', marginTop: 6 }}>{labels.why}:</label>
-        <input
-          type="text"
-          placeholder={labels.whyPh}
-          value={why}
-          onChange={(e) => setWhy(e.target.value)}
-          onBlur={() => commit('travel_why', why, expense.travel_why)}
-          style={inpStyle}
+      {/* One freestyle Notes textarea — replaces the previous three
+          Where/Who/Why inputs. Pre-populated with merged content from
+          the legacy three fields the first time it's opened, so the
+          user simply edits + blurs to save into travel_why. */}
+      <div style={{ marginTop: 8 }}>
+        <label style={{
+          display: 'block', fontSize: 11, color: '#92400e',
+          fontWeight: 600, marginBottom: 4,
+        }}>
+          Notes — what was done, who attended, for which meeting, etc.
+        </label>
+        <textarea
+          rows={3}
+          placeholder="e.g. Dinner with prospective client ABC Ltd. Attended by BK and YK. Discussed Q2 renewal."
+          value={note}
+          onChange={(ev) => setNote(ev.target.value)}
+          onBlur={commitNote}
+          style={{
+            width: '100%',
+            padding: '6px 8px',
+            border: '1px solid #fde68a',
+            borderRadius: 4,
+            fontSize: 13,
+            fontFamily: 'inherit',
+            resize: 'vertical',
+            boxSizing: 'border-box',
+            background: '#fffbeb',
+          }}
         />
       </div>
     </div>
