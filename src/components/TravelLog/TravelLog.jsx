@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
@@ -805,7 +805,7 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods
         }}>
           Notes
         </label>
-        <textarea
+        <AutoGrowTextarea
           rows={2}
           placeholder="e.g. Flight booked in advance for July sales conference in Athens. BK + YK."
           value={note}
@@ -821,6 +821,7 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods
             resize: 'vertical',
             boxSizing: 'border-box',
             background: '#f5f7ff',
+            overflow: 'hidden',
           }}
         />
       </div>
@@ -1595,16 +1596,18 @@ function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selected
         </div>
       </div>
 
-      {/* Comments */}
+      {/* Comments — uses AutoGrowTextarea so long FLIGHT DETAILS or
+          multi-paragraph notes show in full both on screen and in
+          print (previously rows={2} truncated long content on paper). */}
       <div style={{ padding: '8px 12px 12px' }}>
         <label style={lblStyle}>Travel Period Comments</label>
-        <textarea
+        <AutoGrowTextarea
           rows={2}
           placeholder="Add any notes or comments about this travel period (optional)"
           value={comments}
           onChange={(e) => setComments(e.target.value)}
           onBlur={() => comments !== (period.comments || '') && onUpdate({ comments })}
-          style={{ ...inpStyle, resize: 'vertical', fontFamily: 'inherit' }}
+          style={{ ...inpStyle, resize: 'vertical', fontFamily: 'inherit', overflow: 'hidden' }}
         />
       </div>
     </div>
@@ -1760,7 +1763,7 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
         }}>
           Notes
         </label>
-        <textarea
+        <AutoGrowTextarea
           rows={3}
           placeholder="e.g. Dinner with prospective client ABC Ltd. Attended by BK and YK. Discussed Q2 renewal."
           value={note}
@@ -1776,6 +1779,7 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
             resize: 'vertical',
             boxSizing: 'border-box',
             background: '#fffbeb',
+            overflow: 'hidden',
           }}
         />
       </div>
@@ -1906,6 +1910,38 @@ function TripAssignmentRow({ expense, currentPeriodId, allPeriods = [], onAssign
 // =============================================================
 // Helpers
 // =============================================================
+// =============================================================
+// AutoGrowTextarea — drop-in replacement for <textarea> that always
+// sizes its height to fit its content. The rows attribute still acts
+// as the initial render hint, but once the component mounts the
+// effect resets `style.height = 'auto'` and then sets it to the
+// element's scrollHeight on every value change, so the box grows as
+// the user types AND keeps that grown size in print (the previous
+// fixed `rows` collapsed long comments at print time, cutting off
+// the trailing lines — see screenshots from the user).
+// =============================================================
+function AutoGrowTextarea({ value, onChange, onBlur, placeholder, style, rows = 2, ...rest }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      rows={rows}
+      value={value}
+      onChange={onChange}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      style={style}
+      {...rest}
+    />
+  )
+}
+
 // Sort comparator used after optimistic period updates so editing a
 // period's From Date immediately reorders it within the list. ISO date
 // strings (YYYY-MM-DD) sort correctly with plain string comparison.
