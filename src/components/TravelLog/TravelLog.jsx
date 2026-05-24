@@ -262,7 +262,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
 
       const rows = []
       rows.push([`${s.code} TRAVEL PERIODS`])
-      rows.push(['From', 'To', 'Days', 'Destination', 'Reason'])
+      rows.push(['From', 'To', 'Days', 'Destination', 'Reason', 'Flights', 'Comments'])
       for (const p of myPeriods) {
         const fromD = p.from_date ? new Date(p.from_date) : null
         const toD = p.to_date ? new Date(p.to_date) : null
@@ -275,6 +275,8 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
           days,
           p.destination || '',
           p.reason || '',
+          p.flights || '',
+          p.comments || '',
         ])
       }
       rows.push([])
@@ -726,7 +728,7 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
           display: 'block', fontSize: 11, color: '#3730a3',
           fontWeight: 600, marginBottom: 4,
         }}>
-          Notes — what was done, who attended, for which meeting, etc.
+          Notes
         </label>
         <textarea
           rows={2}
@@ -1167,6 +1169,7 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
   const [toDate, setToDate] = useState(period.to_date || '')
   const [destination, setDestination] = useState(period.destination || '')
   const [reason, setReason] = useState(period.reason || '')
+  const [flights, setFlights] = useState(period.flights || '')
   const [comments, setComments] = useState(period.comments || '')
 
   // Sync if external changes
@@ -1174,6 +1177,7 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
   useEffect(() => { setToDate(period.to_date || '') }, [period.to_date])
   useEffect(() => { setDestination(period.destination || '') }, [period.destination])
   useEffect(() => { setReason(period.reason || '') }, [period.reason])
+  useEffect(() => { setFlights(period.flights || '') }, [period.flights])
   useEffect(() => { setComments(period.comments || '') }, [period.comments])
 
   const days = daysBetween(fromDate, toDate)
@@ -1258,6 +1262,27 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
             Delete
           </button>
         </div>
+      </div>
+
+      {/* Flights field — full-width freestyle line directly under the
+          From / To / Destination / Reason row. Holds the actual flight
+          legs taken for this trip (e.g.
+          "TLV→LCA→ATH 01/03 · ATH→LCA→TLV 12/03"). Stored in the new
+          travel_periods.flights column added in V28. */}
+      <div style={{
+        padding: '0 10px 10px',
+        background: '#f9fafb',
+        borderTop: '1px dashed #e5e7eb',
+      }}>
+        <label style={{ ...lblStyle, paddingTop: 8 }}>Flights</label>
+        <input
+          type="text"
+          placeholder="e.g. TLV → LCA → ATH on 01/03 · ATH → LCA → TLV on 12/03"
+          value={flights}
+          onChange={(e) => setFlights(e.target.value)}
+          onBlur={() => flights !== (period.flights || '') && onUpdate({ flights })}
+          style={{ ...inpStyle, width: '100%' }}
+        />
       </div>
 
       {/* Travel Expenses for this Period */}
@@ -1439,7 +1464,7 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
           display: 'block', fontSize: 11, color: '#92400e',
           fontWeight: 600, marginBottom: 4,
         }}>
-          Notes — what was done, who attended, for which meeting, etc.
+          Notes
         </label>
         <textarea
           rows={3}
