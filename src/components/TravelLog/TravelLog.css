@@ -187,4 +187,18 @@
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+
+  /* Strip the outer .shareholder-section chrome (2px colored frame, light
+     background, padding, rounded corners) in print. On screen these
+     visually group each shareholder's content, but on paper — when the
+     section's inner content overflows to the next page — the empty
+     trailing edge of the frame looks unfinished. Color accents already
+     come through on the inner blocks (period rows, totals cards,
+     pre-paid container), so nothing material is lost. */
+  .travel-log .shareholder-section {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
 }
