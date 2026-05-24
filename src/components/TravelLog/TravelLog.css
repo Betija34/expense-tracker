@@ -36,6 +36,13 @@
   background: #1B5E20;
 }
 
+/* Page-break marker injected between travel periods — print-only.
+   Hidden on screen so it doesn't disturb the visible layout. The
+   print version is defined further below in the @media print block. */
+.travel-log .period-page-break {
+  display: none;
+}
+
 /* Print-only letterhead block (company name + title + period) */
 .travel-log .print-header {
   text-align: center;
@@ -154,6 +161,21 @@
     break-before: page !important;
   }
   .travel-log .travel-period-row:not(:last-child) {
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+
+  /* Explicit page-break marker injected via JSX between periods.
+     Chrome reliably honors page-break-after on a dedicated marker
+     element even when it drops the sibling-based rules above. This
+     div has zero height so it doesn't add visible space; aria-hidden
+     keeps it out of accessibility trees. */
+  .travel-log .period-page-break {
+    display: block !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
     page-break-after: always !important;
     break-after: page !important;
   }

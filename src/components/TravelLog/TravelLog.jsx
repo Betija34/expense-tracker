@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
@@ -1293,21 +1293,32 @@ function ShareholderTravelSection({
               No travel periods recorded for this month
             </div>
           ) : (
-            periods.map(p => (
-              <TravelPeriodRow
-                key={p.id}
-                period={p}
-                expenses={totals.expensesByPeriod.get(p.id) || []}
-                allPeriods={allPeriods}
-                selectedMonth={selectedMonth}
-                selectedYear={selectedYear}
-                accentColor={color}
-                onUpdate={(patch) => onUpdatePeriod(p.id, patch)}
-                onDelete={() => onDeletePeriod(p.id)}
-                onUpdateExpense={onUpdateExpense}
-                onAssignExpenseToPeriod={onAssignExpenseToPeriod}
-                onViewExpense={onViewExpense}
-              />
+            periods.map((p, idx) => (
+              <Fragment key={p.id}>
+                {/* Print-only page-break marker. Sibling-based
+                    page-break-before/after rules on .travel-period-row
+                    are flaky in Chrome (it sometimes drops the break),
+                    so for every period after the first we inject an
+                    explicit empty <div> with display:block + height:0
+                    + page-break-after: always. Chrome reliably honors
+                    page-break on a dedicated marker element. The CSS
+                    rule for .period-page-break in TravelLog.css makes
+                    it invisible on screen (display:none). */}
+                {idx > 0 && <div className="period-page-break" aria-hidden="true" />}
+                <TravelPeriodRow
+                  period={p}
+                  expenses={totals.expensesByPeriod.get(p.id) || []}
+                  allPeriods={allPeriods}
+                  selectedMonth={selectedMonth}
+                  selectedYear={selectedYear}
+                  accentColor={color}
+                  onUpdate={(patch) => onUpdatePeriod(p.id, patch)}
+                  onDelete={() => onDeletePeriod(p.id)}
+                  onUpdateExpense={onUpdateExpense}
+                  onAssignExpenseToPeriod={onAssignExpenseToPeriod}
+                  onViewExpense={onViewExpense}
+                />
+              </Fragment>
             ))
           )}
 
