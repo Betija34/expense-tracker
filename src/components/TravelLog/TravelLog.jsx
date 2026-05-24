@@ -193,6 +193,31 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
     setTravelExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, ...patch } : e))
   }
 
+  // -------------------------------------------------------------
+  // Manual trip assignment for an expense (V29).
+  // When periodId is non-null we also auto-set shareholder_code to
+  // match the period's owner — so an expense pre-paid for a YK trip
+  // but currently tagged BK (or untagged) lands in the right card.
+  // Passing periodId=null clears the manual link and reverts to
+  // date-based auto-grouping (shareholder_code is left alone).
+  // -------------------------------------------------------------
+  const assignExpenseToPeriod = async (expenseId, periodId) => {
+    const patch = { assigned_period_id: periodId }
+    if (periodId) {
+      const p = periods.find(pp => pp.id === periodId)
+      if (p?.shareholder_code) patch.shareholder_code = p.shareholder_code
+    }
+    const { error } = await supabase
+      .from('expenses')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', expenseId)
+    if (error) {
+      alert('Failed to assign trip: ' + error.message)
+      return
+    }
+    setTravelExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, ...patch } : e))
+  }
+
   if (loading) return <div className="loading">Loading travel log…</div>
   if (error) return <div className="error">{error}</div>
 
@@ -456,21 +481,40 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       />
 
       {/* Two shareholder sections */}
-      {SHAREHOLDERS.map(s => (
-        <ShareholderTravelSection
-          key={s.code}
-          shareholder={s}
-          periods={periods.filter(p => p.shareholder_code === s.code)}
-          travelExpenses={travelExpenses.filter(e => e.shareholder_code === s.code)}
-          selectedMonth={selectedMonth}
-          selectedYear={selectedYear}
-          onAddPeriod={() => addPeriod(s.code)}
-          onUpdatePeriod={updatePeriod}
-          onDeletePeriod={deletePeriod}
-          onUpdateExpense={updateExpenseDetails}
-          onSwitchTab={onSwitchTab}
-        />
-      ))}
+      {SHAREHOLDERS.map(s => {
+        // For each shareholder section we include:
+        //   • Periods belonging to that shareholder, AND
+        //   • Expenses whose shareholder_code matches OR whose
+        //     assigned_period_id points at one of this shareholder's
+        //     periods (manual assignment cascades the shareholder
+        //     automatically, but we belt-and-suspenders here in case
+        //     the cascade missed for some legacy row).
+        const myPeriodIds = new Set(
+          periods.filter(p => p.shareholder_code === s.code).map(p => p.id)
+        )
+        const myExpenses = travelExpenses.filter(e =>
+          e.shareholder_code === s.code ||
+          (e.assigned_period_id && myPeriodIds.has(e.assigned_period_id))
+        )
+        return (
+          <ShareholderTravelSection
+            key={s.code}
+            shareholder={s}
+            periods={periods.filter(p => p.shareholder_code === s.code)}
+            allPeriods={periods}
+            travelExpenses={myExpenses}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+            onAddPeriod={() => addPeriod(s.code)}
+            onUpdatePeriod={updatePeriod}
+            onDeletePeriod={deletePeriod}
+            onUpdateExpense={updateExpenseDetails}
+            onAssignExpenseToPeriod={assignExpenseToPeriod}
+            onSwitchTab={onSwitchTab}
+            onViewExpense={onViewExpense}
+          />
+        )
+      })}
 
       {/* Pre-paid / Unassigned Travel section — catches every travel expense
           paid this month that isn't accounted for by a YK/BK trip this month.
@@ -485,6 +529,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         travelExpenses={travelExpenses}
         onSwitchTab={onSwitchTab}
         onUpdateExpense={updateExpenseDetails}
+        onAssignExpenseToPeriod={assignExpenseToPeriod}
         onViewExpense={onViewExpense}
       />
     </div>
@@ -501,6 +546,12 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
 function TravelLogSummaryBar({ periods, travelExpenses }) {
   const stats = useMemo(() => {
     const isMatched = (e, shareholder) => {
+      // Manual assignment wins. The expense matches whichever
+      // shareholder owns the assigned period.
+      if (e.assigned_period_id) {
+        const ap = periods.find(p => p.id === e.assigned_period_id)
+        return ap?.shareholder_code === shareholder
+      }
       if (e.shareholder_code !== shareholder) return false
       // invoice_date override beats bank settlement date for trip matching.
       const matchDate = e.invoice_date || e.date
@@ -612,7 +663,7 @@ function TravelLogSummaryBar({ periods, travelExpenses }) {
 //   • Action row: Assign → YK / → BK / Clear, plus "View in View Expenses →"
 //     to jump to the underlying expense for editing date / amount / etc.
 // =============================================================
-function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateExpense, onViewExpense }) {
+function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods = [], onUpdateExpense, onAssignExpenseToPeriod, onViewExpense }) {
   // Same single-textarea pattern as TravelExpenseCard above. Merge any
   // legacy where/who content into the displayed note, save back to
   // travel_why on blur. See the long comment over TravelExpenseCard
@@ -679,7 +730,23 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
         borderBottom: '1px dashed #e5e7eb',
       }}>
         <Cell label="Account">{accountName}</Cell>
-        <Cell label="Ref No" mono>{e.reference_number || '—'}</Cell>
+        <Cell label="Ref No" mono>
+          {e.reference_number && onViewExpense ? (
+            <button
+              type="button"
+              onClick={() => onViewExpense(e.id)}
+              title="Open in View Expenses for editing"
+              style={{
+                background: 'none', border: 'none', padding: 0,
+                color: '#1d4ed8', textDecoration: 'underline',
+                fontFamily: 'inherit', fontSize: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {e.reference_number}
+            </button>
+          ) : (e.reference_number || '—')}
+        </Cell>
         <Cell label="Sub Ref" mono>{subRef || '—'}</Cell>
         <Cell label="Invoice Date" mono>{fmtDate(e.invoice_date)}</Cell>
         <Cell label="Date Paid" mono>{fmtDate(e.date)}</Cell>
@@ -758,6 +825,52 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
         />
       </div>
 
+      {/* "Assign to trip" dropdown — the primary tool for moving a
+          pre-paid / off-window expense into a specific trip card.
+          Independent of the YK/BK quick buttons below: picking a trip
+          here also auto-sets shareholder_code, so the expense lands in
+          the right card no matter what its previous tag was. */}
+      {onAssignExpenseToPeriod && allPeriods.length > 0 && (
+        <div className="no-print" style={{
+          marginTop: 8, padding: '6px 8px',
+          background: 'white',
+          border: '1px dashed #c7d2fe',
+          borderRadius: 4,
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          fontSize: 11, color: '#3730a3',
+        }}>
+          <span style={{ fontWeight: 600 }}>Assign to trip:</span>
+          <select
+            value={e.assigned_period_id || ''}
+            onChange={(ev) => {
+              const v = ev.target.value || null
+              if (v === (e.assigned_period_id || null)) return
+              onAssignExpenseToPeriod(e.id, v)
+            }}
+            style={{
+              padding: '3px 6px', fontSize: 11,
+              border: '1px solid #c7d2fe', borderRadius: 4,
+              background: 'white', maxWidth: '100%',
+            }}
+          >
+            <option value="">— Auto (match by date) —</option>
+            {[...allPeriods].sort(byFromDateAsc).map(p => {
+              const f = (p.from_date || '').slice(8) + '/' + (p.from_date || '').slice(5, 7)
+              const t = (p.to_date   || '').slice(8) + '/' + (p.to_date   || '').slice(5, 7)
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.shareholder_code} · {f}–{t}
+                  {p.destination ? ` · ${p.destination}` : ''}
+                </option>
+              )
+            })}
+          </select>
+          <span style={{ color: '#6b7280' }}>
+            (For trips with both travelers, assign to YK.)
+          </span>
+        </div>
+      )}
+
       {/* Action row — shareholder assignment + jump to View Expenses */}
       <div style={{
         display: 'flex',
@@ -795,7 +908,7 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, onUpdateEx
 // Catches all travel expenses paid this month that aren't anchored to a
 // current-month trip for either shareholder.
 // =============================================================
-function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdateExpense, onViewExpense }) {
+function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdateExpense, onAssignExpenseToPeriod, onViewExpense }) {
   // Build the same expense→period match as ShareholderTravelSection, but
   // across both shareholders. Anything that doesn't match a period this
   // month is "loose" and shows up here.
@@ -803,6 +916,13 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
     const matched = new Set()
     for (const p of periods) {
       for (const e of travelExpenses) {
+        // Manual assignment wins over everything — if assigned_period_id
+        // is set, the expense matches that period (regardless of dates
+        // or shareholder_code) and nothing else.
+        if (e.assigned_period_id) {
+          if (e.assigned_period_id === p.id) matched.add(e.id)
+          continue
+        }
         const matchDate = e.invoice_date || e.date
         if (
           e.shareholder_code === p.shareholder_code &&
@@ -899,7 +1019,9 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
               fmt={fmt}
               fmtDate={fmtDate}
               AssignButtons={AssignButtons}
+              allPeriods={periods}
               onUpdateExpense={onUpdateExpense}
+              onAssignExpenseToPeriod={onAssignExpenseToPeriod}
               onViewExpense={onViewExpense}
             />
           ))}
@@ -966,9 +1088,10 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
 // One shareholder's full Travel Log section
 // =============================================================
 function ShareholderTravelSection({
-  shareholder, periods, travelExpenses,
+  shareholder, periods, allPeriods, travelExpenses,
   selectedMonth, selectedYear,
   onAddPeriod, onUpdatePeriod, onDeletePeriod, onUpdateExpense,
+  onAssignExpenseToPeriod, onViewExpense,
 }) {
   const { code, color, bgLight, bgPanel } = shareholder
 
@@ -1010,10 +1133,19 @@ function ShareholderTravelSection({
       }
 
       // Expenses falling within this period's full date range (not just in-month).
-      // Uses invoice_date when set (actual transaction date) instead of the
-      // bank settlement date — keeps cross-day card transactions on the
-      // correct trip.
+      // Order of precedence:
+      //   1. Manual assignment (assigned_period_id) — set by the user via
+      //      the "Assign to trip" dropdown; takes priority over dates.
+      //      An expense manually assigned to a DIFFERENT period is
+      //      explicitly excluded from this one even if its date would
+      //      match (otherwise we'd double-count it).
+      //   2. invoice_date when present (actual transaction date) —
+      //      keeps cross-day card transactions on the correct trip.
+      //   3. date (bank settlement date) as the fallback.
       const myExpenses = travelExpenses.filter(e => {
+        if (e.assigned_period_id) {
+          return e.assigned_period_id === p.id
+        }
         const matchDate = e.invoice_date || e.date
         return matchDate >= p.from_date && matchDate <= p.to_date
       })
@@ -1095,12 +1227,15 @@ function ShareholderTravelSection({
                 key={p.id}
                 period={p}
                 expenses={totals.expensesByPeriod.get(p.id) || []}
+                allPeriods={allPeriods}
                 selectedMonth={selectedMonth}
                 selectedYear={selectedYear}
                 accentColor={color}
                 onUpdate={(patch) => onUpdatePeriod(p.id, patch)}
                 onDelete={() => onDeletePeriod(p.id)}
                 onUpdateExpense={onUpdateExpense}
+                onAssignExpenseToPeriod={onAssignExpenseToPeriod}
+                onViewExpense={onViewExpense}
               />
             ))
           )}
@@ -1171,7 +1306,7 @@ function ShareholderTravelSection({
 // =============================================================
 // One travel period row (editable inline)
 // =============================================================
-function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accentColor, onUpdate, onDelete, onUpdateExpense }) {
+function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selectedYear, accentColor, onUpdate, onDelete, onUpdateExpense, onAssignExpenseToPeriod, onViewExpense }) {
   // Local inputs for inline editing — save on blur
   const [fromDate, setFromDate] = useState(period.from_date || '')
   const [toDate, setToDate] = useState(period.to_date || '')
@@ -1191,6 +1326,47 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
   const days = daysBetween(fromDate, toDate)
   const periodCompanyPaid = sumAmounts(expenses.filter(e => !e.is_reimbursable))
 
+  // ---------- Header dirty state + validation + save/cancel ----------
+  // The 4 header fields (From, To, Destination, Reason) save TOGETHER
+  // via an explicit Save button when any are dirty + the combination
+  // is valid. This avoids the broken intermediate state where saving
+  // From in isolation on blur could leave the row with From > To and
+  // trigger the DB CHECK constraint warning.
+  //
+  // Mandatory: From, To, Destination. Reason is optional but goes
+  // through the same save so all four commit atomically.
+  const isHeaderDirty =
+    fromDate    !== (period.from_date    || '') ||
+    toDate      !== (period.to_date      || '') ||
+    destination !== (period.destination  || '') ||
+    reason      !== (period.reason       || '')
+
+  const headerErrors = []
+  if (!fromDate)            headerErrors.push('From Date is required')
+  if (!toDate)              headerErrors.push('To Date is required')
+  if (!destination.trim())  headerErrors.push('Destination is required')
+  if (fromDate && toDate && fromDate > toDate) {
+    headerErrors.push('From Date must be on or before To Date')
+  }
+  const canSaveHeader = isHeaderDirty && headerErrors.length === 0
+
+  const saveHeader = () => {
+    if (!canSaveHeader) return
+    onUpdate({
+      from_date:   fromDate,
+      to_date:     toDate,
+      destination: destination.trim(),
+      reason:      reason.trim() || null,
+    })
+  }
+
+  const cancelHeader = () => {
+    setFromDate(period.from_date    || '')
+    setToDate(period.to_date        || '')
+    setDestination(period.destination || '')
+    setReason(period.reason         || '')
+  }
+
   return (
     <div style={{
       border: `1px solid #e5e7eb`,
@@ -1205,13 +1381,17 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
         gap: 10, alignItems: 'end',
         background: '#f9fafb',
       }}>
+        {/* The four header fields below NO LONGER save on blur — they
+            commit together via the Save Changes button rendered below
+            this row when any of them is dirty + the combination is
+            valid. This avoids the broken intermediate state where
+            saving From in isolation could land a From > To row. */}
         <div>
           <label style={lblStyle}>From Date</label>
           <input
             type="date"
             value={fromDate}
             onChange={(e) => setFromDate(e.target.value)}
-            onBlur={() => fromDate !== period.from_date && onUpdate({ from_date: fromDate })}
             style={inpStyle}
           />
         </div>
@@ -1221,7 +1401,6 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
             type="date"
             value={toDate}
             onChange={(e) => setToDate(e.target.value)}
-            onBlur={() => toDate !== period.to_date && onUpdate({ to_date: toDate })}
             style={inpStyle}
           />
         </div>
@@ -1232,7 +1411,6 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
             placeholder="e.g., Athens"
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
-            onBlur={() => destination !== (period.destination || '') && onUpdate({ destination })}
             style={inpStyle}
           />
         </div>
@@ -1243,7 +1421,6 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
             placeholder="e.g., Client meetings"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            onBlur={() => reason !== (period.reason || '') && onUpdate({ reason })}
             style={inpStyle}
           />
         </div>
@@ -1271,6 +1448,76 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
           </button>
         </div>
       </div>
+
+      {/* Save bar — only appears when one of the 4 header fields has
+          unsaved local edits. Green strip + Save button when the
+          combination is valid; orange strip + bullet list of errors
+          when not. Cancel reverts the four inputs to their last-saved
+          values. Pristine state renders nothing. */}
+      {isHeaderDirty && (
+        <div
+          className="no-print"
+          style={{
+            padding: '8px 12px',
+            background: canSaveHeader ? '#ecfdf5' : '#fff7ed',
+            borderTop: `1px solid ${canSaveHeader ? '#a7f3d0' : '#fed7aa'}`,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
+            fontSize: 12,
+          }}
+        >
+          <div style={{
+            color: canSaveHeader ? '#065f46' : '#9a3412',
+            display: 'flex', flexDirection: 'column', gap: 2,
+          }}>
+            {canSaveHeader ? (
+              <span>✓ Unsaved changes — click Save to commit</span>
+            ) : (
+              headerErrors.map((msg, i) => (
+                <span key={i}>⚠ {msg}</span>
+              ))
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              type="button"
+              onClick={cancelHeader}
+              style={{
+                padding: '5px 12px',
+                fontSize: 12,
+                border: '1px solid #d1d5db',
+                background: 'white',
+                color: '#374151',
+                borderRadius: 4,
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveHeader}
+              disabled={!canSaveHeader}
+              style={{
+                padding: '5px 14px',
+                fontSize: 12,
+                border: 'none',
+                background: canSaveHeader ? '#16a34a' : '#d1d5db',
+                color: 'white',
+                borderRadius: 4,
+                cursor: canSaveHeader ? 'pointer' : 'not-allowed',
+                fontWeight: 600,
+              }}
+            >
+              💾 Save changes
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Flights field — full-width freestyle line directly under the
           From / To / Destination / Reason row. Holds the actual flight
@@ -1311,7 +1558,11 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
               key={e.id}
               expense={e}
               index={idx + 1}
+              currentPeriodId={period.id}
+              allPeriods={allPeriods}
               onUpdate={(patch) => onUpdateExpense(e.id, patch)}
+              onAssignToPeriod={(periodId) => onAssignExpenseToPeriod(e.id, periodId)}
+              onViewExpense={onViewExpense}
             />
           ))
         )}
@@ -1357,7 +1608,7 @@ function TravelPeriodRow({ period, expenses, selectedMonth, selectedYear, accent
 //     where/who columns remain in the DB (unchanged) but are no
 //     longer surfaced in the Travel Log UI.
 // =============================================================
-function TravelExpenseCard({ expense, index, onUpdate }) {
+function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], onUpdate, onAssignToPeriod, onViewExpense }) {
   // Merge any pre-existing where/who/why content into one note string.
   // Order: why first (it's the field we'll save to going forward), then
   // where and who if present and not already substrings of why. We don't
@@ -1431,7 +1682,23 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
         borderBottom: '1px dashed #e5e7eb',
       }}>
         <Cell label={`Expense ${index}`}>{accountName}</Cell>
-        <Cell label="Ref No" mono>{expense.reference_number || '—'}</Cell>
+        <Cell label="Ref No" mono>
+          {expense.reference_number && onViewExpense ? (
+            <button
+              type="button"
+              onClick={() => onViewExpense(expense.id)}
+              title="Open in View Expenses for editing"
+              style={{
+                background: 'none', border: 'none', padding: 0,
+                color: '#1d4ed8', textDecoration: 'underline',
+                fontFamily: 'inherit', fontSize: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {expense.reference_number}
+            </button>
+          ) : (expense.reference_number || '—')}
+        </Cell>
         <Cell label="Sub Ref" mono>{subRef || '—'}</Cell>
         <Cell label="Invoice Date" mono>{fmtDate(expense.invoice_date)}</Cell>
         <Cell label="Date Paid" mono>{fmtDate(expense.date)}</Cell>
@@ -1493,6 +1760,126 @@ function TravelExpenseCard({ expense, index, onUpdate }) {
           }}
         />
       </div>
+
+      {/* Trip assignment footer — lets the user move this expense to a
+          different trip, or un-pin it back to date-based auto-grouping.
+          The 📌 prefix is shown when the expense is currently held
+          here by an explicit manual assignment (so the user knows the
+          date-match would otherwise place it elsewhere). The same row
+          also carries the "View / Edit →" jump-out to View Expenses. */}
+      {(onAssignToPeriod || onViewExpense) && (
+        <TripAssignmentRow
+          expense={expense}
+          currentPeriodId={currentPeriodId}
+          allPeriods={allPeriods}
+          onAssignToPeriod={onAssignToPeriod}
+          onViewExpense={onViewExpense}
+        />
+      )}
+    </div>
+  )
+}
+
+// =============================================================
+// Tiny dropdown footer used inside both TravelExpenseCard and
+// PrepaidExpenseRow. Shows "Trip:" + a <select> listing all
+// periods this month (labeled with shareholder + dates +
+// destination), plus an "(auto — by date)" option that clears
+// assigned_period_id.
+// =============================================================
+function TripAssignmentRow({ expense, currentPeriodId, allPeriods = [], onAssignToPeriod, onViewExpense }) {
+  const isManual = !!expense.assigned_period_id
+  const fmtShort = (iso) => {
+    if (!iso) return ''
+    const [, m, d] = iso.split('-')
+    return `${d}/${m}`
+  }
+  const sorted = [...allPeriods].sort(byFromDateAsc)
+
+  return (
+    <div className="no-print" style={{
+      marginTop: 8, paddingTop: 8,
+      borderTop: '1px dashed #fde68a',
+      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      fontSize: 11, color: '#374151',
+    }}>
+      {/* Left side — Trip dropdown + clear-manual button */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        {onAssignToPeriod && (
+          <>
+            <span style={{ fontWeight: 600, color: '#92400e' }}>
+              {isManual ? '📌 Trip (manual):' : 'Trip:'}
+            </span>
+            <select
+              value={expense.assigned_period_id || ''}
+              onChange={(ev) => {
+                const v = ev.target.value || null
+                if (v === (expense.assigned_period_id || null)) return
+                onAssignToPeriod(v)
+              }}
+              style={{
+                padding: '3px 6px',
+                fontSize: 11,
+                border: '1px solid #d1d5db',
+                borderRadius: 4,
+                background: 'white',
+                maxWidth: '100%',
+              }}
+            >
+              <option value="">— Auto (match by date) —</option>
+              {sorted.map(p => {
+                const lbl =
+                  `${p.shareholder_code} · ${fmtShort(p.from_date)}–${fmtShort(p.to_date)}` +
+                  (p.destination ? ` · ${p.destination}` : '')
+                const isCurrent = p.id === currentPeriodId
+                return (
+                  <option key={p.id} value={p.id}>
+                    {isCurrent ? '✓ ' : ''}{lbl}
+                  </option>
+                )
+              })}
+            </select>
+            {isManual && (
+              <button
+                type="button"
+                onClick={() => onAssignToPeriod(null)}
+                style={{
+                  padding: '2px 8px', fontSize: 11,
+                  border: '1px solid #d1d5db', background: 'white',
+                  color: '#6b7280', borderRadius: 4, cursor: 'pointer',
+                  fontWeight: 500,
+                }}
+                title="Clear manual assignment and revert to date-based auto-grouping"
+              >
+                Clear manual link
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Right side — jump to View Expenses for editing */}
+      {onViewExpense && (
+        <button
+          type="button"
+          onClick={() => onViewExpense(expense.id)}
+          style={{
+            padding: '2px 10px',
+            fontSize: 11,
+            border: '1px solid #d1d5db',
+            background: 'white',
+            color: '#374151',
+            borderRadius: 4,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+            fontWeight: 500,
+          }}
+          title="Open the underlying expense in View Expenses to edit date, amount, etc."
+        >
+          ✏ View / Edit →
+        </button>
+      )}
     </div>
   )
 }
