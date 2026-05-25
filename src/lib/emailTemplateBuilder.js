@@ -45,10 +45,17 @@ export const BUNDLE_ELIGIBLE_TYPES = new Set([
   'variable_expense',
 ])
 
-// invoice_types treated as reimbursements (drives whether the body's
-// "expense report" sentence appears).
-const REIMBURSEMENT_TYPES = new Set([
-  'fixed_expense',
+// invoice_types that trigger the body's "In relation to expenses,
+// according to {month} expense report, together with supporting
+// documents." sentence.
+//
+// fixed_expense is intentionally NOT included: fixed reimbursements
+// are contracted / pre-agreed amounts (a known recurring cost the
+// client pays back), so referencing an "expense report" doesn't apply.
+// The sentence only makes sense for variable_expense and
+// one_off_reimbursement, which are based on actual expenses incurred
+// in a specific month and need supporting documentation.
+const EXPENSE_REPORT_TYPES = new Set([
   'variable_expense',
   'one_off_reimbursement',
 ])
@@ -149,21 +156,28 @@ export function buildProFormaSubject(invoice, client) {
 
 // Build the per-invoice clause for the body's first sentence.
 //   monthly_fee / one_off_service: includes period inline.
-//     "Consultancy Service Fee invoice, May 2026"
+//     "Consultancy Service Fee invoice 2026-05-010, May 2026"
 //   fixed_expense:
-//     "Fixed Expense Reimbursement invoice"
+//     "Fixed Expense Reimbursement invoice 2026-05-011"
 //   variable_expense / one_off_reimbursement:
-//     "Expense Reimbursement invoice"
+//     "Expense Reimbursement invoice 2026-05-012"
+//
+// The invoice number is included inline (matching the credit-note
+// template's "invoice 2026-04-007" wording) so the user can spot
+// which PDF to attach when she's reviewing the email in her mail
+// client. When invoice_number is blank, we omit it gracefully.
 function buildInvoiceClause(invoice) {
-  const label = LABEL_FOR_TYPE[invoice.invoice_type] || invoice.invoice_type
-  const type  = invoice.invoice_type
+  const label    = LABEL_FOR_TYPE[invoice.invoice_type] || invoice.invoice_type
+  const type     = invoice.invoice_type
+  const number   = invoice.invoice_number?.trim()
+  const numPart  = number ? ` ${number}` : ''
   if (type === 'monthly_fee' || type === 'one_off_service') {
     const periodLabel = formatMonthYear(invoice.period_month, invoice.period_year)
     return periodLabel
-      ? `${label} invoice, ${periodLabel}`
-      : `${label} invoice`
+      ? `${label} invoice${numPart}, ${periodLabel}`
+      : `${label} invoice${numPart}`
   }
-  return `${label} invoice`
+  return `${label} invoice${numPart}`
 }
 
 // Build the body for a bundle (one or more bundle-eligible invoices,
@@ -184,7 +198,19 @@ export function buildBundleBody(invoices, client) {
   const contact = client.contact_name || ''
   const trade   = client.trade_name   || ''
 
-  const clauses = invoices.map(buildInvoiceClause)
+  // Sort invoices by canonical label order (Consultancy Service Fee
+  // first, then Fixed Expense Reimbursement, then Expense
+  // Reimbursement) so the body reads consistently with the subject.
+  // Without this, the natural date_issued ordering can produce
+  // clauses in an awkward sequence (e.g. Expense Reimbursement
+  // landing before Consultancy Service Fee).
+  const orderedInvoices = [...invoices].sort((a, b) => {
+    const la = LABEL_FOR_TYPE[a.invoice_type] || a.invoice_type
+    const lb = LABEL_FOR_TYPE[b.invoice_type] || b.invoice_type
+    return (LABEL_SORT_ORDER[la] ?? 50) - (LABEL_SORT_ORDER[lb] ?? 50)
+  })
+
+  const clauses = orderedInvoices.map(buildInvoiceClause)
   // Body opens with "Enclosed please find …" to mirror the credit-note
   // body's wording and signal that PDF(s) are attached. (Yes, mailto:
   // can't actually carry attachments — the user attaches by hand in
@@ -192,17 +218,18 @@ export function buildBundleBody(invoices, client) {
   // what to expect.)
   const firstSentence = `Enclosed please find ${joinWithAnd(clauses)} for Project ${trade}.`
 
-  // Second sentence: only when at least one invoice in the bundle is
-  // a reimbursement type. Period reference comes from THAT invoice's
-  // period_month/period_year (the month being reimbursed).
-  const reimbInvoice = invoices.find(inv => REIMBURSEMENT_TYPES.has(inv.invoice_type))
-  let secondSentence = ''
-  if (reimbInvoice) {
-    const reimbPeriod = formatMonthYear(reimbInvoice.period_month, reimbInvoice.period_year)
-    if (reimbPeriod) {
-      secondSentence = `In relation to expenses, according to ${reimbPeriod} expense report, together with supporting documents.`
-    }
-  }
+  // Second sentence: only when at least one invoice in the bundle
+  // actually relates to an expense report (variable_expense or
+  // one_off_reimbursement — NOT fixed_expense). Fixed wording per
+  // user spec (May 25 2026): "Also, enclosed relevant expense report
+  // and supporting documents." — the month reference is intentionally
+  // dropped (the invoice PDF and the expense report PDF the user
+  // attaches both encode the period in their filenames / contents,
+  // so the body sentence stays generic and reusable).
+  const reimbInvoice = invoices.find(inv => EXPENSE_REPORT_TYPES.has(inv.invoice_type))
+  const secondSentence = reimbInvoice
+    ? 'Also, enclosed relevant expense report and supporting document scans.'
+    : ''
 
   // Two-line vs three-line body depending on whether sentence 2 fires.
   return [
