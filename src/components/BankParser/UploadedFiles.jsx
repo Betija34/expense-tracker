@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
+import { AddManualTransaction } from './AddManualTransaction'
 
 // Month-name lookup so we can filter file_name by the currently-selected month.
 // Relies on our enforced filename convention: "<Company-prefix> <MonthName> <Year>.<ext>"
@@ -12,6 +13,9 @@ const MONTH_NAMES = [
 export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, onRefresh, refreshTrigger }) {
   const [imports, setImports] = useState([])
   const [loading, setLoading] = useState(false)
+  // The bank_imports row the user clicked "Add Manual Row" on — when
+  // set, opens the AddManualTransaction modal scoped to this file.
+  const [addingToImport, setAddingToImport] = useState(null)
 
   // refreshTrigger is bumped by BankParser whenever a transaction is edited,
   // deleted, or finalized — that keeps the live transaction counts on each
@@ -224,19 +228,46 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
                     </span>
                   </td>
                   <td className="action">
-                    <button
-                      onClick={() => handleDelete(imp.id, imp.file_name)}
-                      className="btn-delete"
-                      title="Delete this import"
-                    >
-                      🗑️
-                    </button>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {/* Add a missing transaction the parser failed to pick up.
+                          Inherits company_id + account_id + bank_import_id from
+                          this file, so it slots into the Parsed Transactions
+                          table indistinguishably from auto-parsed rows. */}
+                      <button
+                        onClick={() => setAddingToImport(imp)}
+                        className="btn-edit"
+                        title="Add a missing transaction the parser skipped"
+                        style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}
+                      >
+                        ➕
+                      </button>
+                      <button
+                        onClick={() => handleDelete(imp.id, imp.file_name)}
+                        className="btn-delete"
+                        title="Delete this import"
+                      >
+                        🗑️
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Manual-add modal. Mounted at the section level so it overlays
+          the whole page, not just the table cell. On successful save we
+          bump the parent (BankParser) via onRefresh so the top stat
+          cards, file's live transaction count, and the Parsed
+          Transactions table all re-fetch in one go. */}
+      {addingToImport && (
+        <AddManualTransaction
+          importRow={addingToImport}
+          onClose={() => setAddingToImport(null)}
+          onSave={() => { if (onRefresh) onRefresh() }}
+        />
       )}
     </div>
   )
