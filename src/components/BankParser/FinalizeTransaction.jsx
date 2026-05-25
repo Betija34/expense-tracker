@@ -13,6 +13,13 @@ import {
   uuid,
 } from '../../lib/refUtils'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
+import {
+  PAYMENT_TRIGGER_CATEGORY_NAMES,
+  parseInvoiceNumbers,
+  findInvoicesByNumbers,
+  markInvoicesPaid,
+  buildInvoiceMatchError,
+} from '../../lib/invoicePaymentMatcher'
 import './BankParser.css'
 
 // ---------------------------------------------------------------------
@@ -972,6 +979,33 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       return
     }
 
+    // ---- Invoice-number pre-validation (incoming Client Payment / Reimbursement) ----
+    // If this is an incoming Client Payment / Client Reimbursement with one
+    // or more invoice numbers typed in, verify EACH number exists in the
+    // Invoicing tab BEFORE we save the expense. Locked-in behavior:
+    // block save with a clear error when any number is missing. Done up
+    // front so we never end up with a saved expense whose invoice link
+    // points to nothing. See src/lib/invoicePaymentMatcher.js for rules.
+    let invoiceMatchResult = null // captured here, applied after save
+    const triggersInvoiceMatch =
+      direction === 'in' &&
+      PAYMENT_TRIGGER_CATEGORY_NAMES.includes(selectedCategory?.name) &&
+      !!form.invoice_number?.trim()
+    if (triggersInvoiceMatch) {
+      const invoiceNumbers = parseInvoiceNumbers(form.invoice_number)
+      if (invoiceNumbers.length > 0) {
+        try {
+          invoiceMatchResult = await findInvoicesByNumbers({
+            supabase, companyId, invoiceNumbers,
+          })
+        } catch (e) {
+          setSaveError(`Could not check invoice numbers: ${e.message || e}`); return
+        }
+        const errMsg = buildInvoiceMatchError(invoiceMatchResult)
+        if (errMsg) { setSaveError(errMsg); return }
+      }
+    }
+
     try {
       setLoading(true)
 
@@ -1101,6 +1135,27 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         await maybeCreatePaymentOnBehalfLeg(inserted.id, expenseRow, null)
       }
 
+      // ---- Auto-mark matching invoices as paid ----
+      // Pre-validation already confirmed every typed invoice number exists
+      // (and isn't a Pro Forma / Credit Note). Now stamp date_paid on each
+      // matching invoice — but only when blank, so manual entries aren't
+      // overwritten. Status auto-promotes planned/issued/emailed → 'paid'.
+      if (invoiceMatchResult?.found?.length) {
+        try {
+          await markInvoicesPaid({
+            supabase,
+            invoices:    invoiceMatchResult.found,
+            paymentDate: transaction.transaction_date,
+          })
+        } catch (e) {
+          // Expense already saved at this point — surface a non-fatal
+          // warning so the user knows to update the invoice manually.
+          console.error('Invoice payment update failed:', e)
+          setSaveError(`Expense saved, but: ${e.message || e}`)
+          // Still close on next render — user has been warned.
+        }
+      }
+
       onSave && onSave()
       onClose && onClose()
     } catch (err) {
@@ -1127,7 +1182,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     if (direction === 'in') {
       const clientFinal = form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name
       if (!clientFinal) { setSaveError('Client / project is required for incoming split'); return }
-      // Invoice numbers are OPTIONAL per portion (free-text paper trail)
+      // Invoice numbers are OPTIONAL per portion (free-text paper trail) —
+      // but when they ARE present, every one must exist in the Invoicing
+      // tab. We validate up-front so we never end up with a saved split
+      // pointing at non-existent invoices. The actual mark-paid is done
+      // after the expense rows are inserted (see below).
     } else {
       for (const t of active) {
         const p = portions[t.key]
@@ -1140,6 +1199,36 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           const clientFinal = p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name
           if (!clientFinal) { setSaveError('Client portion: please select a client/project'); return }
         }
+      }
+    }
+
+    // ---- Invoice-number pre-validation (incoming split only) ----
+    // Same rule as single-save: each typed invoice number across all
+    // incoming portions must exist as a payable invoice in the
+    // Invoicing tab BEFORE we commit any rows. Block save with a clear
+    // error otherwise so we never end up with a saved split pointing
+    // at non-existent invoices.
+    let splitInvoiceMatchResult = null
+    if (direction === 'in') {
+      const activeNow = PORTION_TYPES.filter(t => (parseFloat(portions[t.key].amount) || 0) > 0)
+      const allInvoiceNumbers = []
+      const seen = new Set()
+      for (const t of activeNow) {
+        const tokens = parseInvoiceNumbers(portions[t.key].invoice_number)
+        for (const tok of tokens) {
+          if (!seen.has(tok)) { seen.add(tok); allInvoiceNumbers.push(tok) }
+        }
+      }
+      if (allInvoiceNumbers.length > 0) {
+        try {
+          splitInvoiceMatchResult = await findInvoicesByNumbers({
+            supabase, companyId, invoiceNumbers: allInvoiceNumbers,
+          })
+        } catch (e) {
+          setSaveError(`Could not check invoice numbers: ${e.message || e}`); return
+        }
+        const errMsg = buildInvoiceMatchError(splitInvoiceMatchResult)
+        if (errMsg) { setSaveError(errMsg); return }
       }
     }
 
@@ -1378,6 +1467,24 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         })
         .eq('id', transaction.id)
       if (updateErr) throw updateErr
+
+      // ---- Auto-mark matching invoices as paid (incoming split) ----
+      // Pre-validation already confirmed every typed number exists.
+      // Stamp date_paid on each match, but only when blank.
+      if (splitInvoiceMatchResult?.found?.length) {
+        try {
+          await markInvoicesPaid({
+            supabase,
+            invoices:    splitInvoiceMatchResult.found,
+            paymentDate: transaction.transaction_date,
+          })
+        } catch (e) {
+          // Expenses already saved — surface as non-fatal so user
+          // can resolve manually in the Invoicing tab.
+          console.error('Invoice payment update failed (split):', e)
+          setSaveError(`Split saved, but: ${e.message || e}`)
+        }
+      }
 
       onSave && onSave()
       onClose && onClose()
