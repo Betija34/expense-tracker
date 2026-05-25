@@ -185,7 +185,12 @@ export function buildBundleBody(invoices, client) {
   const trade   = client.trade_name   || ''
 
   const clauses = invoices.map(buildInvoiceClause)
-  const firstSentence = `${joinWithAnd(clauses)} for Project ${trade}.`
+  // Body opens with "Enclosed please find …" to mirror the credit-note
+  // body's wording and signal that PDF(s) are attached. (Yes, mailto:
+  // can't actually carry attachments — the user attaches by hand in
+  // the mail client before sending. The phrasing tells the recipient
+  // what to expect.)
+  const firstSentence = `Enclosed please find ${joinWithAnd(clauses)} for Project ${trade}.`
 
   // Second sentence: only when at least one invoice in the bundle is
   // a reimbursement type. Period reference comes from THAT invoice's
