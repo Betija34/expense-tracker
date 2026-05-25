@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
+import { ComposeEmailsModal } from './ComposeEmailsModal'
 import './Clients.css'
 
 /**
@@ -93,6 +94,11 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // The user must type the client's trade_name (case-insensitive)
   // before the Delete button enables — guards against accidental clicks.
   const [deleting, setDeleting]       = useState(null)
+
+  // Compose Emails modal — boolean toggle. When true, the modal pulls
+  // every issued invoice for the period and renders one email card per
+  // bundle / standalone, ready for the user to tweak + open in mail.
+  const [composeOpen, setComposeOpen] = useState(false)
 
   // ---- Loader ----
   useEffect(() => {
@@ -1890,6 +1896,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          {/* Compose Emails — opens a modal listing one email card per
+              bundle/standalone for this period's issued invoices.
+              Subject + body are auto-generated per spec (task #46);
+              user tweaks and opens in default mail client. */}
+          <button
+            onClick={() => setComposeOpen(true)}
+            className="button"
+            style={{ background: '#185FA5' }}
+            title="Generate emails for all issued invoices in this period"
+          >
+            ✉️ Compose Emails
+          </button>
           <button onClick={handlePrint} className="button" style={{ background: '#475569' }}>
             🖨 Print
           </button>
@@ -3903,6 +3921,19 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Compose Emails modal — opens when the user clicks the
+          ✉ Compose Emails button in the header. Loads issued invoices
+          for the current period and renders one card per bundle /
+          standalone email per the spec in task #46. */}
+      {composeOpen && (
+        <ComposeEmailsModal
+          companyId={companyId}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          onClose={() => setComposeOpen(false)}
+        />
       )}
     </div>
   )
