@@ -550,6 +550,12 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
                                 .eq('id', transaction.id)
                               if (error) throw error
                               loadTransactions()
+                              // Bump parent refreshTrigger so the top
+                              // stat cards (Total / Pending / Finalized /
+                              // Finalization Status) recount via
+                              // BankParser.loadStats(). Without this the
+                              // table reloads but the cards stay stale.
+                              if (onStatusChange) onStatusChange()
                             } catch (err) {
                               alert('Delete failed: ' + (err.message || err))
                             }
@@ -608,7 +614,13 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
         <EditTransaction
           transaction={editingTransaction}
           onClose={() => setEditingTransaction(null)}
-          onSave={loadTransactions}
+          onSave={() => {
+            // EditTransaction lets the user change Direction + Status,
+            // so a save can flip a row between Pending and Finalized —
+            // bump parent refreshTrigger so the top stat cards recount.
+            loadTransactions()
+            if (onStatusChange) onStatusChange()
+          }}
         />
       )}
 
