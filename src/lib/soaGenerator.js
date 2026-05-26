@@ -286,7 +286,11 @@ const COLOR_TOTAL_BG   = '1F4E78'  // dark blue — year totals
 const COLOR_TOTAL_FG   = 'FFFFFF'
 const COLOR_BORDER     = 'D1D5DB'  // light gray border
 
-const FMT_AMOUNT = '#,##0.00;(#,##0.00);"-"'   // parens for negative, dash for zero
+// Accounting format: thousands sep, parens for negative, BLANK for zero.
+// Blank-on-zero is critical so we can write 0 as the underlying value
+// in "empty" amount/received cells (keeping formulas + borders intact)
+// while the cell visually appears empty.
+const FMT_AMOUNT = '#,##0.00;(#,##0.00);""'
 const FMT_DATE   = 'dd/mm/yyyy'
 
 // Standard thin border on all four sides.
@@ -410,10 +414,13 @@ function buildWorksheet(client, ledgerRows, headerText) {
     // Anchor row — "PREVIOUS TOTALS:" Jan 1 of this year
     setCell(ws, curRow, 2, new Date(year, 0, 1), { z: FMT_DATE, s: STYLE_ANCHOR })
     setCell(ws, curRow, 3, 'PREVIOUS TOTALS:',   { s: STYLE_ANCHOR })
-    setCell(ws, curRow, 4, '', { s: STYLE_ANCHOR })  // empty padded cell so the fill spans
+    setCell(ws, curRow, 4, '', { s: STYLE_ANCHOR })  // empty padded cells so the fill spans
     setCell(ws, curRow, 5, '', { s: STYLE_ANCHOR })
-    setCell(ws, curRow, 6, '', { s: STYLE_ANCHOR })
-    setCell(ws, curRow, 7, '', { s: STYLE_ANCHOR })
+    // F and G must be numeric 0 (not empty strings) so subsequent
+    // PROG. BALANCE formulas can reference them without #VALUE!.
+    // The blank-on-zero number format keeps them visually empty.
+    setCell(ws, curRow, 6, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
+    setCell(ws, curRow, 7, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
     if (i === 0) {
       setCell(ws, curRow, 8, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
     } else {
@@ -442,8 +449,11 @@ function buildWorksheet(client, ledgerRows, headerText) {
       setCell(ws, curRow, 3, r.docType || '', { s: baseStyle })
       setCell(ws, curRow, 4, r.docNumber || '', { s: baseStyle })
       setCell(ws, curRow, 5, r.description || '', { s: baseStyle })
-      setCell(ws, curRow, 6, r.amount   != null ? r.amount   : '', { t: r.amount   != null ? 'n' : 's', z: FMT_AMOUNT, s: numericStyle })
-      setCell(ws, curRow, 7, r.received != null ? r.received : '', { t: r.received != null ? 'n' : 's', z: FMT_AMOUNT, s: numericStyle })
+      // Write 0 (numeric) for "empty" amount/received cells so the
+      // PROG. BALANCE formula can do arithmetic on them. The
+      // blank-on-zero number format makes them display as empty.
+      setCell(ws, curRow, 6, r.amount   != null ? r.amount   : 0, { t: 'n', z: FMT_AMOUNT, s: numericStyle })
+      setCell(ws, curRow, 7, r.received != null ? r.received : 0, { t: 'n', z: FMT_AMOUNT, s: numericStyle })
 
       // Balance formula. PROFORMA carries previous balance forward
       // unchanged (informational row); normal rows = prev + F - G.
