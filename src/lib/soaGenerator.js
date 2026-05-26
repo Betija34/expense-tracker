@@ -437,11 +437,13 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], hea
 }
 
 // Trigger a browser download of the SOA workbook. Filename pattern:
-//   "SOA {TRADE_NAME} {YEAR}.xlsx"
+//   "SOA {TRADE_NAME}.xlsx"
+// No year suffix — the file is canonical per client. Re-downloads
+// land alongside the previous one (browser default), making it
+// easy to keep one "current" SOA per client in Downloads.
 export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], headerText = {} }) {
   const wb = generateSoaWorkbook({ client, invoices, orphanPayments, headerText })
-  const year = new Date().getFullYear()
   const safe = (client.trade_name || 'CLIENT').replace(/[\\/?*[\]]/g, '-')
-  const filename = `SOA ${safe} ${year}.xlsx`
+  const filename = `SOA ${safe}.xlsx`
   XLSX.writeFile(wb, filename)
 }
