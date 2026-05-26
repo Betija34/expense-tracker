@@ -41,7 +41,11 @@
 // Output: a SheetJS workbook object ready for XLSX.writeFile / write.
 // =====================================================================
 
-import * as XLSX from 'xlsx'
+// Uses xlsx-js-style (drop-in replacement for xlsx) so we can write
+// cell-level styling (bold, fills, borders, wrap, alignment). The
+// community 'xlsx' package builds .xlsx files but doesn't write styles
+// — for the polished SOA layout we need them.
+import * as XLSX from 'xlsx-js-style'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -236,11 +240,15 @@ function addr(row, col) {
   return `${s}${row}`
 }
 
-// Write a single cell with optional value + format. Helper to keep
-// the assembly readable.
+// Write a single cell with optional value + format + style. Helper to
+// keep the assembly readable.
 //
 // Note: SheetJS expects `cell.f` to be the formula WITHOUT the leading
 // "=". We strip it defensively so callers can pass either form.
+//
+// opts.s is the cell-style object (xlsx-js-style format), e.g.:
+//   { font: { bold: true }, fill: { fgColor: { rgb: 'FFFFFF' } },
+//     alignment: { wrapText: true } }
 function setCell(ws, row, col, value, opts = {}) {
   const ref = addr(row, col)
   if (value == null && !opts.formula) {
@@ -249,22 +257,100 @@ function setCell(ws, row, col, value, opts = {}) {
   const cell = { t: opts.t || (typeof value === 'number' ? 'n' : 's') }
   if (opts.formula) {
     cell.f = String(opts.formula).replace(/^=/, '')
-    // Excel needs a default value type for formulas; 'n' (number) is
-    // safest for numeric ledgers. SheetJS will overwrite cell.v on
-    // recalc but we set 0 here so the file opens cleanly even before
-    // Excel recalculates.
     cell.t = 'n'
     cell.v = 0
     if (opts.z) cell.z = opts.z
   } else if (value instanceof Date) {
     cell.t = 'd'
     cell.v = value
-    cell.z = opts.z || 'yyyy-mm-dd'
+    cell.z = opts.z || 'dd/mm/yyyy'
   } else {
     cell.v = value
     if (opts.z) cell.z = opts.z
   }
+  if (opts.s) cell.s = opts.s
   ws[ref] = cell
+}
+
+// ---------------------------------------------------------------------
+// Style presets — kept here so the worksheet builder reads cleanly.
+// All colors in 6-char RGB hex (no #).
+// ---------------------------------------------------------------------
+const COLOR_HEADER_BG  = '1F4E78'  // dark blue — column titles row
+const COLOR_HEADER_FG  = 'FFFFFF'
+const COLOR_ANCHOR_BG  = 'DBEAFE'  // light blue — PREVIOUS TOTALS rows
+const COLOR_CREDIT_BG  = 'FEE2E2'  // soft red — credit notes
+const COLOR_PROFORMA_BG = 'FEF3C7' // soft yellow — pro formas
+const COLOR_INWARDS_BG = 'DCFCE7'  // soft green — inwards transfers
+const COLOR_TOTAL_BG   = '1F4E78'  // dark blue — year totals
+const COLOR_TOTAL_FG   = 'FFFFFF'
+const COLOR_BORDER     = 'D1D5DB'  // light gray border
+
+const FMT_AMOUNT = '#,##0.00;(#,##0.00);"-"'   // parens for negative, dash for zero
+const FMT_DATE   = 'dd/mm/yyyy'
+
+// Standard thin border on all four sides.
+const BORDER_THIN = {
+  top:    { style: 'thin', color: { rgb: COLOR_BORDER } },
+  bottom: { style: 'thin', color: { rgb: COLOR_BORDER } },
+  left:   { style: 'thin', color: { rgb: COLOR_BORDER } },
+  right:  { style: 'thin', color: { rgb: COLOR_BORDER } },
+}
+
+// Style for the company-info header rows (rows 2-7). Bold labels,
+// regular values, no fill.
+const STYLE_HEADER_LABEL = { font: { bold: true, sz: 11 } }
+const STYLE_HEADER_VALUE = { font: { sz: 11 }, alignment: { wrapText: true, vertical: 'top' } }
+
+// Style for the column-title row (row 9). White bold on dark blue.
+const STYLE_COL_TITLE = {
+  font:      { bold: true, color: { rgb: COLOR_HEADER_FG }, sz: 11 },
+  fill:      { fgColor: { rgb: COLOR_HEADER_BG } },
+  alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+  border:    BORDER_THIN,
+}
+
+// Base style for body rows — thin border, vertical-top alignment.
+// Per-row variants below layer on fills/fonts.
+const STYLE_BODY_BASE = {
+  font:      { sz: 10 },
+  alignment: { vertical: 'top', wrapText: true },
+  border:    BORDER_THIN,
+}
+function styleBody(opts = {}) {
+  return {
+    ...STYLE_BODY_BASE,
+    ...(opts.fill   ? { fill:   opts.fill }   : {}),
+    ...(opts.font   ? { font:   { ...STYLE_BODY_BASE.font, ...opts.font } } : {}),
+    ...(opts.alignment ? { alignment: { ...STYLE_BODY_BASE.alignment, ...opts.alignment } } : {}),
+    ...(opts.numFmt ? { numFmt: opts.numFmt } : {}),
+  }
+}
+
+// Per-row-kind styling. The fill differentiates row types at a glance
+// (matches the on-screen color coding in the Compose Emails modal +
+// View Expenses).
+function styleForRowKind(kind, baseExtras = {}) {
+  let fill
+  if (kind === 'CREDIT NOTE')      fill = { fgColor: { rgb: COLOR_CREDIT_BG } }
+  else if (kind === 'PROFORMA INVOICE') fill = { fgColor: { rgb: COLOR_PROFORMA_BG } }
+  else if (kind === 'INWARDS')          fill = { fgColor: { rgb: COLOR_INWARDS_BG } }
+  else                                   fill = undefined
+  return styleBody({ ...baseExtras, fill })
+}
+
+const STYLE_ANCHOR = {
+  font:      { bold: true, sz: 11 },
+  fill:      { fgColor: { rgb: COLOR_ANCHOR_BG } },
+  alignment: { vertical: 'center' },
+  border:    BORDER_THIN,
+}
+
+const STYLE_TOTAL = {
+  font:      { bold: true, color: { rgb: COLOR_TOTAL_FG }, sz: 11 },
+  fill:      { fgColor: { rgb: COLOR_TOTAL_BG } },
+  alignment: { vertical: 'center' },
+  border:    BORDER_THIN,
 }
 
 // Generate the worksheet for one client's SOA.
@@ -277,22 +363,25 @@ function buildWorksheet(client, ledgerRows, headerText) {
   // exactly).
 
   // --- Header block (rows 1-7) ---
-  setCell(ws, 2, 5, 'Statement of Account')
-  setCell(ws, 2, 6, 'project:')
-  setCell(ws, 2, 7, client.trade_name || '')
+  setCell(ws, 2, 5, 'Statement of Account', { s: { font: { bold: true, sz: 14 } } })
+  setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
+  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { bold: true, sz: 12 } } })
 
-  setCell(ws, 4, 5, headerText.companyName || client.legal_name || '')
-  setCell(ws, 5, 4, 'Company number:')
-  setCell(ws, 5, 5, headerText.companyNumber || '')
-  setCell(ws, 6, 4, 'VAT Number: ')
-  setCell(ws, 6, 5, headerText.vatNumber || '')
-  setCell(ws, 7, 4, 'Address: ')
-  setCell(ws, 7, 5, headerText.address || '')
+  setCell(ws, 4, 5, headerText.companyName || client.legal_name || '', { s: { font: { bold: true, sz: 12 } } })
+  setCell(ws, 5, 4, 'Company number:',                 { s: STYLE_HEADER_LABEL })
+  setCell(ws, 5, 5, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
+  setCell(ws, 6, 4, 'VAT Number: ',                    { s: STYLE_HEADER_LABEL })
+  setCell(ws, 6, 5, headerText.vatNumber || '',        { s: STYLE_HEADER_VALUE })
+  setCell(ws, 7, 4, 'Address: ',                       { s: STYLE_HEADER_LABEL })
+  setCell(ws, 7, 5, headerText.address || '',          { s: STYLE_HEADER_VALUE })
 
   // --- Column titles (row 9) ---
   const headers = ['DOCUMENT Date', 'DOCUMENT Type', 'DOCUMENT   No:',
                    'DESCRIPTION', 'AMOUNT', 'AMOUNT          RECEIVED', 'PROG. BALANCE']
-  headers.forEach((h, i) => setCell(ws, 9, 2 + i, h))
+  headers.forEach((h, i) => setCell(ws, 9, 2 + i, h, { s: STYLE_COL_TITLE }))
+  // Taller column-title row so the wrapped two-line header looks clean.
+  if (!ws['!rows']) ws['!rows'] = []
+  ws['!rows'][8] = { hpx: 30 }
 
   // --- Ledger body (row 10+) ---
   // Group rows by year, inserting a "PREVIOUS TOTALS:" anchor at the
@@ -319,14 +408,18 @@ function buildWorksheet(client, ledgerRows, headerText) {
     const yearRows = groupedByYear.get(year)
 
     // Anchor row — "PREVIOUS TOTALS:" Jan 1 of this year
-    setCell(ws, curRow, 2, new Date(year, 0, 1), { z: 'yyyy-mm-dd' })
-    setCell(ws, curRow, 3, 'PREVIOUS TOTALS:')
+    setCell(ws, curRow, 2, new Date(year, 0, 1), { z: FMT_DATE, s: STYLE_ANCHOR })
+    setCell(ws, curRow, 3, 'PREVIOUS TOTALS:',   { s: STYLE_ANCHOR })
+    setCell(ws, curRow, 4, '', { s: STYLE_ANCHOR })  // empty padded cell so the fill spans
+    setCell(ws, curRow, 5, '', { s: STYLE_ANCHOR })
+    setCell(ws, curRow, 6, '', { s: STYLE_ANCHOR })
+    setCell(ws, curRow, 7, '', { s: STYLE_ANCHOR })
     if (i === 0) {
-      setCell(ws, curRow, 8, 0, { t: 'n' })
+      setCell(ws, curRow, 8, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
     } else {
       const prevYear = years[i - 1]
       const prevLastBalance = yearLastBalanceRow.get(prevYear)
-      setCell(ws, curRow, 8, null, { formula: addr(prevLastBalance, 8) })
+      setCell(ws, curRow, 8, null, { formula: addr(prevLastBalance, 8), z: FMT_AMOUNT, s: STYLE_ANCHOR })
     }
     yearAnchorRow.set(year, curRow)
     let lastBalanceRow = curRow
@@ -335,12 +428,22 @@ function buildWorksheet(client, ledgerRows, headerText) {
 
     // Body rows for this year
     for (const r of yearRows) {
-      setCell(ws, curRow, 2, r.date, { z: 'yyyy-mm-dd' })
-      if (r.docType)   setCell(ws, curRow, 3, r.docType)
-      if (r.docNumber) setCell(ws, curRow, 4, r.docNumber)
-      setCell(ws, curRow, 5, r.description || '')
-      if (r.amount   != null) setCell(ws, curRow, 6, r.amount,   { t: 'n', z: '#,##0.00' })
-      if (r.received != null) setCell(ws, curRow, 7, r.received, { t: 'n', z: '#,##0.00' })
+      // Decide row-kind for fill color: INWARDS TRANSFER rows have
+      // empty docType, so we use the sourceKind to disambiguate.
+      const rowKind =
+        r.docType === 'CREDIT NOTE'      ? 'CREDIT NOTE' :
+        r.docType === 'PROFORMA INVOICE' ? 'PROFORMA INVOICE' :
+        r.sourceKind === 'inwards_transfer' || r.sourceKind === 'orphan_payment' ? 'INWARDS' :
+        'INVOICE'
+      const baseStyle    = styleForRowKind(rowKind)
+      const numericStyle = styleForRowKind(rowKind, { alignment: { horizontal: 'right' } })
+
+      setCell(ws, curRow, 2, r.date, { z: FMT_DATE, s: baseStyle })
+      setCell(ws, curRow, 3, r.docType || '', { s: baseStyle })
+      setCell(ws, curRow, 4, r.docNumber || '', { s: baseStyle })
+      setCell(ws, curRow, 5, r.description || '', { s: baseStyle })
+      setCell(ws, curRow, 6, r.amount   != null ? r.amount   : '', { t: r.amount   != null ? 'n' : 's', z: FMT_AMOUNT, s: numericStyle })
+      setCell(ws, curRow, 7, r.received != null ? r.received : '', { t: r.received != null ? 'n' : 's', z: FMT_AMOUNT, s: numericStyle })
 
       // Balance formula. PROFORMA carries previous balance forward
       // unchanged (informational row); normal rows = prev + F - G.
@@ -348,7 +451,7 @@ function buildWorksheet(client, ledgerRows, headerText) {
       const formula = r.balanceMode === 'proforma'
         ? `=${prevRef}`
         : `=${prevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`
-      setCell(ws, curRow, 8, null, { formula, z: '#,##0.00' })
+      setCell(ws, curRow, 8, null, { formula, z: FMT_AMOUNT, s: numericStyle })
 
       lastBalanceRow = curRow
       curRow++
@@ -363,19 +466,23 @@ function buildWorksheet(client, ledgerRows, headerText) {
 
   // --- Bottom totals block ---
   // One "YEAR YYYY TOTAL" row per year, summing F and G for that
-  // year's body range. Mirrors the user's sample.
+  // year's body range. Bold white on dark blue fill so it stands out
+  // from the body rows.
   let prevTotalsBalanceRow = null
+  curRow++ // leave a blank separator row before the totals block
   for (const year of years) {
     const range = yearBodyRange.get(year)
-    setCell(ws, curRow, 2, `YEAR ${year}`)
-    setCell(ws, curRow, 5, 'TOTAL')
+    setCell(ws, curRow, 2, `YEAR ${year}`, { s: STYLE_TOTAL })
+    setCell(ws, curRow, 3, '', { s: STYLE_TOTAL })
+    setCell(ws, curRow, 4, '', { s: STYLE_TOTAL })
+    setCell(ws, curRow, 5, 'TOTAL', { s: STYLE_TOTAL })
     setCell(ws, curRow, 6, null, {
       formula: `=SUM(${addr(range.firstRow, 6)}:${addr(range.lastRow, 6)})`,
-      z: '#,##0.00',
+      z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     setCell(ws, curRow, 7, null, {
       formula: `=SUM(${addr(range.firstRow, 7)}:${addr(range.lastRow, 7)})`,
-      z: '#,##0.00',
+      z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     // Running total balance across years in the totals block too.
     const balPrevRef = prevTotalsBalanceRow
@@ -383,7 +490,7 @@ function buildWorksheet(client, ledgerRows, headerText) {
       : '0'
     setCell(ws, curRow, 8, null, {
       formula: `=${balPrevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`,
-      z: '#,##0.00',
+      z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     prevTotalsBalanceRow = curRow
     curRow++
