@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import { ComposeEmailsModal } from './ComposeEmailsModal'
+import { SoaModal } from './SoaModal'
 import './Clients.css'
 
 /**
@@ -99,6 +100,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // every issued invoice for the period and renders one email card per
   // bundle / standalone, ready for the user to tweak + open in mail.
   const [composeOpen, setComposeOpen] = useState(false)
+
+  // SOA modal — holds the client row whose Statement of Account is
+  // being generated. Null = modal closed.
+  const [soaClient, setSoaClient] = useState(null)
 
   // ---- Loader ----
   useEffect(() => {
@@ -234,8 +239,28 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // table.
   const renderProjectCell = (c) => (
     <td>
-      <div style={{ fontWeight: 600, fontSize: 13, color: '#111827' }}>
-        {c?.trade_name || c?.legal_name || '—'}
+      <div style={{ fontWeight: 600, fontSize: 13, color: '#111827', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span>{c?.trade_name || c?.legal_name || '—'}</span>
+        {/* SOA generator launcher — small icon button next to the
+            project name. Opens a modal that loads this client's full
+            invoice history and produces a drop-in .xlsx Statement of
+            Account. The button is intentionally subtle (icon only,
+            no border) so it doesn't crowd the table. */}
+        {c?.id && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setSoaClient(c) }}
+            title={`Generate Statement of Account for Project ${c.trade_name || c.legal_name}`}
+            className="no-print"
+            style={{
+              background: 'transparent', border: 'none',
+              cursor: 'pointer', padding: 0, fontSize: 13,
+              color: '#185FA5', lineHeight: 1,
+            }}
+          >
+            📋
+          </button>
+        )}
       </div>
       {c?.trade_name && c?.legal_name && (
         <div style={{ fontSize: 10, color: '#9ca3af', lineHeight: 1.2, marginTop: 1 }}>
@@ -3933,6 +3958,19 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           onClose={() => setComposeOpen(false)}
+        />
+      )}
+
+      {/* SOA modal — opens when the user clicks the 📋 icon next to a
+          client's project name. Loads that client's full invoice
+          history and exports an Excel SOA matching the user's
+          external format (see DATABASE_SCHEMA_V30_MIGRATION.sql +
+          src/lib/soaGenerator.js). */}
+      {soaClient && (
+        <SoaModal
+          client={soaClient}
+          companyId={companyId}
+          onClose={() => setSoaClient(null)}
         />
       )}
     </div>
