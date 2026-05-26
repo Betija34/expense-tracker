@@ -53,6 +53,16 @@ const MONTH_NAMES = [
 ]
 const MONTH_NAMES_UPPER = MONTH_NAMES.map(m => m.toUpperCase())
 
+// Invoice numbers in the DB are stored inconsistently (some with
+// dashes "2026-04-004", some with slashes "2026/04/004"). The user
+// wants slashes everywhere on the SOA. This normalizer flips dashes
+// → slashes for any YYYY-MM-NNN or YYYY-NNN pattern while leaving
+// the stored values untouched.
+function formatInvoiceNumber(num) {
+  if (!num) return ''
+  return String(num).replace(/-/g, '/')
+}
+
 // Default templates (mirror the V30 column defaults — kept here so
 // missing client templates still produce usable text).
 const DEFAULT_CONSULTANCY_TEMPLATE =
@@ -168,7 +178,7 @@ function buildLedgerRows(invoices, orphanPayments, client) {
     rows.push({
       date:        issueDate,
       docType:     documentTypeFor(inv),
-      docNumber:   inv.invoice_number || '',
+      docNumber:   formatInvoiceNumber(inv.invoice_number),
       description: descriptionFor(inv, client),
       // Credit notes go in the RECEIVED column (credit to client,
       // reduces what they owe). Everything else goes in AMOUNT.
@@ -185,7 +195,11 @@ function buildLedgerRows(invoices, orphanPayments, client) {
     if (!isCredit && !isProForma && inv.date_paid) {
       const paidDate = new Date(inv.date_paid)
       const brief    = briefForInwardsTransfer(inv)
-      const numPart  = inv.invoice_number ? ` Inv.No: ${inv.invoice_number}` : ''
+      // Normalize the embedded invoice number to slashes here too,
+      // not just on the DOCUMENT No column.
+      const numPart  = inv.invoice_number
+        ? ` Inv.No: ${formatInvoiceNumber(inv.invoice_number)}`
+        : ''
       rows.push({
         date:        paidDate,
         docType:     '',
@@ -205,7 +219,7 @@ function buildLedgerRows(invoices, orphanPayments, client) {
   // ledger so the running balance reflects actual cash received.
   for (const p of orphanPayments || []) {
     if (!p.date) continue
-    const numPart = p.invoice_number ? ` Inv.No: ${p.invoice_number}` : ''
+    const numPart = p.invoice_number ? ` Inv.No: ${formatInvoiceNumber(p.invoice_number)}` : ''
     rows.push({
       date:        new Date(p.date),
       docType:     '',
