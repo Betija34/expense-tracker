@@ -506,18 +506,37 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   if (letterhead.ticNumber)
     setCell(ws, 7, 2, letterhead.ticNumber, { s: LH_LABEL_STYLE })
 
-  // --- SOA title + client info (rows 2-7, cols E-H) — unchanged ---
-  setCell(ws, 2, 5, 'Statement of Account', { s: { font: { name: 'Avenir',bold: true, sz: 14 } } })
+  // --- SOA title + client info (rows 2-7, cols E-F) ---
+  // Layout matches user's manually-tuned reference file (May 27 2026):
+  // R2: 'Statement of Account' | 'project:' | trade_name  (cols E/F/G)
+  // R4: 'Client'               | legal_name                (cols E/F)
+  // R5: 'Company number:'      | regNumber                 (cols E/F)
+  // R6: 'VAT Number: '         | vatNumber                 (cols E/F)
+  // R7: 'Address: '            | address (merged F7:H7)    (cols E/F)
+  setCell(ws, 2, 5, 'Statement of Account', { s: { font: { name: 'Avenir', bold: true, sz: 16 } } })
   setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
-  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir',bold: true, sz: 12 } } })
+  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
 
-  setCell(ws, 4, 5, headerText.companyName || client.legal_name || '', { s: { font: { name: 'Avenir',bold: true, sz: 12 } } })
-  setCell(ws, 5, 4, 'Company number:',                 { s: STYLE_HEADER_LABEL })
-  setCell(ws, 5, 5, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
-  setCell(ws, 6, 4, 'VAT Number: ',                    { s: STYLE_HEADER_LABEL })
-  setCell(ws, 6, 5, headerText.vatNumber || '',        { s: STYLE_HEADER_VALUE })
-  setCell(ws, 7, 4, 'Address: ',                       { s: STYLE_HEADER_LABEL })
-  setCell(ws, 7, 5, headerText.address || '',          { s: STYLE_HEADER_VALUE })
+  setCell(ws, 4, 5, 'Client',                                                                   { s: STYLE_HEADER_LABEL })
+  setCell(ws, 4, 6, headerText.companyName || client.legal_name || '',                          { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
+  setCell(ws, 5, 5, 'Company number:',                 { s: STYLE_HEADER_LABEL })
+  setCell(ws, 5, 6, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
+  setCell(ws, 6, 5, 'VAT Number: ',                    { s: STYLE_HEADER_LABEL })
+  setCell(ws, 6, 6, headerText.vatNumber || '',        { s: STYLE_HEADER_VALUE })
+  setCell(ws, 7, 5, 'Address: ',                       { s: STYLE_HEADER_LABEL })
+  setCell(ws, 7, 6, headerText.address || '',          { s: STYLE_HEADER_VALUE })
+  // Merge F7:H7 so a long address fits across the right side without
+  // bleeding into other columns or wrapping awkwardly.
+  ws['!merges'] = ws['!merges'] || []
+  ws['!merges'].push({ s: { r: 6, c: 5 }, e: { r: 6, c: 7 } })
+
+  // Explicit row heights for the header rows (matches user's layout).
+  ws['!rows'][1] = { hpx: 23 }   // R2 — Statement of Account row
+  ws['!rows'][3] = { hpx: 17 }   // R4 — Client
+  ws['!rows'][4] = { hpx: 17 }   // R5 — Company number
+  ws['!rows'][5] = { hpx: 17 }   // R6 — VAT Number
+  ws['!rows'][6] = { hpx: 40 }   // R7 — Address (tall for wrap)
+  ws['!rows'][7] = { hpx: 15 }   // R8 — thin separator
 
   // --- Column titles (row 9) ---
   // Explicit \n line breaks force consistent two-line wrapping
@@ -749,30 +768,30 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   }
 
   // --- Column widths ---
+  // Tuned to match the user's manually-adjusted reference file
+  // (May 27 2026 — SOA Urban City). Slightly wider than my v1
+  // defaults; Excel adds ~0.83 to displayed widths over the raw
+  // character count, so these values mirror her on-screen sizes.
   ws['!cols'] = [
-    { wch: 4 },   // A (gutter)
-    { wch: 13 },  // B Date
-    { wch: 18 },  // C Type
-    { wch: 16 },  // D Doc No
-    { wch: 70 },  // E Description (wide for the long contract refs)
-    { wch: 12 },  // F Amount
-    { wch: 14 },  // G Received
-    { wch: 14 },  // H Balance
+    { wch: 4.83 },    // A (gutter — outside the print area)
+    { wch: 13.83 },   // B Date
+    { wch: 19.83 },   // C Type
+    { wch: 16.83 },   // D Doc No
+    { wch: 70.83 },   // E Description (wide for contract refs)
+    { wch: 12.83 },   // F Debit
+    { wch: 14.83 },   // G Credit
+    { wch: 14 },      // H Balance
   ]
 
   // Tell SheetJS the range
   ws['!ref'] = `A1:H${curRow}`
 
   // --- Print setup ---
-  // SOA is wide (the description column alone is 70 char-widths), so
-  // we force landscape orientation + fit-to-width=1 page. fitToHeight=0
-  // lets the data flow to as many pages tall as it needs WITHOUT
-  // squashing — Excel paginates between rows naturally (rows are
-  // atomic, never split mid-cell).
+  // Portrait A4 with default fit (no fit-to-width). The user adjusted
+  // column widths so the body table fits portrait at native scale.
+  // Rows are atomic in Excel pagination — they never split mid-cell.
   ws['!pageSetup'] = {
-    orientation: 'landscape',
-    fitToWidth:  1,
-    fitToHeight: 0,
+    orientation: 'portrait',
     paperSize:   9,   // A4
   }
   ws['!margins'] = {
@@ -825,7 +844,9 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], his
   wb.Workbook.Names = wb.Workbook.Names || []
   wb.Workbook.Names.push({
     Name:  '_xlnm.Print_Area',
-    Ref:   `'${sheetName}'!$A$1:$H$${lastRow}`,
+    // Skip col A (the narrow gutter) — print area starts at B1 so
+    // the printed page doesn't have an empty left strip.
+    Ref:   `'${sheetName}'!$B$1:$H$${lastRow}`,
     Sheet: 0,
   })
 
