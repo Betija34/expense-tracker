@@ -53,6 +53,38 @@ const MONTH_NAMES = [
 ]
 const MONTH_NAMES_UPPER = MONTH_NAMES.map(m => m.toUpperCase())
 
+// =====================================================================
+// Issuing-company letterheads
+// =====================================================================
+// The SOA top-left block shows the ISSUER's full letterhead (legal
+// name, registration number, address, VAT, T.I.C). xlsx-js-style
+// doesn't write images, so the "logo" is the bold legal name in
+// large dark-blue text — the rest of the letterhead is plain.
+//
+// Hardcoded here for now (Rabona Holdings details came from the user
+// May 27 2026). If she wants Espargos details too, fill them in
+// below. Long-term these could live in a companies-table extension.
+const LETTERHEADS = {
+  'Rabona Holdings': {
+    legalName:   'RABONA HOLDINGS LTD',
+    regNumber:   'HE402420',
+    addressLines: [
+      '75 Spyrou Kyprianou Str.,',
+      '1st floor, Office 102',
+      '4042, Limassol, Cyprus',
+    ],
+    vatNumber:   'VAT Reg.No.: 10402420X',
+    ticNumber:   'T.I.C: 10402420X',
+  },
+  'Espargos': {
+    legalName:   'ESPARGOS',
+    regNumber:   '',
+    addressLines: ['', '', ''],
+    vatNumber:   'VAT Reg.No.: ',
+    ticNumber:   'T.I.C: ',
+  },
+}
+
 // Invoice numbers in the DB are stored inconsistently (some with
 // dashes "2026-04-004", some with slashes "2026/04/004"). The user
 // wants slashes everywhere on the SOA. This normalizer flips dashes
@@ -443,21 +475,38 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // row 10+ for ledger lines (matching the user's sample layout
   // exactly).
 
-  // --- Header block (rows 1-7) ---
-  // Row 1: issuing-company brand mark on the LEFT (replaces the
-  // graphical logo since xlsx-js-style doesn't write images). Big
-  // bold dark-blue text using the same accent color as the column
-  // titles. Falls back to a sensible default if the caller didn't
-  // pass an issuingCompany.
-  setCell(ws, 1, 2, (issuingCompany || 'RABONA HOLDINGS').toUpperCase(), {
+  // --- Issuing-company letterhead (rows 1-7, cols B-D) ---
+  // Full letterhead block on the LEFT — legal name (bold, large,
+  // dark blue), registration number, address lines, VAT, T.I.C.
+  // The SOA title + client info still live on the RIGHT (cols E-H).
+  const letterhead = LETTERHEADS[issuingCompany] || LETTERHEADS['Rabona Holdings']
+  const LH_LABEL_STYLE = { font: { bold: true, sz: 11 }, alignment: { vertical: 'center' } }
+  const LH_PLAIN_STYLE = { font: { sz: 11 }, alignment: { vertical: 'center' } }
+
+  // Row 1: legal name in big bold dark-blue — substitutes for the logo
+  setCell(ws, 1, 2, letterhead.legalName, {
     s: {
-      font:      { bold: true, sz: 20, color: { rgb: COLOR_HEADER_BG } },
+      font:      { bold: true, sz: 16, color: { rgb: COLOR_HEADER_BG } },
       alignment: { vertical: 'center', horizontal: 'left' },
     },
   })
   if (!ws['!rows']) ws['!rows'] = []
-  ws['!rows'][0] = { hpx: 32 }   // row 1 — taller to fit the 20pt brand mark
+  ws['!rows'][0] = { hpx: 28 }
+  // Row 2: registration number
+  if (letterhead.regNumber)
+    setCell(ws, 2, 2, letterhead.regNumber, { s: LH_LABEL_STYLE })
+  // Rows 3-5: address lines (skip blanks for Espargos until filled in)
+  letterhead.addressLines.forEach((line, i) => {
+    if (line) setCell(ws, 3 + i, 2, line, { s: LH_PLAIN_STYLE })
+  })
+  // Row 6: VAT Reg.No.
+  if (letterhead.vatNumber)
+    setCell(ws, 6, 2, letterhead.vatNumber, { s: LH_LABEL_STYLE })
+  // Row 7: T.I.C
+  if (letterhead.ticNumber)
+    setCell(ws, 7, 2, letterhead.ticNumber, { s: LH_LABEL_STYLE })
 
+  // --- SOA title + client info (rows 2-7, cols E-H) — unchanged ---
   setCell(ws, 2, 5, 'Statement of Account', { s: { font: { bold: true, sz: 14 } } })
   setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
   setCell(ws, 2, 7, client.trade_name || '', { s: { font: { bold: true, sz: 12 } } })
