@@ -825,12 +825,15 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   ws['!ref'] = `A1:H${curRow}`
 
   // --- Print setup ---
-  // Portrait A4 with default fit (no fit-to-width). The user adjusted
-  // column widths so the body table fits portrait at native scale.
-  // Rows are atomic in Excel pagination — they never split mid-cell.
+  // Portrait A4 with "fit to 1 page wide, unlimited pages tall" so
+  // the table auto-scales horizontally to fit any paper size and
+  // rows flow naturally vertically without squashing. Rows are
+  // atomic in Excel pagination — they never split mid-cell.
   ws['!pageSetup'] = {
     orientation: 'portrait',
     paperSize:   9,   // A4
+    fitToWidth:  1,
+    fitToHeight: 0,
   }
   ws['!margins'] = {
     left:   0.5,
