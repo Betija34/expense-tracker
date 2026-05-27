@@ -786,8 +786,8 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
     setCell(ws, curRow, 8, new Date(), { z: FMT_DATE, s: STYLE_FOOTER_DATE })
     curRow++
 
-    // FOR PAYMENT row
-    setCell(ws, curRow, 7, 'FOR PAYMENT', { s: STYLE_FOOTER_LABEL })
+    // For Payment row
+    setCell(ws, curRow, 7, 'For Payment', { s: STYLE_FOOTER_LABEL })
     setCell(ws, curRow, 8, null, {
       formula: `=MAX(${closingRef},0)`,
       z: FMT_AMOUNT_EURO,
@@ -795,8 +795,8 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
     })
     curRow++
 
-    // OVERPAY row — soft green fill (highlights the "client has credit" case)
-    setCell(ws, curRow, 7, 'OVERPAY', { s: STYLE_FOOTER_LABEL_GREEN })
+    // Overpay row — light gray fill (highlights the "client has credit" case)
+    setCell(ws, curRow, 7, 'Overpay', { s: STYLE_FOOTER_LABEL_GREEN })
     setCell(ws, curRow, 8, null, {
       formula: `=MAX(-${closingRef},0)`,
       z: FMT_AMOUNT_EURO,
