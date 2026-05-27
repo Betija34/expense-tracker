@@ -584,15 +584,23 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // 'Client:' — regular weight, right-aligned (matches the other
   // labels Company number / VAT Number / Address below).
   setCell(ws, 4, 5, 'Client:',                                                                  { s: STYLE_HEADER_LABEL })
-  // Client legal name — bold sz 12 with shrinkToFit so very long
-  // names (e.g. "DIAMOND STAR REAL ESTATE SINGLE MEMBER SOCIETE
-  // ANONYME") auto-reduce font size to fit on one line in the
-  // merged F4:H4 cell. Avoids the wrap+tall-row look that broke the
-  // visual rhythm with the rows below.
-  setCell(ws, 4, 6, headerText.companyName || client.legal_name || '', {
+  // Client legal name — auto-shrink the font based on name length
+  // so very long names (e.g. "DIAMOND STAR REAL ESTATE SINGLE
+  // MEMBER SOCIETE ANONYME") fit on one line in the merged F4:H4
+  // cell (which is ~42 chars wide). Excel's shrinkToFit alignment
+  // is unreliable with merged cells in some versions, so we
+  // compute the size here instead.
+  const legalName = headerText.companyName || client.legal_name || ''
+  const legalNameSz =
+    legalName.length <= 25 ? 12 :
+    legalName.length <= 35 ? 11 :
+    legalName.length <= 45 ? 10 :
+    legalName.length <= 55 ?  9 :
+    8
+  setCell(ws, 4, 6, legalName, {
     s: {
-      font:      { name: 'Avenir', bold: true, sz: 12 },
-      alignment: { shrinkToFit: true, vertical: 'center', horizontal: 'left' },
+      font:      { name: 'Avenir', bold: true, sz: legalNameSz },
+      alignment: { vertical: 'center', horizontal: 'left' },
     },
   })
   setCell(ws, 5, 5, 'Company number:',                 { s: STYLE_HEADER_LABEL })
