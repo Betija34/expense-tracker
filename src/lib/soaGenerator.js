@@ -372,12 +372,13 @@ const COLOR_BORDER     = 'D1D5DB'  // light gray border
 const FMT_AMOUNT = '#,##0.00;(#,##0.00);""'
 const FMT_DATE   = 'dd/mm/yyyy'
 
-// Standard thin border on all four sides.
+// Thin border on TOP + BOTTOM only — per user May 27 2026 the SOA
+// should show row separators but no vertical column dividers. Cells
+// in the same row visually merge horizontally; rows still separate
+// cleanly with a thin gray line above and below each.
 const BORDER_THIN = {
   top:    { style: 'thin', color: { rgb: COLOR_BORDER } },
   bottom: { style: 'thin', color: { rgb: COLOR_BORDER } },
-  left:   { style: 'thin', color: { rgb: COLOR_BORDER } },
-  right:  { style: 'thin', color: { rgb: COLOR_BORDER } },
 }
 
 // Style for the client-info LABELS (Company number:, VAT Number:,
