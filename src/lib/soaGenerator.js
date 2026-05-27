@@ -380,10 +380,23 @@ const BORDER_THIN = {
   right:  { style: 'thin', color: { rgb: COLOR_BORDER } },
 }
 
-// Style for the company-info header rows (rows 2-7). Bold labels,
-// regular values, no fill.
-const STYLE_HEADER_LABEL = { font: { name: 'Avenir',bold: true, sz: 11 } }
-const STYLE_HEADER_VALUE = { font: { name: 'Avenir',sz: 11 }, alignment: { wrapText: true, vertical: 'top' } }
+// Style for the client-info LABELS (Company number:, VAT Number:,
+// Address:). Per user May 27 2026: regular weight (not bold) and
+// right-aligned so the label sits flush against its value.
+const STYLE_HEADER_LABEL = {
+  font: { name: 'Avenir', sz: 11 },
+  alignment: { horizontal: 'right', vertical: 'top' },
+}
+// Bold variant — for "project:" and "Client" which sit alongside
+// strong headings ("Statement of Account" / the client name).
+const STYLE_HEADER_LABEL_BOLD = {
+  font: { name: 'Avenir', sz: 11, bold: true },
+  alignment: { horizontal: 'right', vertical: 'top' },
+}
+const STYLE_HEADER_VALUE = {
+  font: { name: 'Avenir', sz: 11 },
+  alignment: { wrapText: true, vertical: 'top' },
+}
 
 // Style for the column-title row (row 9). White bold on dark blue.
 const STYLE_COL_TITLE = {
@@ -415,10 +428,13 @@ function styleBody(opts = {}) {
 // View Expenses).
 function styleForRowKind(kind, baseExtras = {}) {
   let fill
-  if (kind === 'CREDIT NOTE')      fill = { fgColor: { rgb: COLOR_CREDIT_BG } }
+  if (kind === 'CREDIT NOTE')           fill = { fgColor: { rgb: COLOR_CREDIT_BG } }
   else if (kind === 'PROFORMA INVOICE') fill = { fgColor: { rgb: COLOR_PROFORMA_BG } }
   else if (kind === 'INWARDS')          fill = { fgColor: { rgb: COLOR_INWARDS_BG } }
-  else                                   fill = undefined
+  // INVOICE: explicit white fill so the row isn't transparent —
+  // keeps the look consistent across spreadsheets / PDF viewers
+  // that show the default cell background as cream or light gray.
+  else                                  fill = { fgColor: { rgb: 'FFFFFF' } }
   return styleBody({ ...baseExtras, fill })
 }
 
@@ -480,31 +496,40 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // dark blue), registration number, address lines, VAT, T.I.C.
   // The SOA title + client info still live on the RIGHT (cols E-H).
   const letterhead = LETTERHEADS[issuingCompany] || LETTERHEADS['Rabona Holdings']
-  const LH_LABEL_STYLE = { font: { name: 'Avenir',bold: true, sz: 11 }, alignment: { vertical: 'center' } }
-  const LH_PLAIN_STYLE = { font: { name: 'Avenir',sz: 11 }, alignment: { vertical: 'center' } }
+  // Per user May 27 2026: only the legal name stays bold (it's the
+  // logo substitute). Everything below — reg number, address lines,
+  // VAT, T.I.C — is regular weight in medium gray, to keep the
+  // letterhead understated.
+  const COLOR_LETTERHEAD_GRAY = '6B7280'
+  const LH_GRAY_STYLE = {
+    font: { name: 'Avenir', sz: 11, color: { rgb: COLOR_LETTERHEAD_GRAY } },
+    alignment: { vertical: 'center' },
+  }
 
-  // Row 1: legal name in big bold dark-blue — substitutes for the logo
+  // Row 1: legal name in big bold gray — substitutes for the logo.
+  // Same gray as the rest of the letterhead (reg number, address, VAT,
+  // T.I.C) so the whole block reads as a unified, understated block.
   setCell(ws, 1, 2, letterhead.legalName, {
     s: {
-      font:      { name: 'Avenir',bold: true, sz: 16, color: { rgb: COLOR_HEADER_BG } },
+      font:      { name: 'Avenir', bold: true, sz: 16, color: { rgb: COLOR_LETTERHEAD_GRAY } },
       alignment: { vertical: 'center', horizontal: 'left' },
     },
   })
   if (!ws['!rows']) ws['!rows'] = []
   ws['!rows'][0] = { hpx: 28 }
-  // Row 2: registration number
+  // Row 2: registration number  — gray regular
   if (letterhead.regNumber)
-    setCell(ws, 2, 2, letterhead.regNumber, { s: LH_LABEL_STYLE })
-  // Rows 3-5: address lines (skip blanks for Espargos until filled in)
+    setCell(ws, 2, 2, letterhead.regNumber, { s: LH_GRAY_STYLE })
+  // Rows 3-5: address lines       — gray regular
   letterhead.addressLines.forEach((line, i) => {
-    if (line) setCell(ws, 3 + i, 2, line, { s: LH_PLAIN_STYLE })
+    if (line) setCell(ws, 3 + i, 2, line, { s: LH_GRAY_STYLE })
   })
-  // Row 6: VAT Reg.No.
+  // Row 6: VAT Reg.No.            — gray regular
   if (letterhead.vatNumber)
-    setCell(ws, 6, 2, letterhead.vatNumber, { s: LH_LABEL_STYLE })
-  // Row 7: T.I.C
+    setCell(ws, 6, 2, letterhead.vatNumber, { s: LH_GRAY_STYLE })
+  // Row 7: T.I.C                   — gray regular
   if (letterhead.ticNumber)
-    setCell(ws, 7, 2, letterhead.ticNumber, { s: LH_LABEL_STYLE })
+    setCell(ws, 7, 2, letterhead.ticNumber, { s: LH_GRAY_STYLE })
 
   // --- SOA title + client info (rows 2-7, cols E-F) ---
   // Layout matches user's manually-tuned reference file (May 27 2026):
@@ -514,10 +539,10 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // R6: 'VAT Number: '         | vatNumber                 (cols E/F)
   // R7: 'Address: '            | address (merged F7:H7)    (cols E/F)
   setCell(ws, 2, 5, 'Statement of Account', { s: { font: { name: 'Avenir', bold: true, sz: 16 } } })
-  setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
+  setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL_BOLD })
   setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
 
-  setCell(ws, 4, 5, 'Client',                                                                   { s: STYLE_HEADER_LABEL })
+  setCell(ws, 4, 5, 'Client',                                                                   { s: STYLE_HEADER_LABEL_BOLD })
   setCell(ws, 4, 6, headerText.companyName || client.legal_name || '',                          { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
   setCell(ws, 5, 5, 'Company number:',                 { s: STYLE_HEADER_LABEL })
   setCell(ws, 5, 6, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
