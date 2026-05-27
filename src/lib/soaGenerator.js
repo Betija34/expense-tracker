@@ -46,6 +46,11 @@
 // community 'xlsx' package builds .xlsx files but doesn't write styles
 // — for the polished SOA layout we need them.
 import * as XLSX from 'xlsx-js-style'
+// fflate is a transitive dep of 'xlsx' — already installed. We use
+// it to unzip/rezip the produced .xlsx so we can inject the page
+// setup XML (xlsx-js-style silently drops <sheetPr> and <pageSetup>,
+// which is why "Scale to fit" never auto-activates).
+import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -900,14 +905,71 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], his
   return wb
 }
 
+// Inject the page-setup XML that xlsx-js-style silently drops, so
+// Excel opens the file with "Scale to fit: 1 page wide" already
+// active. Takes the raw .xlsx ArrayBuffer, unzips it via fflate,
+// edits xl/worksheets/sheet1.xml, then re-zips and returns the
+// patched ArrayBuffer.
+function injectPageSetup(xlsxBuffer) {
+  const files = unzipSync(new Uint8Array(xlsxBuffer))
+  const sheetPath = 'xl/worksheets/sheet1.xml'
+  if (!files[sheetPath]) return xlsxBuffer
+
+  let xml = strFromU8(files[sheetPath])
+
+  // 1) <sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>
+  //    MUST be the FIRST child of <worksheet> per OOXML schema.
+  if (!xml.includes('<sheetPr>') && !xml.includes('<sheetPr ')) {
+    xml = xml.replace(
+      /<worksheet([^>]*)>/,
+      (m, attrs) => `<worksheet${attrs}><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`
+    )
+  }
+
+  // 2) <pageSetup .../> goes after <pageMargins> (or before
+  //    </worksheet> if no margins element).
+  if (!xml.includes('<pageSetup ')) {
+    const pageSetup = '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>'
+    if (xml.includes('<pageMargins')) {
+      xml = xml.replace(/(<pageMargins[^/]*\/>)/, `$1${pageSetup}`)
+    } else {
+      xml = xml.replace(/(<\/worksheet>)/, `${pageSetup}$1`)
+    }
+  }
+
+  files[sheetPath] = strToU8(xml)
+  return zipSync(files).buffer
+}
+
 // Trigger a browser download of the SOA workbook. Filename pattern:
 //   "SOA {TRADE_NAME}.xlsx"
 // No year suffix — the file is canonical per client. Re-downloads
 // land alongside the previous one (browser default), making it
 // easy to keep one "current" SOA per client in Downloads.
+//
+// Internally we go via XLSX.write() → injectPageSetup() → Blob
+// download (instead of XLSX.writeFile direct) so we can patch the
+// pageSetup XML before the file lands on disk.
 export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {}, issuingCompany = '' }) {
   const wb = generateSoaWorkbook({ client, invoices, orphanPayments, historicalRows, headerText, issuingCompany })
   const safe = (client.trade_name || 'CLIENT').replace(/[\\/?*[\]]/g, '-')
   const filename = `SOA ${safe}.xlsx`
-  XLSX.writeFile(wb, filename)
+
+  // Get the workbook as an ArrayBuffer
+  const rawBuf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
+  // Patch in the page-setup XML xlsx-js-style omits
+  const patched = injectPageSetup(rawBuf)
+
+  // Trigger a browser-side download
+  const blob = new Blob([patched], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
