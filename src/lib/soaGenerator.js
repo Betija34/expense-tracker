@@ -584,13 +584,15 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // 'Client:' — regular weight, right-aligned (matches the other
   // labels Company number / VAT Number / Address below).
   setCell(ws, 4, 5, 'Client:',                                                                  { s: STYLE_HEADER_LABEL })
-  // Client legal name — bold sz 12 with wrap text so very long
+  // Client legal name — bold sz 12 with shrinkToFit so very long
   // names (e.g. "DIAMOND STAR REAL ESTATE SINGLE MEMBER SOCIETE
-  // ANONYME") wrap to multiple lines within the merged cell.
+  // ANONYME") auto-reduce font size to fit on one line in the
+  // merged F4:H4 cell. Avoids the wrap+tall-row look that broke the
+  // visual rhythm with the rows below.
   setCell(ws, 4, 6, headerText.companyName || client.legal_name || '', {
     s: {
       font:      { name: 'Avenir', bold: true, sz: 12 },
-      alignment: { wrapText: true, vertical: 'center', horizontal: 'left' },
+      alignment: { shrinkToFit: true, vertical: 'center', horizontal: 'left' },
     },
   })
   setCell(ws, 5, 5, 'Company number:',                 { s: STYLE_HEADER_LABEL })
@@ -609,10 +611,10 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
 
   // Explicit row heights for the header rows (matches user's layout).
   ws['!rows'][1] = { hpx: 23 }   // R2 — Statement of Account row
-  // R4 — Client. Taller (32 vs 17) so long legal names wrap to two
-  // lines without truncation (merged F4:H4 + wrapText). Short names
-  // just leave a bit of breathing room — acceptable trade-off.
-  ws['!rows'][3] = { hpx: 32 }
+  // R4 — Client. Back to 17px (matches R5/R6) because we now use
+  // shrinkToFit instead of wrapText — long legal names shrink the
+  // font instead of growing the row.
+  ws['!rows'][3] = { hpx: 17 }
   ws['!rows'][4] = { hpx: 17 }   // R5 — Company number
   ws['!rows'][5] = { hpx: 17 }   // R6 — VAT Number
   ws['!rows'][6] = { hpx: 40 }   // R7 — Address (tall for wrap)
