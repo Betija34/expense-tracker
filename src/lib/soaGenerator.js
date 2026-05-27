@@ -463,8 +463,8 @@ function buildWorksheet(client, ledgerRows, headerText) {
     'DOCUMENT\nType',
     'DOCUMENT\nNo:',
     'DESCRIPTION',
-    'AMOUNT',
-    'AMOUNT\nRECEIVED',
+    'DEBIT',
+    'CREDIT',
     'PROG.\nBALANCE',
   ]
   headers.forEach((h, i) => setCell(ws, 9, 2 + i, h, { s: STYLE_COL_TITLE }))
