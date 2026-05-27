@@ -165,8 +165,37 @@ function documentTypeFor(invoice) {
 //   balanceMode: 'normal' | 'proforma'   (proforma carries balance forward)
 //   sourceKind:  'invoice' | 'inwards_transfer' | 'orphan_payment'
 // }
-function buildLedgerRows(invoices, orphanPayments, client) {
+function buildLedgerRows(invoices, orphanPayments, historicalRows, client) {
   const rows = []
+
+  // Historical rows come first — they're stored exactly as the user
+  // pasted them from her old SOA Excel, so we trust the doc_type /
+  // description / amount fields verbatim. The generator just routes
+  // them into the same ledger-row shape as system invoices so the
+  // year-grouping + balance logic treats them uniformly.
+  //
+  // Filter out any "PREVIOUS TOTALS:" rows the user pasted — the
+  // generator will insert its own anchors at the start of each year
+  // group, so the user's manual anchors would duplicate them.
+  for (const h of historicalRows || []) {
+    if (!h.row_date) continue
+    const docType = (h.doc_type || '').trim().toUpperCase()
+    if (docType.includes('PREVIOUS TOTALS')) continue
+    rows.push({
+      date:        new Date(h.row_date),
+      docType:     h.doc_type || '',
+      docNumber:   h.doc_number || '',
+      description: h.description || '',
+      amount:      h.amount   != null ? Number(h.amount)   : null,
+      received:    h.received != null ? Number(h.received) : null,
+      // Pro forma historical rows: detect by doc_type and apply the
+      // balance-carry-forward rule (matches system-generated pro formas).
+      balanceMode: docType.includes('PROFORMA') ? 'proforma' : 'normal',
+      sourceKind:  docType.includes('CREDIT NOTE') ? 'invoice'
+                 : (docType.includes('INVOICE') || docType.includes('PROFORMA')) ? 'invoice'
+                 : 'inwards_transfer',
+    })
+  }
 
   for (const inv of invoices || []) {
     const isCredit  = inv.invoice_type === 'credit_note'
@@ -394,12 +423,22 @@ function buildWorksheet(client, ledgerRows, headerText) {
   setCell(ws, 7, 5, headerText.address || '',          { s: STYLE_HEADER_VALUE })
 
   // --- Column titles (row 9) ---
-  const headers = ['DOCUMENT Date', 'DOCUMENT Type', 'DOCUMENT   No:',
-                   'DESCRIPTION', 'AMOUNT', 'AMOUNT          RECEIVED', 'PROG. BALANCE']
+  // Explicit \n line breaks force consistent two-line wrapping
+  // regardless of column width or font metrics. wrapText:true on
+  // STYLE_COL_TITLE honors the breaks.
+  const headers = [
+    'DOCUMENT\nDate',
+    'DOCUMENT\nType',
+    'DOCUMENT\nNo:',
+    'DESCRIPTION',
+    'AMOUNT',
+    'AMOUNT\nRECEIVED',
+    'PROG.\nBALANCE',
+  ]
   headers.forEach((h, i) => setCell(ws, 9, 2 + i, h, { s: STYLE_COL_TITLE }))
-  // Taller column-title row so the wrapped two-line header looks clean.
+  // Taller column-title row so the wrapped two-line headers fit cleanly.
   if (!ws['!rows']) ws['!rows'] = []
-  ws['!rows'][8] = { hpx: 30 }
+  ws['!rows'][8] = { hpx: 36 }
 
   // --- Ledger body (row 10+) ---
   // Group rows by year, inserting a "PREVIOUS TOTALS:" anchor at the
@@ -456,12 +495,16 @@ function buildWorksheet(client, ledgerRows, headerText) {
         r.docType === 'PROFORMA INVOICE' ? 'PROFORMA INVOICE' :
         r.sourceKind === 'inwards_transfer' || r.sourceKind === 'orphan_payment' ? 'INWARDS' :
         'INVOICE'
-      const baseStyle    = styleForRowKind(rowKind)
-      const numericStyle = styleForRowKind(rowKind, { alignment: { horizontal: 'right' } })
+      const baseStyle     = styleForRowKind(rowKind)
+      const centeredStyle = styleForRowKind(rowKind, { alignment: { horizontal: 'center' } })
+      const numericStyle  = styleForRowKind(rowKind, { alignment: { horizontal: 'right' } })
 
-      setCell(ws, curRow, 2, r.date, { z: FMT_DATE, s: baseStyle })
-      setCell(ws, curRow, 3, r.docType || '', { s: baseStyle })
-      setCell(ws, curRow, 4, r.docNumber || '', { s: baseStyle })
+      // First three columns (date / type / number) centered;
+      // description column left-aligned (default); numeric columns
+      // right-aligned (see below).
+      setCell(ws, curRow, 2, r.date, { z: FMT_DATE, s: centeredStyle })
+      setCell(ws, curRow, 3, r.docType || '', { s: centeredStyle })
+      setCell(ws, curRow, 4, r.docNumber || '', { s: centeredStyle })
       setCell(ws, curRow, 5, r.description || '', { s: baseStyle })
       // Write 0 (numeric) for "empty" amount/received cells so the
       // PROG. BALANCE formula can do arithmetic on them. The
@@ -496,16 +539,25 @@ function buildWorksheet(client, ledgerRows, headerText) {
   curRow++ // leave a blank separator row before the totals block
   for (const year of years) {
     const range = yearBodyRange.get(year)
+    // Range strings for the SUMIF formulas below — sum AMOUNT
+    // (col F) and AMOUNT RECEIVED (col G) ONLY for rows where the
+    // DOCUMENT Type (col C) is NOT 'PROFORMA INVOICE'. Pro formas
+    // are informational; they shouldn't inflate the year-total
+    // payable amount. See task #105.
+    const typeRange = `${addr(range.firstRow, 3)}:${addr(range.lastRow, 3)}`
+    const amtRange  = `${addr(range.firstRow, 6)}:${addr(range.lastRow, 6)}`
+    const recRange  = `${addr(range.firstRow, 7)}:${addr(range.lastRow, 7)}`
+
     setCell(ws, curRow, 2, `YEAR ${year}`, { s: STYLE_TOTAL })
     setCell(ws, curRow, 3, '', { s: STYLE_TOTAL })
     setCell(ws, curRow, 4, '', { s: STYLE_TOTAL })
     setCell(ws, curRow, 5, 'TOTAL', { s: STYLE_TOTAL })
     setCell(ws, curRow, 6, null, {
-      formula: `=SUM(${addr(range.firstRow, 6)}:${addr(range.lastRow, 6)})`,
+      formula: `=SUMIF(${typeRange},"<>PROFORMA INVOICE",${amtRange})`,
       z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     setCell(ws, curRow, 7, null, {
-      formula: `=SUM(${addr(range.firstRow, 7)}:${addr(range.lastRow, 7)})`,
+      formula: `=SUMIF(${typeRange},"<>PROFORMA INVOICE",${recRange})`,
       z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     // Running total balance across years in the totals block too.
@@ -554,8 +606,8 @@ function buildWorksheet(client, ledgerRows, headerText) {
 //   headerText      — { companyName, companyNumber, vatNumber, address } — the
 //                     editable header text the user filled in.
 // Returns: a SheetJS workbook ready for XLSX.write / writeFile.
-export function generateSoaWorkbook({ client, invoices, orphanPayments = [], headerText = {} }) {
-  const rows = buildLedgerRows(invoices, orphanPayments, client)
+export function generateSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {} }) {
+  const rows = buildLedgerRows(invoices, orphanPayments, historicalRows, client)
   const wb   = XLSX.utils.book_new()
   const ws   = buildWorksheet(client, rows, headerText)
   // Sheet name = client trade_name (Excel caps at 31 chars, no
@@ -572,8 +624,8 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], hea
 // No year suffix — the file is canonical per client. Re-downloads
 // land alongside the previous one (browser default), making it
 // easy to keep one "current" SOA per client in Downloads.
-export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], headerText = {} }) {
-  const wb = generateSoaWorkbook({ client, invoices, orphanPayments, headerText })
+export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {} }) {
+  const wb = generateSoaWorkbook({ client, invoices, orphanPayments, historicalRows, headerText })
   const safe = (client.trade_name || 'CLIENT').replace(/[\\/?*[\]]/g, '-')
   const filename = `SOA ${safe}.xlsx`
   XLSX.writeFile(wb, filename)

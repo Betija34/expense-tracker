@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
 import { downloadSoaWorkbook } from '../../lib/soaGenerator'
+import { ImportHistoricalRowsModal } from './ImportHistoricalRowsModal'
 
 // =====================================================================
 // SoaModal — Statement of Account generator for a single client
@@ -28,12 +29,18 @@ export function SoaModal({ client, companyId, onClose }) {
   })
 
   const [invoices, setInvoices] = useState([])
+  const [historicalRows, setHistoricalRows] = useState([])
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState(null)
+  const [importOpen, setImportOpen] = useState(false)
 
   // Load all invoices for this client across all periods. The SOA
   // needs the full history to render the year groupings + running
   // balance correctly.
+  // Load invoices + historical rows in parallel. Bump `reloadKey`
+  // (via the Import modal callback) to refetch after the user pastes
+  // a new historical batch.
+  const [reloadKey, setReloadKey] = useState(0)
   useEffect(() => {
     if (!companyId || !client?.id) return
     let cancelled = false
@@ -41,15 +48,25 @@ export function SoaModal({ client, companyId, onClose }) {
       try {
         setLoading(true)
         setError(null)
-        const { data, error: e } = await supabase
-          .from('invoices')
-          .select('id, invoice_type, invoice_number, period_year, period_month, date_issued, date_paid, amount_net, vat_rate, amount_total, status, description')
-          .eq('company_id', companyId)
-          .eq('client_id', client.id)
-          .order('date_issued', { ascending: true })
-        if (e) throw e
+        const [invRes, histRes] = await Promise.all([
+          supabase
+            .from('invoices')
+            .select('id, invoice_type, invoice_number, period_year, period_month, date_issued, date_paid, amount_net, vat_rate, amount_total, status, description')
+            .eq('company_id', companyId)
+            .eq('client_id', client.id)
+            .order('date_issued', { ascending: true }),
+          supabase
+            .from('soa_historical_rows')
+            .select('id, row_index, row_date, doc_type, doc_number, description, amount, received')
+            .eq('client_id', client.id)
+            .order('row_date', { ascending: true })
+            .order('row_index', { ascending: true }),
+        ])
+        if (invRes.error)  throw invRes.error
+        if (histRes.error) throw histRes.error
         if (cancelled) return
-        setInvoices(data || [])
+        setInvoices(invRes.data || [])
+        setHistoricalRows(histRes.data || [])
       } catch (e) {
         if (!cancelled) setError(e.message || String(e))
       } finally {
@@ -57,7 +74,7 @@ export function SoaModal({ client, companyId, onClose }) {
       }
     })()
     return () => { cancelled = true }
-  }, [companyId, client?.id])
+  }, [companyId, client?.id, reloadKey])
 
   // Issued vs draft counts to give the user a sense of what's about
   // to land in the SOA.
@@ -70,6 +87,7 @@ export function SoaModal({ client, companyId, onClose }) {
         client,
         invoices,
         orphanPayments: [],   // v1: skip orphans — paid invoices already cover the common case
+        historicalRows,
         headerText,
       })
     } catch (e) {
@@ -92,14 +110,31 @@ export function SoaModal({ client, companyId, onClose }) {
           <div className="form-group" style={{
             background: '#f0f9ff', border: '1px solid #bae6fd',
             borderRadius: 4, padding: 10, fontSize: 13, color: '#075985',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
           }}>
             {loading ? '⏳ Loading invoices…' : (
-              <>
+              <span>
                 <strong>{issuedCount} issued invoice{issuedCount === 1 ? '' : 's'}</strong>
                 {' · '}{paidCount} paid (so {paidCount} inwards transfer row{paidCount === 1 ? '' : 's'})
+                {historicalRows.length > 0 && (
+                  <>{' · '}<strong>{historicalRows.length} historical row{historicalRows.length === 1 ? '' : 's'}</strong> from prior years</>
+                )}
                 {' · '}draft invoices without a Date Issued are skipped.
-              </>
+              </span>
             )}
+            <button
+              type="button"
+              onClick={() => setImportOpen(true)}
+              disabled={loading}
+              style={{
+                background: '#f59e0b', color: 'white', border: 'none',
+                borderRadius: 4, padding: '6px 12px', fontSize: 12,
+                cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap',
+              }}
+              title="Paste pre-system ledger rows from your old SOA Excel — stored permanently per client"
+            >
+              📜 {historicalRows.length > 0 ? 'Manage' : 'Import'} historical rows
+            </button>
           </div>
 
           {/* Editable header block — the SOA top section. Not
@@ -157,20 +192,31 @@ export function SoaModal({ client, companyId, onClose }) {
           <button onClick={onClose} className="btn-cancel">Cancel</button>
           <button
             onClick={handleDownload}
-            disabled={loading || issuedCount === 0}
+            disabled={loading || (issuedCount === 0 && historicalRows.length === 0)}
             style={{
-              background: issuedCount === 0 ? '#d1d5db' : '#16a34a',
+              background: (issuedCount === 0 && historicalRows.length === 0) ? '#d1d5db' : '#16a34a',
               color: 'white', border: 'none', borderRadius: 4,
               padding: '8px 16px', fontSize: 14, fontWeight: 600,
-              cursor: (loading || issuedCount === 0) ? 'not-allowed' : 'pointer',
+              cursor: (loading || (issuedCount === 0 && historicalRows.length === 0)) ? 'not-allowed' : 'pointer',
             }}
-            title={issuedCount === 0
-              ? 'No issued invoices to include in the SOA yet'
-              : `Download Excel SOA with ${issuedCount} invoice${issuedCount === 1 ? '' : 's'}`}
+            title={(issuedCount === 0 && historicalRows.length === 0)
+              ? 'No issued invoices or historical rows to include in the SOA yet'
+              : `Download Excel SOA with ${issuedCount + historicalRows.length} row${(issuedCount + historicalRows.length) === 1 ? '' : 's'}`}
           >
             📥 Download SOA (.xlsx)
           </button>
         </div>
+
+        {/* Import historical rows modal — nested so it lives inside
+            the SOA modal flow. On save we bump reloadKey to re-fetch
+            the historical rows. */}
+        {importOpen && (
+          <ImportHistoricalRowsModal
+            client={client}
+            onClose={() => setImportOpen(false)}
+            onSaved={() => setReloadKey(k => k + 1)}
+          />
+        )}
       </div>
     </div>
   )
