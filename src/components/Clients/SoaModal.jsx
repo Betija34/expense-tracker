@@ -51,7 +51,7 @@ export function SoaModal({ client, companyId, companyName, onClose }) {
         const [invRes, histRes] = await Promise.all([
           supabase
             .from('invoices')
-            .select('id, invoice_type, invoice_number, period_year, period_month, date_issued, date_paid, amount_net, vat_rate, amount_total, status, description')
+            .select('id, invoice_type, invoice_number, period_year, period_month, represents_period_year, represents_period_month, date_issued, date_paid, amount_net, vat_rate, amount_total, status, description')
             .eq('company_id', companyId)
             .eq('client_id', client.id)
             .order('date_issued', { ascending: true }),

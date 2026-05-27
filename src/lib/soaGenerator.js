@@ -117,8 +117,14 @@ const DEFAULT_REIMBURSEMENT_TEMPLATE =
 // generation if she wants different wording.
 function descriptionFor(invoice, client) {
   const type = invoice.invoice_type
-  const py = invoice.period_year
-  const pm = invoice.period_month
+  // For per-month-split invoices (V27 deferred-fee case), the
+  // represents_period_year/month tells us WHICH MONTH the fee
+  // actually represents (e.g. an invoice issued in March 2026 for
+  // the January 2026 fee has period_month=3 but
+  // represents_period_month=1). Use that when set so the SOA shows
+  // "JANUARY FEE 2026", not "MARCH FEE 2026" three times.
+  const py = invoice.represents_period_year  || invoice.period_year
+  const pm = invoice.represents_period_month || invoice.period_month
   const monthLabel = pm >= 1 && pm <= 12 ? MONTH_NAMES_UPPER[pm - 1] : ''
   const periodLabel = pm >= 1 && pm <= 12
     ? `${MONTH_NAMES[pm - 1]} ${py}`
@@ -162,8 +168,11 @@ function descriptionFor(invoice, client) {
 // EXPENSES (May 2026 expense report)"). Used inside
 // "INWARDS TRANSFER ({brief} Inv.No:{number})".
 function briefForInwardsTransfer(invoice) {
-  const py = invoice.period_year
-  const pm = invoice.period_month
+  // Mirror descriptionFor: use represents_period_* when set so the
+  // INWARDS TRANSFER parenthetical correctly says "JANUARY FEE 2026"
+  // for a March-issued payment of January's fee.
+  const py = invoice.represents_period_year  || invoice.period_year
+  const pm = invoice.represents_period_month || invoice.period_month
   const monthLabel = pm >= 1 && pm <= 12 ? MONTH_NAMES_UPPER[pm - 1] : ''
   const periodLabel = pm >= 1 && pm <= 12 ? `${MONTH_NAMES[pm - 1]} ${py}` : String(py || '')
 
