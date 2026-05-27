@@ -276,15 +276,14 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
 
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
 
-  // Force A4 LANDSCAPE for the duration of the print — the Shareholder
-  // Report's table (Date / Ref / Sub-ref / Vendor / Category / Subcategory)
-  // is too wide for portrait. Last column was getting cut off the page.
-  // Injected before window.print() and removed via the afterprint event.
+  // CSS that overrides the global landscape @page (set in App.css) and forces
+  // A4 portrait for the duration of the print. Injected before window.print()
+  // and removed via the afterprint event. Same robust pattern used in Travel Log.
   const PORTRAIT_PRINT_CSS = `
     @media print {
       @page {
-        size: A4 landscape;
-        margin: 1cm 1cm 1.5cm 1cm;
+        size: A4 portrait;
+        margin: 1.5cm 1cm 1.5cm 1cm;
         @bottom-right {
           content: "Page " counter(page) " of " counter(pages);
           font-size: 10px;

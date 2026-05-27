@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import './MonthlyChecklist.css'
 
 /**
@@ -71,6 +72,7 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
   const [items, setItems]             = useState([])           // all checklist_items for this company (active + hidden)
   const [completions, setCompletions] = useState([])           // checklist_completions for the selected month
   const [clientExp, setClientExp]     = useState([])           // [{ client_name, total }] for dynamic Client expense reports
+  const [invoicesIssued, setInvoicesIssued] = useState([])     // invoices.date_issued IS NOT NULL for this period — drives the cover page "Invoices Issued" section
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState(null)
   // Track which note inputs are currently expanded (key = item_id + '|' + sub_key).
@@ -80,6 +82,33 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
   // Per-category toggle: when true, hidden (active=false) tasks are revealed
   // with an "Unhide" button so the user can bring them back. Key = category.
   const [showHidden, setShowHidden]   = useState({})
+  // Collapse / expand the Folder Cover Page block on screen. Defaults to
+  // collapsed so the cover page doesn't dominate the page when the user is
+  // just working through the daily task list — they expand it at end of
+  // month when preparing the physical folder. Print mode always shows the
+  // expanded contents regardless of this state (handled in CSS).
+  const [coverExpanded, setCoverExpanded] = useState(false)
+  // ---- Folder Cover Page tick state ----
+  // Persisted in localStorage, keyed per (company, year, month). Each value
+  // is { [itemKey: string]: boolean }. This drives the cover page checkboxes
+  // and the printed cover sheet — completely independent of the task list.
+  const COVER_STORAGE_KEY = `coverPage:${selectedCompany}:${selectedYear}:${selectedMonth}`
+  const [coverChecks, setCoverChecks] = useState({})
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(COVER_STORAGE_KEY)
+      setCoverChecks(raw ? JSON.parse(raw) : {})
+    } catch {
+      setCoverChecks({})
+    }
+  }, [COVER_STORAGE_KEY])
+  const toggleCoverCheck = (key) => {
+    setCoverChecks(prev => {
+      const next = { ...prev, [key]: !prev[key] }
+      try { localStorage.setItem(COVER_STORAGE_KEY, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
 
   // ---- Loader ----
   useEffect(() => {
@@ -150,6 +179,24 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
           .map(([client_name, total]) => ({ client_name, total }))
           .sort((a, b) => a.client_name.localeCompare(b.client_name))
         setClientExp(clientList)
+
+        // 5) Invoices issued this month — drives the cover page "Invoices
+        //    Issued" section. Only invoices that have actually been issued
+        //    (date_issued IS NOT NULL) count — drafts are excluded since
+        //    they're not yet physical paperwork in the folder. Joined with
+        //    clients(trade_name) so the cover page row can label each
+        //    invoice with its client.
+        const { data: invs, error: invErr } = await supabase
+          .from('invoices')
+          .select('id, invoice_number, amount_net, amount_total, invoice_type, date_issued, clients(trade_name)')
+          .eq('company_id', comp.id)
+          .eq('period_year', selectedYear)
+          .eq('period_month', selectedMonth)
+          .not('date_issued', 'is', null)
+          .order('invoice_number', { ascending: true })
+        if (invErr) throw invErr
+        if (cancelled) return
+        setInvoicesIssued(invs || [])
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load checklist')
       } finally {
@@ -502,13 +549,251 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
     return renderRow(item, null, item.name, null)
   }
 
+  // ---- Print handler ----
+  // Inject a one-shot A4 portrait @page override (same pattern Travel Log /
+  // Shareholder Report use) so the checklist prints on portrait paper with
+  // page numbering — the global default is landscape. Cleaned up after print.
+  const CHECKLIST_PORTRAIT_CSS = `
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 1.5cm 1cm 1.5cm 1cm;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 10px;
+          color: #6b7280;
+        }
+      }
+    }
+  `
+  const handlePrint = () => {
+    const styleEl = document.createElement('style')
+    styleEl.textContent = CHECKLIST_PORTRAIT_CSS
+    document.head.appendChild(styleEl)
+    const cleanup = () => {
+      styleEl.remove()
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    window.print()
+  }
+
   // ---- Render ----
   if (loading) return <div className="loading">Loading checklist…</div>
   if (error) return <div className="error">{error}</div>
 
   return (
     <div className="monthly-checklist">
-      <div className="checklist-header">
+      {/* Print toolbar — hidden in print via .no-print. */}
+      <div className="action-bar no-print">
+        <button onClick={handlePrint} className="toolbar-btn primary" title="Print the cover page for the physical document folder (heading + ticked-contents list).">
+          🖨 Print Cover Page
+        </button>
+      </div>
+
+      {/* Unified letterhead — visible on screen AND in print. Heading is just
+          the company name + the selected month/year; both auto-fill from the
+          top-bar selectors. */}
+      <PrintLetterhead
+        companyName={selectedCompany}
+        reportTitle={`${monthName(selectedMonth)} ${selectedYear}`}
+      />
+
+      {/* ===== FOLDER COVER PAGE =====
+          Independent of the task list. Tick the items that are included in
+          the physical document folder for this month; the Print button at
+          the top prints THIS block (with the letterhead above it) and
+          nothing else. State is persisted per (company, year, month) in
+          localStorage — no DB migration needed; this is a printing aid
+          rather than an accounting record. */}
+      <div className={`cover-page${coverExpanded ? '' : ' is-collapsed'}`}>
+        <button
+          type="button"
+          className="cover-page-title cover-page-toggle"
+          onClick={() => setCoverExpanded(v => !v)}
+          aria-expanded={coverExpanded}
+          title={coverExpanded ? 'Hide the folder cover page' : 'Show the folder cover page'}
+        >
+          <span className="cover-page-toggle-chevron">{coverExpanded ? '▾' : '▸'}</span>
+          Physical document folder — contents
+        </button>
+
+        {/* 1. Summary (Dashboard printout) */}
+        <div className="cover-page-section">
+          <label className="cover-page-row">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.summary}
+              onChange={() => toggleCoverCheck('summary')}
+            />
+            <span className="cover-page-row-label">Summary</span>
+          </label>
+        </div>
+
+        {/* 2. Bank Statement — Current Account (always) + Mastercard Account
+              (Rabona only — Espargos has no Mastercard). */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Bank Statement</div>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.bank_current}
+              onChange={() => toggleCoverCheck('bank_current')}
+            />
+            <span className="cover-page-row-label">{selectedCompany} Current Account</span>
+          </label>
+          {selectedCompany !== 'Espargos' && (
+            <label className="cover-page-row is-sub">
+              <input
+                type="checkbox"
+                checked={!!coverChecks.bank_mastercard}
+                onChange={() => toggleCoverCheck('bank_mastercard')}
+              />
+              <span className="cover-page-row-label">{selectedCompany} Mastercard Account</span>
+            </label>
+          )}
+        </div>
+
+        {/* 3. Expenses — subheading with the expense chart + supporting
+              invoice/receipt copies. Both apply to every company. */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Expenses</div>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.expense_chart}
+              onChange={() => toggleCoverCheck('expense_chart')}
+            />
+            <span className="cover-page-row-label">{selectedCompany} Expense Chart</span>
+          </label>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.invoice_receipt_copies}
+              onChange={() => toggleCoverCheck('invoice_receipt_copies')}
+            />
+            <span className="cover-page-row-label">Copies of invoices and receipts</span>
+          </label>
+        </div>
+
+        {/* 4. Reimbursements — one row per client with reimbursable expenses
+              this month. Pulled from clientExp (the same source the existing
+              dynamic_clients_with_expenses task uses). */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Reimbursements — Client Expense Reports</div>
+          {clientExp.length === 0 ? (
+            <div className="cover-page-empty">
+              No clients with reimbursable expenses this month.
+            </div>
+          ) : (
+            clientExp.map(c => {
+              const key = `reimbursement:${c.client_name}`
+              return (
+                <label className="cover-page-row is-sub" key={key}>
+                  <input
+                    type="checkbox"
+                    checked={!!coverChecks[key]}
+                    onChange={() => toggleCoverCheck(key)}
+                  />
+                  <span className="cover-page-row-label">
+                    {c.client_name} Expense Report {monthName(selectedMonth)} {selectedYear} — {formatEuro(c.total)}
+                  </span>
+                </label>
+              )
+            })
+          )}
+        </div>
+
+        {/* 5. Invoicing — small subheading with two tickable sub-rows:
+              (a) the physical Invoices Issued Chart/report, and
+              (b) confirmation that the issued invoices have been sent by
+                  email to the clients.
+              The detailed invoice list lives in the chart itself, so we
+              don't repeat it here. When no invoices were issued, both
+              sub-rows are replaced with a single informational note. */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Invoicing</div>
+          {invoicesIssued.length === 0 ? (
+            <div className="cover-page-empty">
+              No invoices issued this month.
+            </div>
+          ) : (
+            <>
+              <label className="cover-page-row is-sub">
+                <input
+                  type="checkbox"
+                  checked={!!coverChecks.invoices_chart}
+                  onChange={() => toggleCoverCheck('invoices_chart')}
+                />
+                <span className="cover-page-row-label">{selectedCompany} Invoices Issued Chart</span>
+              </label>
+              <label className="cover-page-row is-sub">
+                <input
+                  type="checkbox"
+                  checked={!!coverChecks.invoices_emailed}
+                  onChange={() => toggleCoverCheck('invoices_emailed')}
+                />
+                <span className="cover-page-row-label">Invoices issued current month sent by email</span>
+              </label>
+            </>
+          )}
+        </div>
+
+        {/* 6. Travel Expenses — YK Log, BK Log, Prepaid (Rabona only —
+              Espargos shareholders don't travel under that company). */}
+        {selectedCompany !== 'Espargos' && (
+          <div className="cover-page-section">
+            <div className="cover-page-parent-label">Travel Expenses</div>
+            <label className="cover-page-row is-sub">
+              <input
+                type="checkbox"
+                checked={!!coverChecks.travel_yk}
+                onChange={() => toggleCoverCheck('travel_yk')}
+              />
+              <span className="cover-page-row-label">YK Travel Log</span>
+            </label>
+            <label className="cover-page-row is-sub">
+              <input
+                type="checkbox"
+                checked={!!coverChecks.travel_bk}
+                onChange={() => toggleCoverCheck('travel_bk')}
+              />
+              <span className="cover-page-row-label">BK Travel Log</span>
+            </label>
+            <label className="cover-page-row is-sub">
+              <input
+                type="checkbox"
+                checked={!!coverChecks.travel_prepaid}
+                onChange={() => toggleCoverCheck('travel_prepaid')}
+              />
+              <span className="cover-page-row-label">Pre-paid / Unassigned Travel Expenses</span>
+            </label>
+          </div>
+        )}
+
+        {/* 6. Shareholder Reports — YK and BK */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Shareholder Reports</div>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.shareholder_yk}
+              onChange={() => toggleCoverCheck('shareholder_yk')}
+            />
+            <span className="cover-page-row-label">YK Shareholder Report</span>
+          </label>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.shareholder_bk}
+              onChange={() => toggleCoverCheck('shareholder_bk')}
+            />
+            <span className="cover-page-row-label">BK Shareholder Report</span>
+          </label>
+        </div>
+      </div>
+
+      <div className="checklist-header no-print">
         <div>
           <h2 style={{ margin: 0 }}>
             📋 Monthly Checklist — {selectedCompany} · {monthName(selectedMonth)} {selectedYear}
@@ -525,7 +810,7 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
 
       {/* If this company has no items yet, show an empty-state helper. */}
       {items.length === 0 && (
-        <div className="empty-state">
+        <div className="empty-state no-print">
           <p><strong>No checklist items yet for {selectedCompany}.</strong></p>
           <p>Use the "+ Add task" form under each section to build the list.</p>
         </div>
@@ -545,7 +830,7 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
         return (
           <section
             key={cat}
-            className="checklist-section"
+            className="checklist-section no-print"
             style={{ borderLeft: `4px solid ${meta.accent}` }}
           >
             <div className="checklist-section-header">

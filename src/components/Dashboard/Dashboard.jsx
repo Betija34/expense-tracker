@@ -79,12 +79,22 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         if (cancelled) return
         setExpenses(exps || [])
 
-        // Unfinalized bank tx count (across all months — these need attention regardless)
+        // Unfinalized bank tx count — SCOPED TO THE SELECTED MONTH so the
+        // Dashboard reflects only this month's parser state. Previously this
+        // counted across all months, which meant an imported-but-unprocessed
+        // future month (e.g. May) leaked its 53 unmatched rows onto every
+        // other month's dashboard. Matches Bank Parser's per-month behavior.
+        const bankMonthStart = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`
+        const nextMonth = selectedMonth === 12 ? 1 : selectedMonth + 1
+        const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
+        const bankMonthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
         const { count: bankCount, error: bankErr } = await supabase
           .from('bank_transactions')
           .select('id', { count: 'exact', head: true })
           .eq('company_id', currentCompany.id)
           .eq('status', 'unmatched')
+          .gte('transaction_date', bankMonthStart)
+          .lt('transaction_date', bankMonthEnd)
         if (bankErr) throw bankErr
         if (cancelled) return
         setPendingBankCount(bankCount || 0)
@@ -578,20 +588,24 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         />
       </div>
 
-      {/* Inter-Company Reimbursements — placeholder */}
-      <SectionHeader title="Inter-Company Reimbursements" subtitle="Expenses one company paid on behalf of the other — needs tagging" />
-      <div style={{
-        background: '#f9fafb', border: '1px dashed #d1d5db',
-        borderRadius: 4, padding: 14, color: '#6b7280', fontSize: 13,
-      }}>
-        Not yet implemented — we need a way to tag a specific expense as
-        "paid on behalf of {otherCompanyName}" (e.g., a new flag on the expense row
-        or a dedicated subcategory). Once that exists, this card will show:
-        <ul style={{ margin: '6px 0 0 18px' }}>
-          <li>Expenses paid on behalf of {otherCompanyName}</li>
-          <li>Expenses {otherCompanyName} paid on behalf of {selectedCompany}</li>
-          <li>Balance — who owes who</li>
-        </ul>
+      {/* Inter-Company Reimbursements — placeholder. Wrapped in no-print so
+          the "Not yet implemented" card doesn't show on the printed dashboard
+          — it's a dev-time stub, not a real report. */}
+      <div className="no-print">
+        <SectionHeader title="Inter-Company Reimbursements" subtitle="Expenses one company paid on behalf of the other — needs tagging" />
+        <div style={{
+          background: '#f9fafb', border: '1px dashed #d1d5db',
+          borderRadius: 4, padding: 14, color: '#6b7280', fontSize: 13,
+        }}>
+          Not yet implemented — we need a way to tag a specific expense as
+          "paid on behalf of {otherCompanyName}" (e.g., a new flag on the expense row
+          or a dedicated subcategory). Once that exists, this card will show:
+          <ul style={{ margin: '6px 0 0 18px' }}>
+            <li>Expenses paid on behalf of {otherCompanyName}</li>
+            <li>Expenses {otherCompanyName} paid on behalf of {selectedCompany}</li>
+            <li>Balance — who owes who</li>
+          </ul>
+        </div>
       </div>
     </div>
   )

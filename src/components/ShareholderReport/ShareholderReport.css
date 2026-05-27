@@ -120,15 +120,42 @@
     margin: 0 !important;
   }
 
+  /* CRITICAL: the JSX wraps each table in <div style="overflowX:auto">
+     which clips the Amount (rightmost) column in print whenever the
+     table is wider than the print page. Force overflow:visible on all
+     descendants so the table can render its full width. */
+  .shareholder-report div {
+    overflow: visible !important;
+    overflow-x: visible !important;
+  }
+
   /* Tables: print-friendly. Tightened typography + padding so all 6
      columns (Date / Ref / Sub-ref / Vendor / Category / Amount) fit
-     in landscape A4 without the Amount column getting cut off. */
+     in landscape A4 without the Amount column getting cut off.
+     table-layout: fixed forces the browser to honor our explicit
+     column percentages below — content wraps, no column gets
+     squeezed to zero or clipped off the right edge. */
   .shareholder-report table {
     width: 100% !important;
     border-collapse: collapse !important;
     font-size: 9px !important;
-    table-layout: auto !important;
+    table-layout: fixed !important;
   }
+  /* Explicit per-column percentages (sum = 100). Date/Ref/Sub-ref
+     stay narrow; Vendor + Category share the bulk; Amount has
+     enough room for €X,XXX.XX. */
+  .shareholder-report table th:nth-child(1),
+  .shareholder-report table td:nth-child(1) { width: 9%  !important; }  /* Date */
+  .shareholder-report table th:nth-child(2),
+  .shareholder-report table td:nth-child(2) { width: 9%  !important; }  /* Ref */
+  .shareholder-report table th:nth-child(3),
+  .shareholder-report table td:nth-child(3) { width: 6%  !important; }  /* Sub-ref */
+  .shareholder-report table th:nth-child(4),
+  .shareholder-report table td:nth-child(4) { width: 28% !important; }  /* Vendor */
+  .shareholder-report table th:nth-child(5),
+  .shareholder-report table td:nth-child(5) { width: 38% !important; }  /* Category */
+  .shareholder-report table th:nth-child(6),
+  .shareholder-report table td:nth-child(6) { width: 10% !important; }  /* Amount */
   .shareholder-report table thead {
     display: table-header-group !important;
   }

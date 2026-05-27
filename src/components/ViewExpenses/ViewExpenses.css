@@ -425,10 +425,22 @@ tr.row-focused td {
 
 /* ---------- Print Layout ---------- */
 @media print {
-  /* Hide everything outside the view */
-  header, footer, .tabs, .top-bar, .recon-banner .review-link,
-  .expense-filters, .action-bar, .select-cell, .action-buttons,
-  th.select-cell, td.select-cell, th:last-child, td:last-child {
+  /* Page chrome to hide everywhere */
+  header, footer, .tabs, .top-bar, .recon-banner .review-link {
+    display: none !important;
+  }
+  /* View Expenses–specific hides — must be SCOPED to .view-expenses,
+     otherwise th:last-child / td:last-child leak into every other
+     report (e.g. Shareholder Report's Amount column was disappearing
+     in print because of this rule). */
+  .view-expenses .expense-filters,
+  .view-expenses .action-bar,
+  .view-expenses .select-cell,
+  .view-expenses .action-buttons,
+  .view-expenses th.select-cell,
+  .view-expenses td.select-cell,
+  .view-expenses th:last-child,
+  .view-expenses td:last-child {
     display: none !important;
   }
 
