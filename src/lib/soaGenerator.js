@@ -459,6 +459,9 @@ function buildWorksheet(client, ledgerRows, headerText) {
   const yearBodyRange      = new Map()   // year → { firstRow, lastRow } for SUM(F:G)
 
   let curRow = 10   // first ledger row
+  let lastBodyRow = 9   // tracked so we can scope the AutoFilter range
+                        // to (header row 9) → (last body row), leaving
+                        // the YEAR TOTAL block below the filter.
 
   for (let i = 0; i < years.length; i++) {
     const year = years[i]
@@ -526,10 +529,22 @@ function buildWorksheet(client, ledgerRows, headerText) {
 
     yearLastBalanceRow.set(year, lastBalanceRow)
     yearBodyRange.set(year, { firstRow: firstBodyRow, lastRow: lastBalanceRow })
+    // Track the last body row across all years so the AutoFilter
+    // range covers the full data (but excludes the year-total block).
+    if (lastBalanceRow > lastBodyRow) lastBodyRow = lastBalanceRow
 
     // Blank separator row between years for breathing room.
     curRow++
   }
+
+  // --- AutoFilter ---
+  // Add dropdown arrows to the column-title row so the user can
+  // filter the ledger in Excel (e.g. show only 2025 rows by clicking
+  // the DOCUMENT Date dropdown → group by year → check 2025). Excel
+  // gives free year/month grouping on date columns. The range only
+  // covers the data rows — the YEAR YYYY TOTAL block below stays
+  // visible regardless of filter state.
+  ws['!autofilter'] = { ref: `${addr(9, 2)}:${addr(lastBodyRow, 8)}` }
 
   // --- Bottom totals block ---
   // One "YEAR YYYY TOTAL" row per year, summing F and G for that
