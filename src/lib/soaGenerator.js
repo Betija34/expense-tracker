@@ -467,19 +467,17 @@ const STYLE_FOOTER_LABEL = {
 // alone above the payment / overpay rows, no grid lines on either
 // side or top/bottom).
 const STYLE_FOOTER_DATE = {
-  font:      { name: 'Avenir',bold: true, sz: 11 },
+  font:      { name: 'Avenir', sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
 }
 const STYLE_FOOTER_VALUE_PLAIN = {
   font:      { name: 'Avenir',bold: true, sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
-  border:    BORDER_THIN,
 }
 const STYLE_FOOTER_VALUE_GREEN = {
   font:      { name: 'Avenir',bold: true, sz: 11 },
-  fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },  // soft green
+  fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },  // light gray (was green, kept var name)
   alignment: { horizontal: 'right', vertical: 'center' },
-  border:    BORDER_THIN,
 }
 const STYLE_FOOTER_LABEL_GREEN = {
   font:      { name: 'Avenir',bold: true, sz: 11 },
@@ -781,10 +779,10 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
 
     const closingRef = addr(prevTotalsBalanceRow, 8)
 
-    // AS OF row — label in G, today's date in H (no borders on
-    // either cell so this row sits visually separate from the
-    // FOR PAYMENT / OVERPAY rows below).
-    setCell(ws, curRow, 7, 'as of', { s: STYLE_FOOTER_LABEL })
+    // AS OF row — both label and date use STYLE_FOOTER_DATE (regular
+    // weight, no border) so the row sits understated above the
+    // FOR PAYMENT / OVERPAY rows.
+    setCell(ws, curRow, 7, 'as of', { s: STYLE_FOOTER_DATE })
     setCell(ws, curRow, 8, new Date(), { z: FMT_DATE, s: STYLE_FOOTER_DATE })
     curRow++
 
