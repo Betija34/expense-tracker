@@ -491,9 +491,25 @@ function buildWorksheet(client, ledgerRows, headerText) {
                         // to (header row 9) → (last body row), leaving
                         // the YEAR TOTAL block below the filter.
 
+  // When the SOA opens, only the current year's rows should be
+  // visible by default. Other years' rows are flagged hidden=true
+  // (row hiding) so PDF print captures just the current year. User
+  // can still expand by selecting all rows → right-click → Unhide,
+  // or by clearing the AutoFilter on the Date column.
+  const currentYear = new Date().getFullYear()
+  // Helper — mark an Excel row (1-indexed) as hidden if `cond` is true.
+  // Idempotent: layers onto any existing row-options.
+  const hideRowIf = (rowOneIndexed, cond) => {
+    if (!cond) return
+    if (!ws['!rows']) ws['!rows'] = []
+    const idx = rowOneIndexed - 1
+    ws['!rows'][idx] = { ...(ws['!rows'][idx] || {}), hidden: true }
+  }
+
   for (let i = 0; i < years.length; i++) {
     const year = years[i]
     const yearRows = groupedByYear.get(year)
+    const isOtherYear = year !== currentYear   // hide everything if not current year
 
     // Anchor row — "PREVIOUS TOTALS:" Jan 1 of this year
     setCell(ws, curRow, 2, new Date(year, 0, 1), { z: FMT_DATE, s: STYLE_ANCHOR })
@@ -513,6 +529,7 @@ function buildWorksheet(client, ledgerRows, headerText) {
       setCell(ws, curRow, 8, null, { formula: addr(prevLastBalance, 8), z: FMT_AMOUNT, s: STYLE_ANCHOR })
     }
     yearAnchorRow.set(year, curRow)
+    hideRowIf(curRow, isOtherYear)   // hide anchor for non-current years
     let lastBalanceRow = curRow
     const firstBodyRow = curRow + 1
     curRow++
@@ -551,6 +568,7 @@ function buildWorksheet(client, ledgerRows, headerText) {
         : `=${prevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`
       setCell(ws, curRow, 8, null, { formula, z: FMT_AMOUNT, s: numericStyle })
 
+      hideRowIf(curRow, isOtherYear)   // hide body row for non-current years
       lastBalanceRow = curRow
       curRow++
     }
@@ -562,6 +580,7 @@ function buildWorksheet(client, ledgerRows, headerText) {
     if (lastBalanceRow > lastBodyRow) lastBodyRow = lastBalanceRow
 
     // Blank separator row between years for breathing room.
+    hideRowIf(curRow, isOtherYear)   // hide the separator after non-current-year sections too
     curRow++
   }
 
@@ -611,6 +630,13 @@ function buildWorksheet(client, ledgerRows, headerText) {
       formula: `=${balPrevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`,
       z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
+    // Hide YEAR XXXX TOTAL rows for non-current years too, so the
+    // default view (and any PDF print) shows ONLY the current year's
+    // totals. The closing balance in the footer below is still
+    // accurate because its formula chains through prevTotalsBalanceRow
+    // regardless of hidden state — Excel formulas reference hidden
+    // cells correctly.
+    hideRowIf(curRow, year !== currentYear)
     prevTotalsBalanceRow = curRow
     curRow++
   }
