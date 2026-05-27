@@ -116,11 +116,7 @@ const DEFAULT_REIMBURSEMENT_TEMPLATE =
 // pro_forma we use built-in patterns; user can edit in Excel after
 // generation if she wants different wording.
 function descriptionFor(invoice, client) {
-  // If the invoice has its own description text saved, prefer that.
-  // Lets the user override for catch-up rows or multi-period
-  // reimbursements where the template falls short.
-  if (invoice.description?.trim()) return invoice.description.trim()
-
+  const type = invoice.invoice_type
   const py = invoice.period_year
   const pm = invoice.period_month
   const monthLabel = pm >= 1 && pm <= 12 ? MONTH_NAMES_UPPER[pm - 1] : ''
@@ -128,7 +124,17 @@ function descriptionFor(invoice, client) {
     ? `${MONTH_NAMES[pm - 1]} ${py}`
     : String(py || '')
 
-  switch (invoice.invoice_type) {
+  // Per user decision May 27 2026: the SOA ALWAYS uses the per-client
+  // template for the main invoice types (monthly_fee, one_off_service,
+  // fixed_expense, variable_expense, one_off_reimbursement) so the
+  // SOA wording is fully consistent across years. The user can still
+  // type freeform notes into invoices.description — they show in
+  // View Expenses but no longer leak into the SOA.
+  //
+  // Credit notes and pro formas still respect invoices.description
+  // because they need per-invoice context (e.g. which original
+  // invoice is being credited).
+  switch (type) {
     case 'monthly_fee':
     case 'one_off_service': {
       const tpl = client.soa_consultancy_template || DEFAULT_CONSULTANCY_TEMPLATE
@@ -141,14 +147,13 @@ function descriptionFor(invoice, client) {
       return tpl.replaceAll('{EXPENSE_PERIOD}', periodLabel)
     }
     case 'credit_note':
-      // The credit-note row's "original invoice" reference isn't
-      // tracked as a structured field today — we fall back to a
-      // generic message. User overrides via invoice.description.
-      return `Credit Note ${invoice.invoice_number || ''}`.trim()
+      return invoice.description?.trim()
+        || `Credit Note ${invoice.invoice_number || ''}`.trim()
     case 'pro_forma':
-      return `Pro Forma — ${periodLabel}`
+      return invoice.description?.trim()
+        || `Pro Forma — ${periodLabel}`
     default:
-      return invoice.invoice_type
+      return invoice.description?.trim() || type
   }
 }
 
