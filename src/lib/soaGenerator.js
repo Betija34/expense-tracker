@@ -322,9 +322,13 @@ function setCell(ws, row, col, value, opts = {}) {
 const COLOR_HEADER_BG  = '1F4E78'  // dark blue — column titles row
 const COLOR_HEADER_FG  = 'FFFFFF'
 const COLOR_ANCHOR_BG  = 'DBEAFE'  // light blue — PREVIOUS TOTALS rows
-const COLOR_CREDIT_BG  = 'FEE2E2'  // soft red — credit notes
-const COLOR_PROFORMA_BG = 'FEF3C7' // soft yellow — pro formas
-const COLOR_INWARDS_BG = 'DCFCE7'  // soft green — inwards transfers
+// Toned-down palette per user request May 27 2026 — less colorful
+// overall: keep blue (titles + totals + anchor), light pink for
+// credit notes, light gray for inwards transfers (and OVERPAY
+// footer, which reuses COLOR_INWARDS_BG).
+const COLOR_CREDIT_BG  = 'FEF2F2'  // very light pink — credit notes (was FEE2E2)
+const COLOR_PROFORMA_BG = 'FEF3C7' // soft yellow — pro formas (kept distinct so the rare pro forma still stands out)
+const COLOR_INWARDS_BG = 'F3F4F6'  // light gray — inwards transfers + OVERPAY (was DCFCE7)
 const COLOR_TOTAL_BG   = '1F4E78'  // dark blue — year totals
 const COLOR_TOTAL_FG   = 'FFFFFF'
 const COLOR_BORDER     = 'D1D5DB'  // light gray border
