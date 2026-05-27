@@ -591,12 +591,16 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // is unreliable with merged cells in some versions, so we
   // compute the size here instead.
   const legalName = headerText.companyName || client.legal_name || ''
+  // Conditional shrink — short names stay at full sz 12. Bold Avenir
+  // takes more horizontal space than Excel's character-width
+  // estimates, so the cutoffs lean conservative.
   const legalNameSz =
-    legalName.length <= 25 ? 12 :
-    legalName.length <= 35 ? 11 :
-    legalName.length <= 45 ? 10 :
-    legalName.length <= 55 ?  9 :
-    8
+    legalName.length <= 18 ? 12 :   // EVIMER Ltd, short names
+    legalName.length <= 25 ? 11 :
+    legalName.length <= 32 ? 10 :
+    legalName.length <= 40 ?  9 :
+    legalName.length <= 48 ?  8 :
+    7                              // very long names (50+ chars)
   setCell(ws, 4, 6, legalName, {
     s: {
       font:      { name: 'Avenir', bold: true, sz: legalNameSz },
