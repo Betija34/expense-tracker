@@ -551,7 +551,7 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   setCell(ws, 2, 6, 'project:', {
     s: { font: { name: 'Avenir', sz: 11 }, alignment: { horizontal: 'center', vertical: 'top' } },
   })
-  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
+  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir', bold: true, sz: 16 } } })
 
   // 'Client:' — regular weight, right-aligned (matches the other
   // labels Company number / VAT Number / Address below).
