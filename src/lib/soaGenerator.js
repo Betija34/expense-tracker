@@ -395,12 +395,15 @@ const COLOR_TOTAL_BG   = '1F4E78'  // dark blue — year totals
 const COLOR_TOTAL_FG   = 'FFFFFF'
 const COLOR_BORDER     = 'D1D5DB'  // light gray border
 
-// Accounting format: thousands sep, parens for negative, BLANK for zero.
-// Blank-on-zero is critical so we can write 0 as the underlying value
-// in "empty" amount/received cells (keeping formulas + borders intact)
-// while the cell visually appears empty.
+// Accounting format for DEBIT and CREDIT (cols F, G): thousands
+// separator, parens for negative, BLANK for zero — empty data cells
+// stay visually empty so the table isn't cluttered.
 const FMT_AMOUNT = '#,##0.00;(#,##0.00);""'
-const FMT_DATE   = 'dd/mm/yyyy'
+// PROG. BALANCE format (col H): same as above EXCEPT zero shows
+// explicitly as "0.00". The balance column is always meaningful —
+// even a zero closing balance is a real fact, not absence of data.
+const FMT_BALANCE = '#,##0.00;(#,##0.00);0.00'
+const FMT_DATE    = 'dd/mm/yyyy'
 
 // Thin border on TOP + BOTTOM only — per user May 27 2026 the SOA
 // should show row separators but no vertical column dividers. Cells
@@ -704,11 +707,11 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
     setCell(ws, curRow, 6, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
     setCell(ws, curRow, 7, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
     if (i === 0) {
-      setCell(ws, curRow, 8, 0, { t: 'n', z: FMT_AMOUNT, s: { ...STYLE_ANCHOR, numFmt: FMT_AMOUNT } })
+      setCell(ws, curRow, 8, 0, { t: 'n', z: FMT_BALANCE, s: { ...STYLE_ANCHOR, numFmt: FMT_BALANCE } })
     } else {
       const prevYear = years[i - 1]
       const prevLastBalance = yearLastBalanceRow.get(prevYear)
-      setCell(ws, curRow, 8, null, { formula: addr(prevLastBalance, 8), z: FMT_AMOUNT, s: STYLE_ANCHOR })
+      setCell(ws, curRow, 8, null, { formula: addr(prevLastBalance, 8), z: FMT_BALANCE, s: STYLE_ANCHOR })
     }
     yearAnchorRow.set(year, curRow)
     hideRowIf(curRow, isOtherYear)   // hide anchor for non-current years
@@ -748,7 +751,7 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
       const formula = r.balanceMode === 'proforma'
         ? `=${prevRef}`
         : `=${prevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`
-      setCell(ws, curRow, 8, null, { formula, z: FMT_AMOUNT, s: numericStyle })
+      setCell(ws, curRow, 8, null, { formula, z: FMT_BALANCE, s: numericStyle })
 
       hideRowIf(curRow, isOtherYear)   // hide body row for non-current years
       lastBalanceRow = curRow
@@ -810,7 +813,7 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
       : '0'
     setCell(ws, curRow, 8, null, {
       formula: `=${balPrevRef}+${addr(curRow, 6)}-${addr(curRow, 7)}`,
-      z: FMT_AMOUNT, s: STYLE_TOTAL,
+      z: FMT_BALANCE, s: STYLE_TOTAL,
     })
     // Hide YEAR XXXX TOTAL rows for non-current years too, so the
     // default view (and any PDF print) shows ONLY the current year's
