@@ -435,13 +435,29 @@ const FMT_AMOUNT_EURO = '"€"#,##0.00;("€"#,##0.00);"€"0.00'  // shows €0
 // Generate the worksheet for one client's SOA.
 // headerText is an object with editable text the user can adjust in
 // the modal before generating: { companyName, companyNumber, vatNumber, address }
-function buildWorksheet(client, ledgerRows, headerText) {
+// issuingCompany is the name of the company issuing the SOA — used
+// as the dark-blue brand mark in cell B1 (top-left).
+function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   const ws = {}
   // We use rows 1-7 for the header block, row 9 for column titles,
   // row 10+ for ledger lines (matching the user's sample layout
   // exactly).
 
   // --- Header block (rows 1-7) ---
+  // Row 1: issuing-company brand mark on the LEFT (replaces the
+  // graphical logo since xlsx-js-style doesn't write images). Big
+  // bold dark-blue text using the same accent color as the column
+  // titles. Falls back to a sensible default if the caller didn't
+  // pass an issuingCompany.
+  setCell(ws, 1, 2, (issuingCompany || 'RABONA HOLDINGS').toUpperCase(), {
+    s: {
+      font:      { bold: true, sz: 20, color: { rgb: COLOR_HEADER_BG } },
+      alignment: { vertical: 'center', horizontal: 'left' },
+    },
+  })
+  if (!ws['!rows']) ws['!rows'] = []
+  ws['!rows'][0] = { hpx: 32 }   // row 1 — taller to fit the 20pt brand mark
+
   setCell(ws, 2, 5, 'Statement of Account', { s: { font: { bold: true, sz: 14 } } })
   setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
   setCell(ws, 2, 7, client.trade_name || '', { s: { font: { bold: true, sz: 12 } } })
@@ -738,10 +754,10 @@ function buildWorksheet(client, ledgerRows, headerText) {
 //   headerText      — { companyName, companyNumber, vatNumber, address } — the
 //                     editable header text the user filled in.
 // Returns: a SheetJS workbook ready for XLSX.write / writeFile.
-export function generateSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {} }) {
+export function generateSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {}, issuingCompany = '' }) {
   const rows = buildLedgerRows(invoices, orphanPayments, historicalRows, client)
   const wb   = XLSX.utils.book_new()
-  const ws   = buildWorksheet(client, rows, headerText)
+  const ws   = buildWorksheet(client, rows, headerText, issuingCompany)
   // Sheet name = client trade_name (Excel caps at 31 chars, no
   // special chars like / \ ? * [ ]).
   const sheetName = (client.trade_name || 'SOA')
@@ -772,8 +788,8 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], his
 // No year suffix — the file is canonical per client. Re-downloads
 // land alongside the previous one (browser default), making it
 // easy to keep one "current" SOA per client in Downloads.
-export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {} }) {
-  const wb = generateSoaWorkbook({ client, invoices, orphanPayments, historicalRows, headerText })
+export function downloadSoaWorkbook({ client, invoices, orphanPayments = [], historicalRows = [], headerText = {}, issuingCompany = '' }) {
+  const wb = generateSoaWorkbook({ client, invoices, orphanPayments, historicalRows, headerText, issuingCompany })
   const safe = (client.trade_name || 'CLIENT').replace(/[\\/?*[\]]/g, '-')
   const filename = `SOA ${safe}.xlsx`
   XLSX.writeFile(wb, filename)

@@ -3970,6 +3970,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         <SoaModal
           client={soaClient}
           companyId={companyId}
+          companyName={selectedCompany}
           onClose={() => setSoaClient(null)}
         />
       )}

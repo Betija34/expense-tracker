@@ -16,7 +16,7 @@ import { ImportHistoricalRowsModal } from './ImportHistoricalRowsModal'
 // See src/lib/soaGenerator.js for the actual workbook layout. This
 // component is a thin form + loader.
 // =====================================================================
-export function SoaModal({ client, companyId, onClose }) {
+export function SoaModal({ client, companyId, companyName, onClose }) {
   // Header text — pre-filled from the client record's permanent
   // legal-entity fields (added in V32). On Download, edits are
   // persisted back to the client so the next generation also
@@ -113,6 +113,7 @@ export function SoaModal({ client, companyId, onClose }) {
         orphanPayments: [],   // v1: skip orphans — paid invoices already cover the common case
         historicalRows,
         headerText,
+        issuingCompany: companyName,
       })
     } catch (e) {
       setError(`Download failed: ${e.message || e}`)
