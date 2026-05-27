@@ -17,15 +17,15 @@ import { ImportHistoricalRowsModal } from './ImportHistoricalRowsModal'
 // component is a thin form + loader.
 // =====================================================================
 export function SoaModal({ client, companyId, onClose }) {
-  // Header text — pre-filled with the client's legal_name; the other
-  // three fields start blank for the user to fill in. We don't
-  // persist these per the design call (keeps the header editable on
-  // every generation).
+  // Header text — pre-filled from the client record's permanent
+  // legal-entity fields (added in V32). On Download, edits are
+  // persisted back to the client so the next generation also
+  // pre-fills. companyName falls back to legal_name when blank.
   const [headerText, setHeaderText] = useState({
-    companyName:   client.legal_name || client.trade_name || '',
-    companyNumber: '',
-    vatNumber:     '',
-    address:       '',
+    companyName:   client.legal_name      || client.trade_name || '',
+    companyNumber: client.registration_number || '',
+    vatNumber:     client.vat_id              || '',
+    address:       client.address             || '',
   })
 
   const [invoices, setInvoices] = useState([])
@@ -81,8 +81,32 @@ export function SoaModal({ client, companyId, onClose }) {
   const issuedCount = invoices.filter(i => !!i.date_issued).length
   const paidCount   = invoices.filter(i => !!i.date_paid).length
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     try {
+      // Persist any header edits back to the client record so the
+      // next SOA download also pre-fills with the same values. Only
+      // updates the three permanent fields (not companyName, which
+      // mirrors legal_name and is edited from the Edit Client form).
+      const patch = {
+        registration_number: headerText.companyNumber || null,
+        vat_id:              headerText.vatNumber     || null,
+        address:             headerText.address       || null,
+        updated_at:          new Date().toISOString(),
+      }
+      // Only fire the UPDATE if something actually changed, to keep
+      // updated_at meaningful.
+      const changed =
+        (client.registration_number || null) !== patch.registration_number ||
+        (client.vat_id              || null) !== patch.vat_id              ||
+        (client.address             || null) !== patch.address
+      if (changed) {
+        const { error: updErr } = await supabase
+          .from('clients')
+          .update(patch)
+          .eq('id', client.id)
+        if (updErr) console.warn('Could not persist SOA header back to client:', updErr)
+      }
+
       downloadSoaWorkbook({
         client,
         invoices,
@@ -137,9 +161,10 @@ export function SoaModal({ client, companyId, onClose }) {
             </button>
           </div>
 
-          {/* Editable header block — the SOA top section. Not
-              persisted; the user can refine each generation. */}
-          <h4 style={{ marginTop: 16, marginBottom: 4 }}>Header (editable each time)</h4>
+          {/* Editable header block. These three fields are persisted
+              back to the client record on Download (since V32) so
+              future SOAs pre-fill automatically. */}
+          <h4 style={{ marginTop: 16, marginBottom: 4 }}>Header <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(saved per client on Download)</span></h4>
           <div className="form-group">
             <label>Company name</label>
             <input
