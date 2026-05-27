@@ -322,7 +322,7 @@ function addr(row, col) {
 // "=". We strip it defensively so callers can pass either form.
 //
 // opts.s is the cell-style object (xlsx-js-style format), e.g.:
-//   { font: { bold: true }, fill: { fgColor: { rgb: 'FFFFFF' } },
+//   { font: { name: 'Avenir',bold: true }, fill: { fgColor: { rgb: 'FFFFFF' } },
 //     alignment: { wrapText: true } }
 function setCell(ws, row, col, value, opts = {}) {
   const ref = addr(row, col)
@@ -382,12 +382,12 @@ const BORDER_THIN = {
 
 // Style for the company-info header rows (rows 2-7). Bold labels,
 // regular values, no fill.
-const STYLE_HEADER_LABEL = { font: { bold: true, sz: 11 } }
-const STYLE_HEADER_VALUE = { font: { sz: 11 }, alignment: { wrapText: true, vertical: 'top' } }
+const STYLE_HEADER_LABEL = { font: { name: 'Avenir',bold: true, sz: 11 } }
+const STYLE_HEADER_VALUE = { font: { name: 'Avenir',sz: 11 }, alignment: { wrapText: true, vertical: 'top' } }
 
 // Style for the column-title row (row 9). White bold on dark blue.
 const STYLE_COL_TITLE = {
-  font:      { bold: true, color: { rgb: COLOR_HEADER_FG }, sz: 11 },
+  font:      { name: 'Avenir',bold: true, color: { rgb: COLOR_HEADER_FG }, sz: 11 },
   fill:      { fgColor: { rgb: COLOR_HEADER_BG } },
   alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
   border:    BORDER_THIN,
@@ -396,7 +396,7 @@ const STYLE_COL_TITLE = {
 // Base style for body rows — thin border, vertical-top alignment.
 // Per-row variants below layer on fills/fonts.
 const STYLE_BODY_BASE = {
-  font:      { sz: 10 },
+  font:      { name: 'Avenir',sz: 10 },
   alignment: { vertical: 'top', wrapText: true },
   border:    BORDER_THIN,
 }
@@ -423,14 +423,14 @@ function styleForRowKind(kind, baseExtras = {}) {
 }
 
 const STYLE_ANCHOR = {
-  font:      { bold: true, sz: 11 },
+  font:      { name: 'Avenir',bold: true, sz: 11 },
   fill:      { fgColor: { rgb: COLOR_ANCHOR_BG } },
   alignment: { vertical: 'center' },
   border:    BORDER_THIN,
 }
 
 const STYLE_TOTAL = {
-  font:      { bold: true, color: { rgb: COLOR_TOTAL_FG }, sz: 11 },
+  font:      { name: 'Avenir',bold: true, color: { rgb: COLOR_TOTAL_FG }, sz: 11 },
   fill:      { fgColor: { rgb: COLOR_TOTAL_BG } },
   alignment: { vertical: 'center' },
   border:    BORDER_THIN,
@@ -443,22 +443,22 @@ const STYLE_TOTAL = {
 // green fill always (highlight is the bookkeeping cue that this is
 // the "good news" case).
 const STYLE_FOOTER_LABEL = {
-  font:      { bold: true, sz: 11 },
+  font:      { name: 'Avenir',bold: true, sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
 }
 const STYLE_FOOTER_VALUE_PLAIN = {
-  font:      { bold: true, sz: 11 },
+  font:      { name: 'Avenir',bold: true, sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
   border:    BORDER_THIN,
 }
 const STYLE_FOOTER_VALUE_GREEN = {
-  font:      { bold: true, sz: 11 },
+  font:      { name: 'Avenir',bold: true, sz: 11 },
   fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },  // soft green
   alignment: { horizontal: 'right', vertical: 'center' },
   border:    BORDER_THIN,
 }
 const STYLE_FOOTER_LABEL_GREEN = {
-  font:      { bold: true, sz: 11 },
+  font:      { name: 'Avenir',bold: true, sz: 11 },
   fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },
   alignment: { horizontal: 'right', vertical: 'center' },
 }
@@ -480,13 +480,13 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // dark blue), registration number, address lines, VAT, T.I.C.
   // The SOA title + client info still live on the RIGHT (cols E-H).
   const letterhead = LETTERHEADS[issuingCompany] || LETTERHEADS['Rabona Holdings']
-  const LH_LABEL_STYLE = { font: { bold: true, sz: 11 }, alignment: { vertical: 'center' } }
-  const LH_PLAIN_STYLE = { font: { sz: 11 }, alignment: { vertical: 'center' } }
+  const LH_LABEL_STYLE = { font: { name: 'Avenir',bold: true, sz: 11 }, alignment: { vertical: 'center' } }
+  const LH_PLAIN_STYLE = { font: { name: 'Avenir',sz: 11 }, alignment: { vertical: 'center' } }
 
   // Row 1: legal name in big bold dark-blue — substitutes for the logo
   setCell(ws, 1, 2, letterhead.legalName, {
     s: {
-      font:      { bold: true, sz: 16, color: { rgb: COLOR_HEADER_BG } },
+      font:      { name: 'Avenir',bold: true, sz: 16, color: { rgb: COLOR_HEADER_BG } },
       alignment: { vertical: 'center', horizontal: 'left' },
     },
   })
@@ -507,11 +507,11 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
     setCell(ws, 7, 2, letterhead.ticNumber, { s: LH_LABEL_STYLE })
 
   // --- SOA title + client info (rows 2-7, cols E-H) — unchanged ---
-  setCell(ws, 2, 5, 'Statement of Account', { s: { font: { bold: true, sz: 14 } } })
+  setCell(ws, 2, 5, 'Statement of Account', { s: { font: { name: 'Avenir',bold: true, sz: 14 } } })
   setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL })
-  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { bold: true, sz: 12 } } })
+  setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir',bold: true, sz: 12 } } })
 
-  setCell(ws, 4, 5, headerText.companyName || client.legal_name || '', { s: { font: { bold: true, sz: 12 } } })
+  setCell(ws, 4, 5, headerText.companyName || client.legal_name || '', { s: { font: { name: 'Avenir',bold: true, sz: 12 } } })
   setCell(ws, 5, 4, 'Company number:',                 { s: STYLE_HEADER_LABEL })
   setCell(ws, 5, 5, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
   setCell(ws, 6, 4, 'VAT Number: ',                    { s: STYLE_HEADER_LABEL })
