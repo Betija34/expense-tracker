@@ -312,8 +312,19 @@ function buildLedgerRows(invoices, orphanPayments, historicalRows, client) {
     })
   }
 
-  // Sort by date ascending. Stable order within same date.
-  rows.sort((a, b) => a.date - b.date)
+  // Sort by date ascending. Tie-break:
+  //   1. Rows WITH a doc number (invoices) before rows WITHOUT
+  //      (inwards transfers) — debits before credits on the same day
+  //   2. Then by doc number ascending so 2026/03/001 always appears
+  //      above 2026/03/002 above 2026/03/003 etc.
+  rows.sort((a, b) => {
+    const d = a.date - b.date
+    if (d !== 0) return d
+    const aHasNum = a.docNumber ? 0 : 1
+    const bHasNum = b.docNumber ? 0 : 1
+    if (aHasNum !== bHasNum) return aHasNum - bHasNum
+    return (a.docNumber || '').localeCompare(b.docNumber || '')
+  })
   return rows
 }
 
