@@ -463,6 +463,13 @@ const STYLE_FOOTER_LABEL = {
   font:      { name: 'Avenir',bold: true, sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
 }
+// 'as of' + date — no borders at all (user wants this row to stand
+// alone above the payment / overpay rows, no grid lines on either
+// side or top/bottom).
+const STYLE_FOOTER_DATE = {
+  font:      { name: 'Avenir',bold: true, sz: 11 },
+  alignment: { horizontal: 'right', vertical: 'center' },
+}
 const STYLE_FOOTER_VALUE_PLAIN = {
   font:      { name: 'Avenir',bold: true, sz: 11 },
   alignment: { horizontal: 'right', vertical: 'center' },
@@ -769,9 +776,11 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
 
     const closingRef = addr(prevTotalsBalanceRow, 8)
 
-    // AS OF row — label in G, today's date in H
+    // AS OF row — label in G, today's date in H (no borders on
+    // either cell so this row sits visually separate from the
+    // FOR PAYMENT / OVERPAY rows below).
     setCell(ws, curRow, 7, 'as of', { s: STYLE_FOOTER_LABEL })
-    setCell(ws, curRow, 8, new Date(), { z: FMT_DATE, s: STYLE_FOOTER_VALUE_PLAIN })
+    setCell(ws, curRow, 8, new Date(), { z: FMT_DATE, s: STYLE_FOOTER_DATE })
     curRow++
 
     // FOR PAYMENT row
