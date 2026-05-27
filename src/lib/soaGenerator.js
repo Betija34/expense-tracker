@@ -547,10 +547,15 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // R6: 'VAT Number: '         | vatNumber                 (cols E/F)
   // R7: 'Address: '            | address (merged F7:H7)    (cols E/F)
   setCell(ws, 2, 5, 'Statement of Account', { s: { font: { name: 'Avenir', bold: true, sz: 16 } } })
-  setCell(ws, 2, 6, 'project:',              { s: STYLE_HEADER_LABEL_BOLD })
+  // 'project:' — regular weight, center-aligned in the cell
+  setCell(ws, 2, 6, 'project:', {
+    s: { font: { name: 'Avenir', sz: 11 }, alignment: { horizontal: 'center', vertical: 'top' } },
+  })
   setCell(ws, 2, 7, client.trade_name || '', { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
 
-  setCell(ws, 4, 5, 'Client',                                                                   { s: STYLE_HEADER_LABEL_BOLD })
+  // 'Client:' — regular weight, right-aligned (matches the other
+  // labels Company number / VAT Number / Address below).
+  setCell(ws, 4, 5, 'Client:',                                                                  { s: STYLE_HEADER_LABEL })
   setCell(ws, 4, 6, headerText.companyName || client.legal_name || '',                          { s: { font: { name: 'Avenir', bold: true, sz: 12 } } })
   setCell(ws, 5, 5, 'Company number:',                 { s: STYLE_HEADER_LABEL })
   setCell(ws, 5, 6, headerText.companyNumber || '',    { s: STYLE_HEADER_VALUE })
