@@ -698,6 +698,27 @@ function buildWorksheet(client, ledgerRows, headerText) {
   // Tell SheetJS the range
   ws['!ref'] = `A1:H${curRow}`
 
+  // --- Print setup ---
+  // SOA is wide (the description column alone is 70 char-widths), so
+  // we force landscape orientation + fit-to-width=1 page. fitToHeight=0
+  // lets the data flow to as many pages tall as it needs WITHOUT
+  // squashing — Excel paginates between rows naturally (rows are
+  // atomic, never split mid-cell).
+  ws['!pageSetup'] = {
+    orientation: 'landscape',
+    fitToWidth:  1,
+    fitToHeight: 0,
+    paperSize:   9,   // A4
+  }
+  ws['!margins'] = {
+    left:   0.5,
+    right:  0.5,
+    top:    0.5,
+    bottom: 0.5,
+    header: 0.3,
+    footer: 0.3,
+  }
+
   return ws
 }
 
@@ -727,6 +748,22 @@ export function generateSoaWorkbook({ client, invoices, orphanPayments = [], his
     .replace(/[\\/?*[\]]/g, '-')
     .slice(0, 31)
   XLSX.utils.book_append_sheet(wb, ws, sheetName)
+
+  // --- Print Area (workbook-level defined name) ---
+  // Explicitly set Excel's print-area named range so File → Print
+  // (and Save as PDF) only captures the SOA content, not any random
+  // empty cells the user might tab into later. The range covers
+  // A1 → H{last row}, derived from the worksheet's stored ref.
+  const refMatch = (ws['!ref'] || '').match(/:[A-Z]+(\d+)$/)
+  const lastRow  = refMatch ? refMatch[1] : '100'
+  wb.Workbook = wb.Workbook || {}
+  wb.Workbook.Names = wb.Workbook.Names || []
+  wb.Workbook.Names.push({
+    Name:  '_xlnm.Print_Area',
+    Ref:   `'${sheetName}'!$A$1:$H$${lastRow}`,
+    Sheet: 0,
+  })
+
   return wb
 }
 
