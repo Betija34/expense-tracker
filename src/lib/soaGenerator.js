@@ -827,14 +827,20 @@ function buildWorksheet(client, ledgerRows, headerText, issuingCompany) {
   // --- Print setup ---
   // Portrait A4 with "fit to 1 page wide, unlimited pages tall" so
   // the table auto-scales horizontally to fit any paper size and
-  // rows flow naturally vertically without squashing. Rows are
-  // atomic in Excel pagination — they never split mid-cell.
+  // rows flow naturally vertically without squashing.
+  //
+  // IMPORTANT: fitToWidth/fitToHeight on their own are ignored by
+  // Excel unless the worksheet also has the fitToPage="1" flag in
+  // <sheetPr><pageSetUpPr/></sheetPr>. We set both here so the
+  // scale-to-fit mode is active when the user opens the file.
   ws['!pageSetup'] = {
     orientation: 'portrait',
     paperSize:   9,   // A4
     fitToWidth:  1,
     fitToHeight: 0,
   }
+  ws['!sheetPr'] = ws['!sheetPr'] || {}
+  ws['!sheetPr'].pageSetUpPr = { fitToPage: true }
   ws['!margins'] = {
     left:   0.5,
     right:  0.5,
