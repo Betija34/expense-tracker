@@ -400,6 +400,34 @@ const STYLE_TOTAL = {
   border:    BORDER_THIN,
 }
 
+// --- Footer status block (FOR PAYMENT / OVERPAY) ---
+// Matches the small status block at the bottom of the user's external
+// SOA. AS OF row uses bold + right-align. FOR PAYMENT row stays plain
+// (only shows a value when balance > 0). OVERPAY row gets the soft-
+// green fill always (highlight is the bookkeeping cue that this is
+// the "good news" case).
+const STYLE_FOOTER_LABEL = {
+  font:      { bold: true, sz: 11 },
+  alignment: { horizontal: 'right', vertical: 'center' },
+}
+const STYLE_FOOTER_VALUE_PLAIN = {
+  font:      { bold: true, sz: 11 },
+  alignment: { horizontal: 'right', vertical: 'center' },
+  border:    BORDER_THIN,
+}
+const STYLE_FOOTER_VALUE_GREEN = {
+  font:      { bold: true, sz: 11 },
+  fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },  // soft green
+  alignment: { horizontal: 'right', vertical: 'center' },
+  border:    BORDER_THIN,
+}
+const STYLE_FOOTER_LABEL_GREEN = {
+  font:      { bold: true, sz: 11 },
+  fill:      { fgColor: { rgb: COLOR_INWARDS_BG } },
+  alignment: { horizontal: 'right', vertical: 'center' },
+}
+const FMT_AMOUNT_EURO = '"€"#,##0.00;("€"#,##0.00);"€"0.00'  // shows €0.00 explicitly
+
 // Generate the worksheet for one client's SOA.
 // headerText is an object with editable text the user can adjust in
 // the modal before generating: { companyName, companyNumber, vatNumber, address }
@@ -584,6 +612,44 @@ function buildWorksheet(client, ledgerRows, headerText) {
       z: FMT_AMOUNT, s: STYLE_TOTAL,
     })
     prevTotalsBalanceRow = curRow
+    curRow++
+  }
+
+  // --- Footer status block (AS OF / FOR PAYMENT / OVERPAY) ---
+  // Mirrors the user's external SOA footer. Sits at the very bottom
+  // beneath the YEAR TOTAL block. Shows the as-of date (today) plus
+  // the closing balance split into two rows:
+  //   FOR PAYMENT — = MAX(closing_balance, 0)  → only when client owes
+  //   OVERPAY     — = MAX(-closing_balance, 0) → only when client has credit
+  // The closing balance comes from the LAST year-total balance cell
+  // (col H of prevTotalsBalanceRow). We skip the entire block when
+  // there's nothing to summarize.
+  if (prevTotalsBalanceRow) {
+    curRow++   // blank separator between year totals and footer
+
+    const closingRef = addr(prevTotalsBalanceRow, 8)
+
+    // AS OF row — label in G, today's date in H
+    setCell(ws, curRow, 7, 'as of', { s: STYLE_FOOTER_LABEL })
+    setCell(ws, curRow, 8, new Date(), { z: FMT_DATE, s: STYLE_FOOTER_VALUE_PLAIN })
+    curRow++
+
+    // FOR PAYMENT row
+    setCell(ws, curRow, 7, 'FOR PAYMENT', { s: STYLE_FOOTER_LABEL })
+    setCell(ws, curRow, 8, null, {
+      formula: `=MAX(${closingRef},0)`,
+      z: FMT_AMOUNT_EURO,
+      s: STYLE_FOOTER_VALUE_PLAIN,
+    })
+    curRow++
+
+    // OVERPAY row — soft green fill (highlights the "client has credit" case)
+    setCell(ws, curRow, 7, 'OVERPAY', { s: STYLE_FOOTER_LABEL_GREEN })
+    setCell(ws, curRow, 8, null, {
+      formula: `=MAX(-${closingRef},0)`,
+      z: FMT_AMOUNT_EURO,
+      s: STYLE_FOOTER_VALUE_GREEN,
+    })
     curRow++
   }
 
