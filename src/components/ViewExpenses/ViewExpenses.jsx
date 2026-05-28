@@ -1059,6 +1059,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       {editingManual && (
         <EditManualExpenseModal
           expense={editingManual}
+          selectedCompany={selectedCompany}
           onClose={() => setEditingManual(null)}
           onSaved={(updatedRow) => {
             // Update only the edited row in place so the table doesn't

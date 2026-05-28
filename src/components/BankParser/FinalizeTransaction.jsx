@@ -13,6 +13,7 @@ import {
   uuid,
 } from '../../lib/refUtils'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
+import { canonicalizeClientName } from '../../lib/clientNameUtils'
 import {
   PAYMENT_TRIGGER_CATEGORY_NAMES,
   parseInvoiceNumbers,
@@ -782,79 +783,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   }
 
   // -------------------------------------------------------------------
-  // Canonicalize client name — keeps naming consistent across the system
+  // Client-name canonicalization uses the shared helper from
+  // lib/clientNameUtils.js — single source of truth across Add Expense,
+  // Bank Parser, and Edit Manual. Removed the inline duplicate that
+  // used to live here so future tweaks land in exactly one place.
   // -------------------------------------------------------------------
-  // When the user picks "Other" and types a custom client name, this
-  // helper:
-  //   1. Looks up an existing client by case-insensitive trade_name match
-  //   2. If found → returns the canonical spelling from the clients table
-  //   3. If not found → confirm prompt to create a new client. Yes inserts
-  //      a minimal client record (legal_name = trade_name, active = true,
-  //      0 fees, no email); the user can fill in details later in the
-  //      Client Invoicing tab.
-  //   4. If the user declines to create → returns the typed name as raw
-  //      text (existing behavior). Invoicing won't auto-link to it.
-  //   5. Returns null only when the user explicitly cancels.
-  //
-  // Why: prevents the "Blue Lagoon" vs "blue lagoon" vs "BLUE LAGOON"
-  // sprawl across expenses + invoices. Same idea as the V22 unique index
-  // on the Clients tab — canonical names everywhere.
-  const canonicalizeClientName = async (rawName) => {
-    if (!rawName?.trim()) return rawName
-    const trimmed = rawName.trim()
-    try {
-      // Exact case-insensitive match against existing clients
-      const { data: matches, error: matchErr } = await supabase
-        .from('clients')
-        .select('id, trade_name, legal_name')
-        .eq('company_id', companyId)
-        .ilike('trade_name', trimmed)
-      if (matchErr) throw matchErr
-      if (matches && matches.length > 0) {
-        return matches[0].trade_name
-      }
-      // No match — confirm whether to create the client
-      const ok = window.confirm(
-        `No client named "${trimmed}" exists in your ${companyName} client list.\n\n`
-        + `Create one now?\n`
-        + `  • OK — adds "${trimmed}" to the client list with minimal info. `
-        + `You can edit the legal name, monthly fee, email chain, etc. later in the Client Invoicing tab. `
-        + `Invoices issued to this client will then link up automatically.\n`
-        + `  • Cancel — save the name as free text only for now. No client record is created. `
-        + `(You can add the client later from the Client Invoicing tab.)`
-      )
-      if (!ok) return trimmed  // free-text save
-      const { data: newClient, error: insErr } = await supabase
-        .from('clients')
-        .insert([{
-          company_id:   companyId,
-          legal_name:   trimmed,   // default same as trade_name; user can edit later
-          trade_name:   trimmed,
-          active:       true,
-          notes:        `Auto-created from bank-tx finalization on ${new Date().toISOString().slice(0, 10)}.`,
-        }])
-        .select('trade_name')
-        .single()
-      if (insErr) {
-        // V22's unique index might fire if there's a race condition. Re-fetch
-        // and use whatever's there.
-        if (insErr.code === '23505') {
-          const { data: re } = await supabase
-            .from('clients').select('trade_name')
-            .eq('company_id', companyId).ilike('trade_name', trimmed)
-            .maybeSingle()
-          return re?.trade_name || trimmed
-        }
-        alert(`Could not create client: ${insErr.message}\n\nSaving the name as free text instead.`)
-        return trimmed
-      }
-      return newClient.trade_name
-    } catch (err) {
-      // Lookup failed — fall back to typed name without prompting.
-      console.warn('canonicalizeClientName lookup error:', err)
-      return trimmed
-    }
-  }
 
   const handleSave = async () => {
     setSaveError(null)
@@ -1049,7 +982,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       let resolvedClient = null
       if (form.is_reimbursable) {
         if (form.client_name === 'Other') {
-          resolvedClient = await canonicalizeClientName(form.custom_client_name?.trim())
+          resolvedClient = await canonicalizeClientName(supabase, {
+            companyId,
+            companyName,
+            rawName: form.custom_client_name?.trim(),
+          })
         } else {
           resolvedClient = form.client_name
         }
@@ -1276,9 +1213,21 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       }
 
       // For INCOMING split: shared client + resolve category ids by name once upfront.
-      const sharedClientFinal = direction === 'in'
-        ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
-        : null
+      // Canonicalize the shared client name through the shared helper so the
+      // same name flows into every portion AND lands in the canonical-clients
+      // table — matches Add Expense's behavior for reimbursable manual entries.
+      let sharedClientFinal = null
+      if (direction === 'in') {
+        if (form.client_name === 'Other') {
+          sharedClientFinal = await canonicalizeClientName(supabase, {
+            companyId,
+            companyName,
+            rawName: form.custom_client_name?.trim(),
+          })
+        } else {
+          sharedClientFinal = form.client_name
+        }
+      }
       const categoryByName = direction === 'in'
         ? Object.fromEntries(categories.map(c => [c.name, c]))
         : null
@@ -1332,9 +1281,21 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           // === OUTGOING portion (Company / YK / BK / Client) — existing logic ===
           const cat = categories.find(c => c.id === p.category_id)
           const isReimbursable = t.key === 'client'
-          const clientFinal = t.key === 'client'
-            ? (p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name)
-            : null
+          // Canonicalize the client portion's name through the shared helper
+          // (existing client → canonical spelling; new name → confirm-to-create
+          // flow). For non-client slots clientFinal stays null.
+          let clientFinal = null
+          if (t.key === 'client') {
+            if (p.client_name === 'Other') {
+              clientFinal = await canonicalizeClientName(supabase, {
+                companyId,
+                companyName,
+                rawName: p.custom_client_name?.trim(),
+              })
+            } else {
+              clientFinal = p.client_name
+            }
+          }
           // Shareholder code per slot:
           //   • YK slot → 'YK' (fixed)
           //   • BK slot → 'BK' (fixed)

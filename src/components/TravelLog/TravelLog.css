@@ -83,17 +83,19 @@
     border-radius: 0 !important;
   }
 
-  /* Force a fresh page between shareholders. Belt-and-suspenders approach:
-     break AFTER every section, then suppress the trailing break on the last
-     one so we don't end up with a blank trailing page. */
+  /* Force every shareholder section to start on a fresh page. Layout:
+       Page 1: Letterhead + Summary + Pre-paid Earlier panel
+       Page 2: YK section (its own page)
+       Page 3: BK section (its own page)
+       Page 4: Pre-paid This Month / Unassigned (its own page — see rule
+               further down; .unassigned-section also carries
+               .shareholder-section so this rule already applies to it).
+     page-break-before is more reliable than page-break-after across
+     browsers because it doesn't get swallowed by trailing margins. */
   .travel-log .shareholder-section {
-    page-break-after: always !important;
-    break-after: page !important;
+    page-break-before: always !important;
+    break-before: page !important;
     page-break-inside: auto !important;
-  }
-  .travel-log .shareholder-section:last-child {
-    page-break-after: auto !important;
-    break-after: auto !important;
   }
 
   /* Per-shareholder print mode: hide the OTHER shareholder when the body
@@ -101,13 +103,6 @@
   body.print-only-YK .travel-log .shareholder-section[data-code="BK"],
   body.print-only-BK .travel-log .shareholder-section[data-code="YK"] {
     display: none !important;
-  }
-  /* When in single-shareholder mode, the visible section is the last child
-     so it shouldn't break after — clear the rule above. */
-  body.print-only-YK .travel-log .shareholder-section[data-code="YK"],
-  body.print-only-BK .travel-log .shareholder-section[data-code="BK"] {
-    page-break-after: auto !important;
-    break-after: auto !important;
   }
 
   /* Pre-paid / Unassigned Travel section.
@@ -125,6 +120,56 @@
   body.print-only-YK .travel-log .unassigned-section,
   body.print-only-BK .travel-log .unassigned-section {
     display: none !important;
+  }
+
+  /* Prepaid Travel Expenses panel — accruals view (now placed near the
+     TOP of the page, right after the summary bar, so the reader sees
+     what's already covered before the per-shareholder logs).
+     • Full print: flows naturally after the summary on page 1, with
+       page-break-inside: avoid so it doesn't split mid-list. No forced
+       page break before it — keeps the print compact.
+     • Single-shareholder print: hidden, since this list is global
+       (the Shareholder column distinguishes YK vs BK rows). */
+  .travel-log .prepaid-travel-panel {
+    background: white !important;
+    border: 1px solid #d1d5db !important;
+    padding: 8px 10px !important;
+    margin-top: 12px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  body.print-only-YK .travel-log .prepaid-travel-panel,
+  body.print-only-BK .travel-log .prepaid-travel-panel {
+    display: none !important;
+  }
+  /* Table styling tightens up nicely for print readability */
+  .travel-log .prepaid-travel-panel table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 10px !important;
+  }
+  .travel-log .prepaid-travel-panel th,
+  .travel-log .prepaid-travel-panel td {
+    padding: 4px 6px !important;
+    border-bottom: 1px solid #d1d5db !important;
+  }
+  .travel-log .prepaid-travel-panel th {
+    background: #f3f4f6 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .travel-log .prepaid-travel-panel tr {
+    page-break-inside: avoid !important;
+  }
+  /* In print, the Ref column shouldn't render as a clickable button —
+     just show the text */
+  .travel-log .prepaid-travel-panel button {
+    background: transparent !important;
+    color: #111 !important;
+    text-decoration: none !important;
+    padding: 0 !important;
+    border: none !important;
+    cursor: default !important;
   }
 
   /* Keep each travel expense card on a single page. If there's not enough

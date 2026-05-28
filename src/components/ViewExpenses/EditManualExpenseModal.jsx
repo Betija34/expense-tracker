@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
+import { canonicalizeClientName } from '../../lib/clientNameUtils'
 
 /**
  * EditManualExpenseModal — full-fields edit for a manual (non-bank-imported) expense.
@@ -27,7 +28,7 @@ import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 // Predefined client list — same as AddExpense / FinalizeTransaction
 const PREDEFINED_CLIENTS = ['Urban City','Blue Lagoon','Green Field Hotel','Kypseli','BAD City Hall','BAD City SPA Hotel','Evia Mare','Other']
 
-export function EditManualExpenseModal({ expense, onClose, onSaved }) {
+export function EditManualExpenseModal({ expense, onClose, onSaved, selectedCompany }) {
   const [categories, setCategories] = useState([])
   const [allSubcategories, setAllSubcategories] = useState([])
   const [loading, setLoading] = useState(true)
@@ -160,9 +161,22 @@ export function EditManualExpenseModal({ expense, onClose, onSaved }) {
         if (!finalClient) { setError('Client is required when expense is marked reimbursable'); return }
       }
 
-      const resolvedClient = form.is_reimbursable
-        ? (form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name)
-        : null
+      // Canonicalize the client name (existing client → canonical spelling;
+      // new name → confirm-to-create flow). Uses expense.company_id since
+      // we're editing a specific expense — guaranteed to be the right
+      // company even if the parent's selectedCompany somehow drifted.
+      let resolvedClient = null
+      if (form.is_reimbursable) {
+        if (form.client_name === 'Other') {
+          resolvedClient = await canonicalizeClientName(supabase, {
+            companyId:   expense.company_id,
+            companyName: selectedCompany || 'this company',
+            rawName:     form.custom_client_name?.trim(),
+          })
+        } else {
+          resolvedClient = form.client_name
+        }
+      }
 
       // UPDATE — keep the original reference_number and main_ref_seq.
       // We don't re-allocate refs on edit so audit trails stay stable.

@@ -36,6 +36,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
   const [companyId, setCompanyId] = useState(null)
   const [periods, setPeriods] = useState([])              // all periods this month for this company
   const [travelExpenses, setTravelExpenses] = useState([]) // all Travel Expense entries this month
+  const [prepaidExpenses, setPrepaidExpenses] = useState([]) // expenses paid in PRIOR months but RELATED to a trip this month (via assigned_period_id or expected_travel_month). Informational only — these don't affect monthly totals (they already booked in their payment month).
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [reloadTrigger, setReloadTrigger] = useState(0)
@@ -102,6 +103,59 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         // so filtering on sub_ref_series='T' cleanly excludes them.
         const travel = (expData || []).filter(e => e.sub_ref_series === 'T')
         setTravelExpenses(travel)
+
+        // ----- Prepaid Travel Expenses -----
+        // Find travel expenses paid in PRIOR months but linked to a trip
+        // happening this month. Two link mechanisms:
+        //   (a) assigned_period_id pointing to a period whose from_date is
+        //       in the selected month (V29 manual assignment), or
+        //   (b) expected_travel_month containing "YYYY-MM" of the selected
+        //       month (display-only badge — but still a useful signal here).
+        // Then filter to expenses whose main_ref_year/month is BEFORE the
+        // selected month (i.e. genuinely prepaid, not same-month).
+        const monthToken = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+        const monthPeriodIds = (periodRows || []).map(p => p.id)
+
+        // Two parallel queries — combine and dedupe by id.
+        const queries = []
+        if (monthPeriodIds.length > 0) {
+          queries.push(
+            supabase
+              .from('expenses')
+              .select('*, expense_categories(name), accounts(name)')
+              .eq('company_id', comp.id)
+              .eq('sub_ref_series', 'T')
+              .in('assigned_period_id', monthPeriodIds)
+          )
+        }
+        queries.push(
+          supabase
+            .from('expenses')
+            .select('*, expense_categories(name), accounts(name)')
+            .eq('company_id', comp.id)
+            .eq('sub_ref_series', 'T')
+            .ilike('expected_travel_month', `%${monthToken}%`)
+        )
+        const results = await Promise.all(queries)
+        for (const r of results) {
+          if (r.error) throw r.error
+        }
+        const merged = new Map()
+        for (const r of results) {
+          for (const row of (r.data || [])) merged.set(row.id, row)
+        }
+        // Keep only rows whose PAYMENT month is strictly BEFORE the selected
+        // month — same-month rows already appear in the main travel list.
+        const onlyPrior = Array.from(merged.values()).filter(e => {
+          if (e.main_ref_year == null || e.main_ref_month == null) return false
+          if (e.main_ref_year < selectedYear) return true
+          if (e.main_ref_year === selectedYear && e.main_ref_month < selectedMonth) return true
+          return false
+        })
+        // Sort by payment date ascending (oldest first — natural reading order).
+        onlyPrior.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+        if (cancelled) return
+        setPrepaidExpenses(onlyPrior)
       } catch (e) {
         console.error('TravelLog load error:', e)
         if (!cancelled) setError(e.message || 'Failed to load travel log')
@@ -478,6 +532,20 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       <TravelLogSummaryBar
         periods={periods}
         travelExpenses={travelExpenses}
+      />
+
+      {/* Pre-paid in Earlier Months — informational accruals panel listing
+          travel expenses paid in PRIOR months but linked to THIS month's
+          trips. These don't affect monthly totals (already booked in the
+          payment month) — purely a reference list. Positioned here, right
+          after the summary, so the reader sees "what's already covered for
+          this month" before diving into the per-shareholder logs below. */}
+      <PrepaidTravelExpensesPanel
+        prepaidExpenses={prepaidExpenses}
+        periods={periods}
+        selectedMonth={selectedMonth}
+        selectedYear={selectedYear}
+        onViewExpense={onViewExpense}
       />
 
       {/* Two shareholder sections */}
@@ -943,7 +1011,39 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
     }
   }, [periods, travelExpenses])
 
-  if (buckets.total === 0) return null
+  // Empty-state: even when there's nothing pre-paid this month for future
+  // trips, still render the section frame + a "None this month" note so the
+  // structure of the Travel Log page stays consistent month-to-month (matches
+  // the same convention as the "Pre-paid in Earlier Months" panel below).
+  if (buckets.total === 0) {
+    return (
+      <div
+        className="shareholder-section unassigned-section"
+        style={{
+          marginTop: 20,
+          border: '2px solid #6366f1',
+          borderRadius: 6,
+          padding: 14,
+          background: '#eef2ff',
+        }}
+      >
+        <h3 style={{ margin: 0, color: '#3730a3', fontSize: 18 }}>
+          Pre-paid This Month — For Future Trips / Unassigned (0)
+        </h3>
+        <div style={{ marginTop: 6, fontSize: 12, color: '#3730a3' }}>
+          Travel expenses <strong>paid this month</strong> that don't fall within any
+          current-month trip — most commonly a flight paid <strong>now for a future trip</strong>,
+          or an item not yet tagged to a shareholder.
+        </div>
+        <div style={{
+          marginTop: 12, padding: '10px 12px',
+          color: '#6b7280', fontStyle: 'italic', fontSize: 13,
+        }}>
+          No expenses paid this month for future travels.
+        </div>
+      </div>
+    )
+  }
 
   const fmt = (n) => `€${Number(n || 0).toFixed(2)}`
   const fmtDate = (iso) => {
@@ -1048,11 +1148,12 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
       }}
     >
       <h3 style={{ margin: 0, color: '#3730a3', fontSize: 18 }}>
-        Pre-paid / Unassigned Travel ({buckets.total})
+        Pre-paid This Month — For Future Trips / Unassigned ({buckets.total})
       </h3>
       <div style={{ marginTop: 6, fontSize: 12, color: '#3730a3' }}>
-        Travel expenses paid this month that don't match any current-month trip for either shareholder.
-        Most commonly: a flight paid now for a future trip.
+        Travel expenses <strong>paid this month</strong> that don't fall within any
+        current-month trip — most commonly a flight paid <strong>now for a future trip</strong>,
+        or an item not yet tagged to a shareholder.
       </div>
 
       <Sub
@@ -1999,4 +2100,156 @@ const inpStyle = {
   width: '100%', padding: '6px 8px',
   border: '1px solid #d1d5db', borderRadius: 4,
   fontSize: 13, boxSizing: 'border-box',
+}
+
+// =============================================================
+// Prepaid Travel Expenses Panel — accruals view
+// Lists travel expenses paid in PRIOR months whose related trip
+// falls in the currently selected month. Informational reference
+// only — these don't affect monthly totals (they were already
+// booked in their payment month). Acts as a heads-up for what's
+// already paid up for this month's travel.
+// Renders as a flat table (per Betija's design choice). Always
+// shows with a "None this month." note when empty. Included in
+// print.
+// =============================================================
+function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedMonth, selectedYear, onViewExpense }) {
+  const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
+
+  // Build a quick lookup of period.id → period for the assigned-trip
+  // column. Some prepaid expenses come from the expected_travel_month
+  // query and won't have a matching period (it could be in a future
+  // not-yet-loaded month) — those just show the expected-month token.
+  const periodById = useMemo(() => {
+    const m = new Map()
+    for (const p of periods) m.set(p.id, p)
+    return m
+  }, [periods])
+
+  const monthToken = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+
+  const tripCellFor = (e) => {
+    // Prefer assigned_period_id (most specific)
+    if (e.assigned_period_id) {
+      const p = periodById.get(e.assigned_period_id)
+      if (p) {
+        const dest = (p.destination || '').trim()
+        return (
+          <span>
+            {p.shareholder_code || '—'}{' '}
+            {fmtDate(p.from_date)}{p.to_date && p.to_date !== p.from_date ? `–${fmtDate(p.to_date)}` : ''}
+            {dest ? ` · ${dest}` : ''}
+          </span>
+        )
+      }
+    }
+    // Fall back to expected_travel_month token(s) that match this month
+    if (e.expected_travel_month) {
+      const tokens = e.expected_travel_month.split(',').map(s => s.trim()).filter(Boolean)
+      if (tokens.includes(monthToken)) {
+        return <span>For {formatMonthYear(monthToken)}</span>
+      }
+    }
+    return <span style={{ color: '#9ca3af' }}>—</span>
+  }
+
+  return (
+    <div className="prepaid-travel-panel" style={{
+      marginTop: 24, padding: '16px 20px',
+      // Teal palette to visually distinguish from the indigo/purple
+      // "Pre-paid / Unassigned Travel" block above. The two are easy to
+      // confuse since both involve "pre-paid", but they're temporal
+      // opposites — see heading copy below.
+      background: '#ecfeff', border: '2px solid #0e7490',
+      borderRadius: 6,
+    }}>
+      <div style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 18, color: '#155e75' }}>
+          Pre-paid in Earlier Months — Trips This Month ({monthLabel})
+        </h3>
+        <div style={{ fontSize: 12, color: '#155e75', marginTop: 6, lineHeight: 1.5 }}>
+          Travel expenses (flights, hotels, etc.) <strong>paid in earlier months</strong> for
+          trips happening <strong>this month</strong>. Reference list only —
+          these were already booked in their actual payment month and are
+          <strong> NOT included</strong> in this month's totals.
+          <div style={{ marginTop: 4, fontStyle: 'italic', color: '#6b7280' }}>
+            Different from the "Pre-paid / Unassigned Travel" block above,
+            which is the opposite direction: paid THIS month for FUTURE trips.
+          </div>
+        </div>
+      </div>
+
+      {prepaidExpenses.length === 0 ? (
+        <div style={{
+          padding: '12px 4px', color: '#6b7280', fontStyle: 'italic', fontSize: 13,
+        }}>
+          None this month.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto', marginTop: 10 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: '#f3f4f6', textAlign: 'left' }}>
+                <th style={prepaidThStyle}>Date Paid</th>
+                <th style={prepaidThStyle}>Ref</th>
+                <th style={prepaidThStyle}>Vendor</th>
+                <th style={prepaidThStyle}>Description</th>
+                <th style={{ ...prepaidThStyle, textAlign: 'right' }}>Amount</th>
+                <th style={prepaidThStyle}>Shareholder</th>
+                <th style={prepaidThStyle}>Related Trip</th>
+              </tr>
+            </thead>
+            <tbody>
+              {prepaidExpenses.map(e => {
+                const ref = e.reference_number || '—'
+                return (
+                  <tr key={e.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                    <td style={prepaidTdStyle}>{fmtDate(e.date)}</td>
+                    <td style={{ ...prepaidTdStyle, fontFamily: 'monospace' }}>
+                      {onViewExpense ? (
+                        <button
+                          onClick={() => onViewExpense(e.id)}
+                          style={{
+                            background: 'none', border: 'none', padding: 0,
+                            color: '#2563eb', cursor: 'pointer', fontFamily: 'monospace',
+                            fontSize: 13, textDecoration: 'underline',
+                          }}
+                          title="View / edit this expense"
+                        >
+                          {ref}
+                        </button>
+                      ) : ref}
+                    </td>
+                    <td style={prepaidTdStyle}>{e.vendor || '—'}</td>
+                    <td style={prepaidTdStyle}>
+                      {e.description || (e.expense_categories?.name || '—')}
+                    </td>
+                    <td style={{ ...prepaidTdStyle, textAlign: 'right', fontFamily: 'monospace' }}>
+                      {fmt(e.amount)}
+                    </td>
+                    <td style={prepaidTdStyle}>{e.shareholder_code || '—'}</td>
+                    <td style={prepaidTdStyle}>{tripCellFor(e)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const prepaidThStyle = {
+  padding: '6px 8px',
+  fontWeight: 600,
+  fontSize: 12,
+  color: '#374151',
+  borderBottom: '1.5px solid #d1d5db',
+  whiteSpace: 'nowrap',
+}
+const prepaidTdStyle = {
+  padding: '6px 8px',
+  color: '#1f2937',
+  verticalAlign: 'top',
 }
