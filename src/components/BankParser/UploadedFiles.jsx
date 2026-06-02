@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
 import { AddManualTransaction } from './AddManualTransaction'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 
 // Month-name lookup so we can filter file_name by the currently-selected month.
 // Relies on our enforced filename convention: "<Company-prefix> <MonthName> <Year>.<ext>"
@@ -11,6 +12,7 @@ const MONTH_NAMES = [
 ]
 
 export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, onRefresh, refreshTrigger }) {
+  const isLocked = useIsCurrentPeriodLocked()
   const [imports, setImports] = useState([])
   const [loading, setLoading] = useState(false)
   // The bank_imports row the user clicked "Add Manual Row" on — when
@@ -85,6 +87,10 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
   // (inter-company or intra-company linking), we clear the counterpart's
   // linked_expense_id so we don't leave dangling references.
   const handleDelete = async (importId, importFileName) => {
+    if (isLocked) {
+      alert(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}.\n\nCannot delete an entire import while the month is closed. Unlock via the Monthly Checklist tab if you really need to delete it.`)
+      return
+    }
     try {
       // Step 1: bank transactions in this import
       const { data: bankTxs, error: btxErr } = await supabase
@@ -234,17 +240,25 @@ export function UploadedFiles({ selectedCompany, selectedMonth, selectedYear, on
                           this file, so it slots into the Parsed Transactions
                           table indistinguishably from auto-parsed rows. */}
                       <button
-                        onClick={() => setAddingToImport(imp)}
+                        onClick={() => {
+                          if (isLocked) {
+                            alert(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}.\n\nCannot add a transaction while the month is closed.`)
+                            return
+                          }
+                          setAddingToImport(imp)
+                        }}
                         className="btn-edit"
-                        title="Add a missing transaction the parser skipped"
-                        style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}
+                        disabled={isLocked}
+                        title={isLocked ? '🔒 Period locked — read-only' : 'Add a missing transaction the parser skipped'}
+                        style={{ background: isLocked ? '#d1d5db' : '#16a34a', color: 'white', borderColor: isLocked ? '#d1d5db' : '#16a34a' }}
                       >
                         ➕
                       </button>
                       <button
                         onClick={() => handleDelete(imp.id, imp.file_name)}
                         className="btn-delete"
-                        title="Delete this import"
+                        disabled={isLocked}
+                        title={isLocked ? '🔒 Period locked — read-only' : 'Delete this import'}
                       >
                         🗑️
                       </button>

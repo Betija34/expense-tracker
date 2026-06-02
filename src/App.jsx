@@ -9,9 +9,14 @@ import { TravelLog } from './components/TravelLog/TravelLog'
 import { ClientReport } from './components/ClientReport/ClientReport'
 import { MonthlyChecklist } from './components/MonthlyChecklist/MonthlyChecklist'
 import { Clients } from './components/Clients/Clients'
+import { LockProvider } from './lib/LockContext'
+import { LockBanner } from './components/LockBanner/LockBanner'
 import './App.css'
 
 function App() {
+  // `companies` holds the full [{ id, name }] rows so child components
+  // (like LockContext) can do per-company lookups by id. The top-bar
+  // dropdown only needs the names, but ids are required for FKs.
   const [companies, setCompanies] = useState([])
   const [selectedCompany, setSelectedCompany] = useState('Rabona Holdings')
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
@@ -36,15 +41,14 @@ function App() {
         setLoading(true)
         const { data, error } = await supabase
           .from('companies')
-          .select('name')
+          .select('id, name')
           .order('name')
 
         if (error) throw error
 
-        const companyNames = data.map(c => c.name)
-        setCompanies(companyNames)
-        if (companyNames.length > 0) {
-          setSelectedCompany(companyNames[0])
+        setCompanies(data || [])
+        if ((data || []).length > 0) {
+          setSelectedCompany(data[0].name)
         }
       } catch (err) {
         console.error('Error loading companies:', err)
@@ -74,11 +78,26 @@ function App() {
   }
 
   return (
+    <LockProvider
+      selectedCompany={selectedCompany}
+      selectedMonth={selectedMonth}
+      selectedYear={selectedYear}
+      companies={companies}
+    >
     <div className="app">
       <header>
         <h1>Rabona Holdings & Espargos - Expense Tracker</h1>
         <p>Phase 1: Foundation Build</p>
       </header>
+
+      {/* Lock banner — visible only when the current (company, month, year)
+          tuple is in closed_periods. Sits above the top-bar so it's
+          impossible to miss. Hidden in print. */}
+      <LockBanner
+        selectedCompany={selectedCompany}
+        selectedMonth={selectedMonth}
+        selectedYear={selectedYear}
+      />
 
       <div className="container">
         {/* Top Bar */}
@@ -87,7 +106,7 @@ function App() {
             <label>Company:</label>
             <select value={selectedCompany} onChange={(e) => setSelectedCompany(e.target.value)}>
               {companies.map(c => (
-                <option key={c} value={c}>{c}</option>
+                <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           </div>
@@ -259,6 +278,7 @@ function App() {
         <p>Phase 1 Foundation • Connected to Supabase ✅</p>
       </footer>
     </div>
+    </LockProvider>
   )
 }
 

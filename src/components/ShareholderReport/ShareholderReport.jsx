@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import './ShareholderReport.css'
 
 /**
@@ -31,6 +32,7 @@ import './ShareholderReport.css'
 const SHAREHOLDERS = ['YK', 'BK']
 
 export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear, onSwitchTab }) {
+  const isLocked = useIsCurrentPeriodLocked()
   const [companyId, setCompanyId] = useState(null)
   const [expenses, setExpenses] = useState([])
   // allowances[code] = { id, daily_rate } or null if no row yet.
@@ -121,6 +123,10 @@ export function ShareholderReport({ selectedCompany, selectedMonth, selectedYear
   // -------------------------------------------------------------
   const updateAllowance = async (code, patch) => {
     if (!companyId) return
+    if (isLocked) {
+      alert(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}.\n\nCannot edit allowance while the month is closed. Unlock via the Monthly Checklist tab.`)
+      return
+    }
     setAllowancesSaving(s => ({ ...s, [code]: true }))
     try {
       const existing = allowances[code]

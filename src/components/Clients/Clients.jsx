@@ -3,6 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import { ComposeEmailsModal } from './ComposeEmailsModal'
 import { SoaModal } from './SoaModal'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import './Clients.css'
 
 /**
@@ -54,6 +55,19 @@ const BLANK_FORM = {
 }
 
 export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
+  // Period-lock guard. When the top-bar selection lands on a closed
+  // period (closed_periods row), every mutation function in this
+  // component checks this flag at function entry and bails with an
+  // alert. The buttons themselves stay clickable to give the user a
+  // clear feedback message rather than a silent disabled state — same
+  // pattern as Add Expense's setSaveError approach. The yellow lock
+  // banner up top already explains the situation.
+  const isLocked = useIsCurrentPeriodLocked()
+  const lockGuard = (label = 'change invoicing data') => {
+    if (!isLocked) return false
+    alert(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}.\n\nCannot ${label} while the month is closed. Unlock via the Monthly Checklist tab if you really need to edit it.`)
+    return true
+  }
   const [companyId, setCompanyId] = useState(null)
   const [clients, setClients]     = useState([])
   // Per-client reimbursable expense total for the selected month, keyed by
@@ -558,6 +572,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // local state. Type defaults to 'variable_expense' for back-compat
   // (Block 4 callers), and Block 1 passes 'monthly_fee' explicitly.
   const openDeferModal = (client, invoiceType = 'variable_expense') => {
+    if (lockGuard('defer fees')) return
     const nextMonth = selectedMonth === 12 ? 1            : selectedMonth + 1
     const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
     setDeferModal({
@@ -575,6 +590,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   const saveDeferral = async () => {
     if (!deferModal) return
+    if (lockGuard('save a deferral')) return
     const { client, invoiceType, sourceYear, sourceMonth, targetYear, targetMonth } = deferModal
     if (targetYear < sourceYear ||
         (targetYear === sourceYear && targetMonth <= sourceMonth)) {
@@ -607,6 +623,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   }
 
   const removeDeferral = async (deferralId) => {
+    if (lockGuard('undo a deferral')) return
     try {
       const { error: delErr } = await supabase
         .from('expense_deferrals')
@@ -748,6 +765,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // the find/insert to a specific represented source month (per-month
   // split path used by monthly_fee with deferrals).
   const upsertInvoice = async (client, invoiceType, patch, opts = {}) => {
+    if (lockGuard('add or edit invoices')) return
     const { representsPeriod = null } = opts
     try {
       const existing = representsPeriod
@@ -921,6 +939,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // added fixed/variable reimbursement rows. Auto-drafted rows from Block
   // 1/3/4 use their own delete flow (none today — they just stay PLANNED).
   const deleteOneOff = async (invoice) => {
+    if (lockGuard('delete an invoice')) return
     const ok = window.confirm(`Delete this invoice (${invoice.description})? This cannot be undone.`)
     if (!ok) return
     try {
@@ -1742,6 +1761,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const confirmDelete = async () => {
     if (!deleting) return
     if (!deleteTypeMatches) return
+    if (lockGuard('delete a client')) return
     setDeleting(d => ({ ...d, busy: true, error: null }))
     try {
       const { error: delErr } = await supabase
@@ -2149,7 +2169,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 title="Cancel this deferral and return the fee to its source month"
                                 style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                 onClick={() => {
-                                  if (window.confirm(`Undo the deferral of ${monthName(inst.month)} ${inst.year} fee for ${c.trade_name || c.legal_name}?`)) {
+                                  if (!lockGuard('undo a deferral') && window.confirm(`Undo the deferral of ${monthName(inst.month)} ${inst.year} fee for ${c.trade_name || c.legal_name}?`)) {
                                     removeDeferral(inst.deferral.deferral_id)
                                   }
                                 }}
@@ -2262,7 +2282,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                 onClick={() => {
                                   if (isTargetInvoiceIssued(c, 'monthly_fee')) return
-                                  if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                  if (!lockGuard('undo a deferral') && window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                     removeDeferral(outbound.id)
                                   }
                                 }}
@@ -2334,7 +2354,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               }}
                               onClick={() => {
                                 if (targetIssued) return
-                                if (window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                if (!lockGuard('undo a deferral') && window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                   removeDeferral(deferral.id)
                                 }
                               }}
@@ -2578,7 +2598,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                   style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                   onClick={() => {
                                     if (isTargetInvoiceIssued(c, 'fixed_expense')) return
-                                    if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    if (!lockGuard('undo a deferral') && window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                       removeDeferral(bk.outbound.id)
                                     }
                                   }}
@@ -2654,7 +2674,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                   style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                   onClick={() => {
                                     if (isTargetInvoiceIssued(c, 'fixed_expense')) return
-                                    if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    if (!lockGuard('undo a deferral') && window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                       removeDeferral(outbound.id)
                                     }
                                   }}
@@ -2721,7 +2741,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 }}
                                 onClick={() => {
                                   if (targetIssued) return
-                                  if (window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                  if (!lockGuard('undo a deferral') && window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                     removeDeferral(deferral.id)
                                   }
                                 }}
@@ -2939,7 +2959,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                   }}
                                   onClick={() => {
                                     if (targetIssued) return
-                                    if (window.confirm(`Undo the deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                    if (!lockGuard('undo a deferral') && window.confirm(`Undo the deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                       removeDeferral(bk.outbound.id)
                                     }
                                   }}
@@ -3038,7 +3058,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                     }}
                                     onClick={() => {
                                       if (targetIssued) return
-                                      if (window.confirm(`Undo the deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
+                                      if (!lockGuard('undo a deferral') && window.confirm(`Undo the deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
                                         removeDeferral(outbound.id)
                                       }
                                     }}
@@ -3115,7 +3135,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 }}
                                 onClick={() => {
                                   if (targetIssued) return
-                                  if (window.confirm(`Undo this deferral?\n\n${c.trade_name || c.legal_name}'s ${monthName(selectedMonth)} ${selectedYear} expenses will return to this month.`)) {
+                                  if (!lockGuard('undo a deferral') && window.confirm(`Undo this deferral?\n\n${c.trade_name || c.legal_name}'s ${monthName(selectedMonth)} ${selectedYear} expenses will return to this month.`)) {
                                     removeDeferral(deferral.id)
                                   }
                                 }}

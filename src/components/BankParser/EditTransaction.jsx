@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../supabaseClient'
+import { useLock } from '../../lib/LockContext'
 import './BankParser.css'
 
 export function EditTransaction({ transaction, onClose, onSave }) {
+  // Period-lock — block save when the tx's date is in a closed period.
+  const lockHook = useLock()
   // Convert ISO date (YYYY-MM-DD) to DD/MM/YYYY for display
   const isoToDisplay = (isoDate) => {
     if (!isoDate) return ''
@@ -70,6 +73,18 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     // useEffect reset on transaction.id change above, this makes the stuck-
     // disabled-button scenario impossible.
     if (isSavingRef.current) return
+    // Period-lock check. If the bank tx's date is in a closed period for
+    // its company, refuse to edit. Catches both un-finalize attempts and
+    // date/amount/direction changes — any of which would mutate a row
+    // that's supposed to be frozen.
+    if (transaction.company_id && transaction.transaction_date) {
+      const [yStr, mStr] = transaction.transaction_date.split('-')
+      const y = parseInt(yStr), m = parseInt(mStr)
+      if (lockHook.isLocked(transaction.company_id, y, m)) {
+        setError(`🔒 Period ${String(m).padStart(2,'0')}/${y} is locked. Cannot edit or un-finalize this transaction while the month is closed. Unlock via the Monthly Checklist tab.`)
+        return
+      }
+    }
     if (!formData.amount || !formData.transaction_date || !formData.description.trim()) {
       setError('All fields are required')
       return

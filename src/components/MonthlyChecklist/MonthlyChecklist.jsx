@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
+import { useLock } from '../../lib/LockContext'
+import { useConfirm } from '../../lib/useConfirm'
 import './MonthlyChecklist.css'
 
 /**
@@ -88,6 +90,15 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
   // month when preparing the physical folder. Print mode always shows the
   // expanded contents regardless of this state (handled in CSS).
   const [coverExpanded, setCoverExpanded] = useState(false)
+  // ---- Month locking ----
+  // Pulls from LockContext (loaded by App). isLocked checks the
+  // closed_periods table; lockPeriod/unlockPeriod mutate it.
+  const lock = useLock()
+  const { confirm, confirmModal } = useConfirm()
+  // Unlock requires the user to type "UNLOCK <MONTH> <YEAR>" verbatim.
+  const [unlockingOpen, setUnlockingOpen] = useState(false)
+  const [unlockingTyped, setUnlockingTyped] = useState('')
+  const [lockBusy, setLockBusy] = useState(false)
   // ---- Folder Cover Page tick state ----
   // Persisted in localStorage, keyed per (company, year, month). Each value
   // is { [itemKey: string]: boolean }. This drives the cover page checkboxes
@@ -566,6 +577,53 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
       }
     }
   `
+  // ---- Close / Unlock period handlers ----
+  // Close: simple confirm dialog. Sets a closed_periods row → app-wide
+  // banner appears + all edit affordances on every page become disabled.
+  const handleClosePeriod = async () => {
+    if (!companyId || lockBusy) return
+    const ok = await confirm({
+      title: `Close ${monthName(selectedMonth)} ${selectedYear} for ${selectedCompany}?`,
+      message:
+        'Closing the period locks ALL data for this company + month:\n\n' +
+        '• Expenses (View / Add / Edit) → read-only\n' +
+        '• Bank Parser → no Finalize / Bulk Approve / status edits\n' +
+        '• Client Invoicing → no invoice CRUD or defer/undo\n' +
+        '• Travel Log / Shareholder Report → no edits\n\n' +
+        'The Monthly Checklist itself stays editable so you can still tick or update notes.\n\n' +
+        'You can unlock the period later via the Unlock button below.',
+      confirmText: 'Close period',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      setLockBusy(true)
+      await lock.lockPeriod(companyId, selectedYear, selectedMonth)
+    } catch (err) {
+      alert('Could not close period: ' + (err.message || err))
+    } finally {
+      setLockBusy(false)
+    }
+  }
+
+  // Unlock: requires the user to type "UNLOCK <MONTH> <YEAR>" verbatim.
+  // No drive-by clicks possible.
+  const unlockExpectedToken = `UNLOCK ${monthName(selectedMonth).toUpperCase()} ${selectedYear}`
+  const handleUnlockConfirm = async () => {
+    if (!companyId || lockBusy) return
+    if (unlockingTyped.trim().toUpperCase() !== unlockExpectedToken) return
+    try {
+      setLockBusy(true)
+      await lock.unlockPeriod(companyId, selectedYear, selectedMonth)
+      setUnlockingOpen(false)
+      setUnlockingTyped('')
+    } catch (err) {
+      alert('Could not unlock period: ' + (err.message || err))
+    } finally {
+      setLockBusy(false)
+    }
+  }
+
   const handlePrint = () => {
     const styleEl = document.createElement('style')
     styleEl.textContent = CHECKLIST_PORTRAIT_CSS
@@ -589,7 +647,93 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
         <button onClick={handlePrint} className="toolbar-btn primary" title="Print the cover page for the physical document folder (heading + ticked-contents list).">
           🖨 Print Cover Page
         </button>
+        {/* Close / Unlock period — the workflow endpoint of month-end close.
+            Locking flips every page into read-only for this (company, month, year)
+            via the LockContext + lock-banner. Unlocking is intentionally harder
+            (type-to-confirm) so it can't happen by accident. */}
+        {!lock.isCurrentLocked ? (
+          <button
+            onClick={handleClosePeriod}
+            disabled={lockBusy || !companyId}
+            className="toolbar-btn"
+            style={{ background: '#fef3c7', borderColor: '#fcd34d', color: '#92400e' }}
+            title="Mark this month as closed — locks all data editing for this company + month across every tab."
+          >
+            🔒 Close Period
+          </button>
+        ) : (
+          <button
+            onClick={() => { setUnlockingOpen(true); setUnlockingTyped('') }}
+            disabled={lockBusy || !companyId}
+            className="toolbar-btn"
+            style={{ background: '#fee2e2', borderColor: '#fca5a5', color: '#991b1b' }}
+            title="Unlock this month so edits are allowed again. Requires typing the exact unlock phrase to confirm."
+          >
+            🔓 Unlock Period
+          </button>
+        )}
       </div>
+
+      {/* Unlock confirm modal — type-to-confirm pattern. The expected
+          token is "UNLOCK <MONTH NAME> <YEAR>" e.g. "UNLOCK MARCH 2026".
+          Comparison is case-insensitive and trimmed but otherwise exact. */}
+      {unlockingOpen && (
+        <div className="modal-overlay no-print" onClick={() => !lockBusy && setUnlockingOpen(false)}>
+          <div className="modal-content" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0 }}>🔓 Unlock {monthName(selectedMonth)} {selectedYear}?</h3>
+              <button className="modal-close" onClick={() => !lockBusy && setUnlockingOpen(false)}>×</button>
+            </div>
+            <div className="modal-body" style={{ padding: 18 }}>
+              <p style={{ marginTop: 0, fontSize: 14, color: '#374151', lineHeight: 1.5 }}>
+                Unlocking this period for <strong>{selectedCompany}</strong> will allow edits, saves, and deletes again on every tab.
+              </p>
+              <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+                To confirm, type this exact phrase below (no quotes):
+              </p>
+              <div style={{
+                background: '#f3f4f6', padding: '8px 12px', borderRadius: 4,
+                fontFamily: 'monospace', fontSize: 14, color: '#1f2937',
+                marginBottom: 10, userSelect: 'all',
+              }}>
+                {unlockExpectedToken}
+              </div>
+              <input
+                type="text"
+                autoFocus
+                value={unlockingTyped}
+                onChange={(e) => setUnlockingTyped(e.target.value)}
+                placeholder="Type the phrase above to enable Unlock"
+                className="form-input"
+                style={{ width: '100%' }}
+                disabled={lockBusy}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+                <button
+                  onClick={() => { setUnlockingOpen(false); setUnlockingTyped('') }}
+                  className="btn-secondary"
+                  disabled={lockBusy}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUnlockConfirm}
+                  className="button"
+                  style={{
+                    background: unlockingTyped.trim().toUpperCase() === unlockExpectedToken ? '#dc2626' : '#9ca3af',
+                    color: 'white',
+                    cursor: unlockingTyped.trim().toUpperCase() === unlockExpectedToken ? 'pointer' : 'not-allowed',
+                  }}
+                  disabled={lockBusy || unlockingTyped.trim().toUpperCase() !== unlockExpectedToken}
+                >
+                  {lockBusy ? '⏳ Unlocking…' : '🔓 Unlock'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmModal}
 
       {/* Unified letterhead — visible on screen AND in print. Heading is just
           the company name + the selected month/year; both auto-fill from the

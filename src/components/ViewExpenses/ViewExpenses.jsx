@@ -5,6 +5,7 @@ import { FinalizeTransaction } from '../BankParser/FinalizeTransaction'
 import { LinkInterCompanyModal } from '../LinkInterCompany/LinkInterCompanyModal'
 import { EditManualExpenseModal } from './EditManualExpenseModal'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import './ViewExpenses.css'
 
 // Categories that support transfer linking (the 🔗 button appears on these rows).
@@ -32,6 +33,10 @@ const LINKABLE_CATEGORIES = new Set([
  * will be wired up in the next step.
  */
 export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onSwitchTab, focusExpenseId, onFocusHandled }) {
+  // Period locked? Disables Edit / Delete / status-toggle affordances on
+  // every row. The LockBanner at the App level already tells the user
+  // why; here we just gate the affordances.
+  const isLocked = useIsCurrentPeriodLocked()
   const [expenses, setExpenses] = useState([])
   const [bankStats, setBankStats] = useState({ total: 0, categorized: 0, pending: 0 })
   const [loading, setLoading] = useState(false)
@@ -592,16 +597,19 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
       : <span className="badge badge-out">OUT</span>
 
   // Status badge — clickable to toggle pending ↔ approved.
-  // Locked badges are not clickable.
+  // Locked badges are not clickable. Also disabled when the whole
+  // period is locked (closed_periods row exists).
   const statusBadge = (expense) => {
     const s = expense.status || 'pending'
-    const isLocked = s === 'locked'
+    const isStatusLocked = s === 'locked'
+    const isReadOnly = isStatusLocked || isLocked  // isLocked = whole-period lock
     return (
       <span
-        className={`badge badge-status-${s} ${isLocked ? '' : 'badge-clickable'}`}
-        onClick={isLocked ? undefined : () => toggleStatus(expense)}
+        className={`badge badge-status-${s} ${isReadOnly ? '' : 'badge-clickable'}`}
+        onClick={isReadOnly ? undefined : () => toggleStatus(expense)}
         title={
-          isLocked ? 'Month is locked — cannot change status' :
+          isLocked ? '🔒 Period locked — read-only' :
+          isStatusLocked ? 'Month is locked — cannot change status' :
           s === 'pending' ? 'Click to mark approved' :
           'Click to mark pending'
         }
@@ -1016,7 +1024,8 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                     <div className="action-buttons">
                       <button
                         className="action-btn"
-                        title={e.bank_transaction_id ? 'Re-categorize this bank-imported expense' : 'Edit'}
+                        title={isLocked ? '🔒 Period locked — read-only' : (e.bank_transaction_id ? 'Re-categorize this bank-imported expense' : 'Edit')}
+                        disabled={isLocked}
                         onClick={async () => {
                           if (e.bank_transaction_id) {
                             // Bank-imported → open Re-categorize modal (FinalizeTransaction in edit mode)
@@ -1044,13 +1053,15 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                       {LINKABLE_CATEGORIES.has(e.expense_categories?.name) && (
                         <button
                           className="action-btn"
-                          title={e.linked_expense_id ? 'Manage transfer link' : 'Link to counterpart'}
+                          title={isLocked ? '🔒 Period locked — read-only' : (e.linked_expense_id ? 'Manage transfer link' : 'Link to counterpart')}
+                          disabled={isLocked}
                           onClick={() => setLinkingExpense(e)}
                         >🔗</button>
                       )}
                       <button
                         className="action-btn danger"
-                        title="Delete this expense"
+                        title={isLocked ? '🔒 Period locked — read-only' : 'Delete this expense'}
+                        disabled={isLocked}
                         onClick={() => handleDelete(e)}
                       >🗑️</button>
                     </div>

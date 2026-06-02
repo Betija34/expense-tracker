@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { maybeCreatePaymentOnBehalfLeg } from '../../lib/paymentOnBehalf'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import {
   parseISODate,
@@ -27,6 +28,11 @@ import '../BankParser/BankParser.css'
  *     for similar amount + date + vendor in a ±3 day window)
  */
 export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwitchTab }) {
+  // If the current (company, month, year) is locked, this whole tab
+  // becomes read-only. We block the save at the handler level AND
+  // disable the Save button to prevent accidental clicks. The
+  // LockBanner up top already explains why.
+  const isLocked = useIsCurrentPeriodLocked()
   const [companyId, setCompanyId] = useState(null)
   const [categories, setCategories] = useState([])
   const [subcategories, setSubcats] = useState([])
@@ -830,6 +836,10 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     setSaveSuccess(null)
 
     // ---- Validation ----
+    if (isLocked) {
+      setSaveError(`🔒 ${selectedCompany} period ${String(selectedMonth).padStart(2,'0')}/${selectedYear} is locked. Unlock it via the Monthly Checklist tab to save expenses.`)
+      return
+    }
     if (!companyId) { setSaveError('Company not loaded yet'); return }
     if (!form.date) { setSaveError('Date is required'); return }
     if (!dateInSelectedMonth) {

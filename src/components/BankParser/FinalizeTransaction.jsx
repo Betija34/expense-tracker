@@ -19,6 +19,7 @@ import {
   PAYMENT_ON_BEHALF_FROM_SUBCATS,
   maybeCreatePaymentOnBehalfLeg as maybeCreatePaymentOnBehalfLegShared,
 } from '../../lib/paymentOnBehalf'
+import { useLock } from '../../lib/LockContext'
 import {
   PAYMENT_TRIGGER_CATEGORY_NAMES,
   parseInvoiceNumbers,
@@ -77,6 +78,11 @@ function serializeAdditionalSubRefs(arr, series = 'S') {
  *   5. UPDATE bank_transactions.status='matched', matched_expense_id = new id
  */
 export function FinalizeTransaction({ transaction, companyId, companyName, existingExpense, onClose, onSave }) {
+  // Period-lock awareness — used in handleSave to refuse finalizing into
+  // a closed period. We use the raw hook (not isCurrentLocked) because
+  // the modal can be opened on a bank tx whose date is in a DIFFERENT
+  // period than the top bar (e.g. an off-month carryover).
+  const lockHook = useLock()
   const isEditMode = !!existingExpense
   const [categories, setCategories]   = useState([])
   const [subcategories, setSubcats]   = useState([])
@@ -748,6 +754,18 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     if (isSavingRef.current) return
     setSaveError(null)
 
+    // Period-lock guard. If the bank transaction's date falls in a
+    // closed period for this company, refuse to finalize.
+    const txDate = transaction.transaction_date
+    if (txDate && companyId) {
+      const [yStr, mStr] = txDate.split('-')
+      const y = parseInt(yStr), m = parseInt(mStr)
+      if (lockHook.isLocked(companyId, y, m)) {
+        setSaveError(`🔒 Period ${String(m).padStart(2,'0')}/${y} is locked for ${companyName}. Unlock via the Monthly Checklist tab to finalize transactions in this period.`)
+        return
+      }
+    }
+
     // SPLIT MODE BRANCH
     if (isSplit) {
       return handleSplitSave()
@@ -1065,6 +1083,16 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   const handleSplitSave = async () => {
     // Re-entry guard (see comment on handleSave above).
     if (isSavingRef.current) return
+    // Period-lock guard — same logic as handleSave.
+    const txDate2 = transaction.transaction_date
+    if (txDate2 && companyId) {
+      const [yStr, mStr] = txDate2.split('-')
+      const y = parseInt(yStr), m = parseInt(mStr)
+      if (lockHook.isLocked(companyId, y, m)) {
+        setSaveError(`🔒 Period ${String(m).padStart(2,'0')}/${y} is locked for ${companyName}. Unlock to save split portions.`)
+        return
+      }
+    }
     if (!form.vendor?.trim()) { setSaveError('Vendor is required (shared across all portions)'); return }
     if (!portionMatchesTotal) {
       setSaveError(`Portion total (€${portionTotal.toFixed(2)}) must match bank transaction (€${bankAmount.toFixed(2)})`); return

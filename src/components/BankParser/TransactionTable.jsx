@@ -4,6 +4,7 @@ import { nextMainRefSeq, buildMainRef } from '../../lib/refUtils'
 import { EditTransaction } from './EditTransaction'
 import { FinalizeTransaction } from './FinalizeTransaction'
 import { useConfirm } from '../../lib/useConfirm'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import './BankParser.css'
 
 // Helper: build a [start, nextMonthStart) date range so we can filter
@@ -32,6 +33,13 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   // React-based confirm dialog — bypasses Firefox's window.confirm()
   // suppression. See useConfirm.js + ConfirmModal.jsx for details.
   const { confirm, confirmModal } = useConfirm()
+  // Period lock — blocks deletes/approvals when current top-bar period is
+  // closed. Currently scoped to selectedMonth/Year (the parser is itself
+  // month-scoped), so all rows shown match the lock check.
+  const isLocked = useIsCurrentPeriodLocked()
+  const lockAlert = (label) => {
+    alert(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}.\n\nCannot ${label} while the month is closed. Unlock via the Monthly Checklist tab.`)
+  }
 
   // Load the Uncategorized category ids once (for the Bulk Approve workflow)
   useEffect(() => {
@@ -221,6 +229,7 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   // never ran" — see task #149.
   const handleDeleteRow = async (transaction) => {
     console.log('🗑 delete clicked', { id: transaction.id, vendor: transaction.description, status: transaction.status })
+    if (isLocked) { lockAlert('delete a bank transaction'); return }
     if (transaction.status === 'matched') {
       alert('This row is already finalized. Un-finalize it first via the Edit button → set status to Pending.')
       return
@@ -257,6 +266,7 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   // is a 2-click workflow.
   const handleBulkDelete = async () => {
     console.log('🗑 bulk delete clicked', { selectedCount: selectedTransactions.size })
+    if (isLocked) { lockAlert('bulk-delete bank transactions'); return }
     const selected = transactions.filter(
       t => selectedTransactions.has(t.id) && t.status !== 'matched'
     )
@@ -306,6 +316,7 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   }
 
   const handleBulkApprove = async () => {
+    if (isLocked) { lockAlert('bulk-approve bank transactions'); return }
     const selected = transactions.filter(
       t => selectedTransactions.has(t.id) && t.status === 'unmatched'
     )

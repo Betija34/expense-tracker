@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../supabaseClient'
 import Tesseract from 'tesseract.js'
+import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import './BankParser.css'
 
 // Month-name lookup for the pre-upload Layer 0 check.
@@ -10,6 +11,7 @@ const MONTH_NAMES = [
 ]
 
 export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUploadSuccess }) {
+  const isLocked = useIsCurrentPeriodLocked()
   const [files, setFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
@@ -378,6 +380,10 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
   }
 
   const handleUpload = async () => {
+    if (isLocked) {
+      setError(`🔒 Period locked for ${selectedCompany} · ${String(selectedMonth).padStart(2,'0')}/${selectedYear}. Cannot import bank statements into a closed month. Unlock via the Monthly Checklist tab.`)
+      return
+    }
     if (files.length === 0) {
       setError('Please select at least one file')
       return
