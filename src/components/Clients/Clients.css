@@ -281,6 +281,46 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   white-space: nowrap;
 }
 
+/* =====================================================================
+   FILLED-FIELD HIGHLIGHTING — green tint on invoice lifecycle inputs
+   once they contain data. Makes it visually obvious which invoices are
+   actually issued/paid vs. just planned.
+   Uses :placeholder-shown (true when the input is empty AND has a
+   placeholder) inverted via :not(). Works because all our lifecycle
+   inputs have a placeholder set.
+   ===================================================================== */
+
+/* Invoice number sequence input (e.g. "001") — when filled, tint green.
+   Also tint the gray prefix chip on the left so the whole [prefix][seq]
+   pair reads as a unit. Uses :has() selector on the wrap. */
+.invoice-num-suffix:not(:placeholder-shown) {
+  background: #d1fae5 !important;
+  color: #065f46;
+}
+.invoice-num-wrap:has(.invoice-num-suffix:not(:placeholder-shown)) .invoice-num-prefix {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* Issue / pro-forma / credit-note DATE day input ("DD") — when filled,
+   tint green and tint the "-MM-YYYY" suffix to match. */
+.day-date-input:not(:placeholder-shown) {
+  background: #d1fae5 !important;
+  color: #065f46;
+}
+.day-date-wrap:has(.day-date-input:not(:placeholder-shown)) .day-date-suffix {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* Free-form lifecycle inputs (payment date, free amount fields, etc.).
+   Stays white until filled — payment date is expected to be empty until
+   the bank parser auto-fills it (or you type it). */
+.lifecycle-input:not(:placeholder-shown):not([type="date"]) {
+  background: #d1fae5 !important;
+  color: #065f46;
+}
+
 /* Status badges — derived from which lifecycle fields are filled */
 .status-pending {
   display: inline-block;
