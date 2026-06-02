@@ -332,6 +332,12 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
     const isBankImported = !!expense.bank_transaction_id
 
     // Helper: break FK refs + delete a set of expense IDs + un-match bank tx
+    // IMPORTANT: only un-match the bank tx when the rows we're about to
+    // delete are the LAST expenses pointing at it. If sibling rows exist
+    // (e.g. accidental triple-save: 3 expense rows all linked to ONE bank
+    // tx), un-matching here would orphan the surviving siblings — they'd
+    // still carry bank_transaction_id but the bank tx would be back to
+    // 'pending', risking a re-finalize creating yet another duplicate.
     const deleteExpenseSet = async (ids, bankTxIdToUnmatch) => {
       if (!ids || ids.length === 0) return
       // NULL counterpart linked_expense_id pointing at any of these rows
@@ -340,18 +346,46 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
         .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
         .in('linked_expense_id', ids)
       if (unlinkErr) throw unlinkErr
-      // Un-match the bank transaction first so its FK to matched_expense_id
-      // doesn't block the delete
+      // Bank-tx un-match: check for sibling rows still pointing at it.
       if (bankTxIdToUnmatch) {
-        const { error: unmatchErr } = await supabase
+        const { data: siblings, error: sibErr } = await supabase
+          .from('expenses')
+          .select('id')
+          .eq('bank_transaction_id', bankTxIdToUnmatch)
+          .not('id', 'in', `(${ids.join(',')})`)
+        if (sibErr) throw sibErr
+        const hasSurvivingSiblings = (siblings || []).length > 0
+        if (!hasSurvivingSiblings) {
+          // Last expense for this bank tx — properly un-match it so it
+          // shows up in the Bank Parser again for re-categorization.
+          const { error: unmatchErr } = await supabase
+            .from('bank_transactions')
+            .update({
+              matched_expense_id: null,
+              status: 'pending',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', bankTxIdToUnmatch)
+          if (unmatchErr) throw unmatchErr
+        }
+        // Always clear matched_expense_id IF it points at one of the rows
+        // being deleted (regardless of siblings), so the FK doesn't block.
+        const { data: tx } = await supabase
           .from('bank_transactions')
-          .update({
-            matched_expense_id: null,
-            status: 'pending',
-            updated_at: new Date().toISOString(),
-          })
+          .select('matched_expense_id')
           .eq('id', bankTxIdToUnmatch)
-        if (unmatchErr) throw unmatchErr
+          .single()
+        if (tx?.matched_expense_id && ids.includes(tx.matched_expense_id)) {
+          const survivingId = (siblings || [])[0]?.id || null
+          const { error: repointErr } = await supabase
+            .from('bank_transactions')
+            .update({
+              matched_expense_id: survivingId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', bankTxIdToUnmatch)
+          if (repointErr) throw repointErr
+        }
       }
       const { error: delErr } = await supabase.from('expenses').delete().in('id', ids)
       if (delErr) throw delErr
@@ -1016,8 +1050,7 @@ export function ViewExpenses({ selectedCompany, selectedMonth, selectedYear, onS
                       )}
                       <button
                         className="action-btn danger"
-                        title={e.bank_transaction_id ? 'Bank-imported: delete in Bank Parser' : 'Delete'}
-                        disabled={!!e.bank_transaction_id}
+                        title="Delete this expense"
                         onClick={() => handleDelete(e)}
                       >🗑️</button>
                     </div>

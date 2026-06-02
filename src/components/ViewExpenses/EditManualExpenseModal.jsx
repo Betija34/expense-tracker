@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../../supabaseClient'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import { canonicalizeClientName } from '../../lib/clientNameUtils'
@@ -25,15 +25,29 @@ import { canonicalizeClientName } from '../../lib/clientNameUtils'
  *   onSaved — saved callback (parent should reload its list)
  */
 
-// Predefined client list — same as AddExpense / FinalizeTransaction
-const PREDEFINED_CLIENTS = ['Urban City','Blue Lagoon','Green Field Hotel','Kypseli','BAD City Hall','BAD City SPA Hotel','Evia Mare','Other']
+// Client dropdown options are now loaded dynamically from the clients
+// table for the expense's company — single source of truth (the Clients
+// tab). "Other" is always appended as the free-text fallback.
+// See the useEffect below that populates `dbClients`.
 
 export function EditManualExpenseModal({ expense, onClose, onSaved, selectedCompany }) {
   const [categories, setCategories] = useState([])
   const [allSubcategories, setAllSubcategories] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // Synchronous re-entry guard (same pattern as FinalizeTransaction +
+  // EditTransaction) — prevents double-click from firing two parallel
+  // save flows. useRef updates synchronously, before React re-renders
+  // the button as disabled.
+  const isSavingRef = useRef(false)
   const [error, setError] = useState(null)
+  // Client dropdown options for the company that owns this expense.
+  // Loaded from the clients table (see useEffect further below).
+  const [dbClients, setDbClients] = useState([])
+  const PREDEFINED_CLIENTS = useMemo(
+    () => [...dbClients, 'Other'],
+    [dbClients]
+  )
 
   // Pre-fill form from the expense being edited.
   // Fallbacks: if the FK column is null but the join brought back a parent
@@ -42,6 +56,13 @@ export function EditManualExpenseModal({ expense, onClose, onSaved, selectedComp
     expense.category_id ||
     expense.expense_categories?.id ||
     ''
+  // Initial client UI state: if the existing client_name matches a row in
+  // the clients table for this company, pre-select it; otherwise fall back
+  // to "Other" + custom text so the existing value isn't lost.
+  // (Note: PREDEFINED_CLIENTS may be empty on first render before dbClients
+  // loads — that's fine; the existing client_name still renders correctly
+  // as "Other" + custom_client_name until the load completes and the
+  // useEffect below re-syncs the form.)
   const initialClient = expense.client_name && PREDEFINED_CLIENTS.includes(expense.client_name)
     ? expense.client_name
     : (expense.client_name ? 'Other' : '')
@@ -88,6 +109,22 @@ export function EditManualExpenseModal({ expense, onClose, onSaved, selectedComp
           .order('sort_order')
         if (subErr) throw subErr
         if (!cancelled) setAllSubcategories(subs || [])
+
+        // Load this expense's company-specific client list (V19 clients
+        // table). Used to populate the "Client / Project" dropdown when
+        // is_reimbursable is on.
+        if (expense.company_id) {
+          const { data: clientRows, error: clientsErr } = await supabase
+            .from('clients')
+            .select('trade_name')
+            .eq('company_id', expense.company_id)
+            .eq('active', true)
+            .order('trade_name')
+          if (clientsErr) throw clientsErr
+          if (!cancelled) {
+            setDbClients((clientRows || []).map(r => r.trade_name).filter(Boolean))
+          }
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load categories')
       } finally {
@@ -141,7 +178,9 @@ export function EditManualExpenseModal({ expense, onClose, onSaved, selectedComp
   }
 
   const handleSave = async () => {
+    if (isSavingRef.current) return  // re-entry guard
     try {
+      isSavingRef.current = true
       setSaving(true); setError(null)
 
       // Validation
@@ -228,6 +267,7 @@ export function EditManualExpenseModal({ expense, onClose, onSaved, selectedComp
       setError(err.message || 'Failed to save changes')
     } finally {
       setSaving(false)
+      isSavingRef.current = false
     }
   }
 

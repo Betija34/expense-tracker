@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../../supabaseClient'
 import {
   parseISODate,
@@ -14,6 +14,11 @@ import {
 } from '../../lib/refUtils'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import { canonicalizeClientName } from '../../lib/clientNameUtils'
+import {
+  PAYMENT_ON_BEHALF_PAIRS,
+  PAYMENT_ON_BEHALF_FROM_SUBCATS,
+  maybeCreatePaymentOnBehalfLeg as maybeCreatePaymentOnBehalfLegShared,
+} from '../../lib/paymentOnBehalf'
 import {
   PAYMENT_TRIGGER_CATEGORY_NAMES,
   parseInvoiceNumbers,
@@ -77,14 +82,30 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   const [subcategories, setSubcats]   = useState([])
   const [clientList, setClientList]   = useState([])
   const [loading, setLoading]         = useState(false)
+  // Synchronous re-entry guard for handleSave / handleSplitSave. React
+  // state updates have a brief delay before the button visually disables,
+  // so a fast double-click could fire two saves before disabled={loading}
+  // takes effect — that's how the triple-save duplicates happened (one bank
+  // tx, 3 expense rows, 3 different ref numbers). useRef updates
+  // synchronously and is checked at the top of each save handler to
+  // reject re-entry before any DB work starts.
+  const isSavingRef = useRef(false)
   const [loadError, setLoadError]     = useState(null)
   const [saveError, setSaveError]     = useState(null)
 
   // Direction is derived from the bank transaction type
   const direction = transaction.transaction_type === 'credit' ? 'in' : 'out'
 
-  // Form state — pre-fill from existing expense if in edit mode
-  const PREDEFINED_CLIENTS = ['Urban City','Blue Lagoon','Green Field Hotel','Kypseli','BAD City Hall','BAD City SPA Hotel','Evia Mare','Other']
+  // Client dropdown options for the current company — pulled dynamically
+  // from the clients table (V19) so adding a client on the Clients tab
+  // immediately makes it selectable here. "Other" is always appended as
+  // the free-text fallback (routes through canonicalizeClientName for
+  // existing-match or create-new flow).
+  const [dbClients, setDbClients] = useState([])
+  const PREDEFINED_CLIENTS = useMemo(
+    () => [...dbClients, 'Other'],
+    [dbClients]
+  )
   const initialClient = isEditMode
     ? (existingExpense.client_name && PREDEFINED_CLIENTS.includes(existingExpense.client_name)
         ? existingExpense.client_name
@@ -359,10 +380,29 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         .order('sort_order')
       setAllSubcats(data || [])
     }
+    // V19 clients table — per-company canonical list. Drives the
+    // "Client / Project" dropdown for reimbursable expenses and incoming
+    // client payments. Espargos starts empty; new clients added via the
+    // Clients tab appear here automatically.
+    const loadDbClients = async () => {
+      if (!companyId) return
+      const { data, error } = await supabase
+        .from('clients')
+        .select('trade_name')
+        .eq('company_id', companyId)
+        .eq('active', true)
+        .order('trade_name')
+      if (error) {
+        console.warn('Could not load clients:', error)
+        return
+      }
+      setDbClients((data || []).map(r => r.trade_name).filter(Boolean))
+    }
     loadCats()
     loadClients()
     loadAllSubcats()
-  }, [direction])
+    loadDbClients()
+  }, [direction, companyId])
 
   // Load subcategories when category changes.
   //
@@ -686,101 +726,12 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   // balance between the two companies.
   //
   // Symmetric — covers both directions via PAYMENT_ON_BEHALF_PAIRS.
-  const PAYMENT_ON_BEHALF_PAIRS = [
-    {
-      fromCompany:      'Rabona Holdings',
-      toCompany:        'Espargos',
-      fromSubcategory:  'Payment Made on Behalf of Espargos',
-      toSubcategory:    'From Rabona — Payment on Behalf',
-    },
-    {
-      fromCompany:      'Espargos',
-      toCompany:        'Rabona Holdings',
-      fromSubcategory:  'Payment Made on Behalf of Rabona',
-      toSubcategory:    'From Espargos — Payment on Behalf',
-    },
-  ]
-  // Subcategory names that should trigger the heads-up info note + the
-  // auto-create logic. Cheap O(2) Set lookup.
-  const PAYMENT_ON_BEHALF_FROM_SUBCATS = new Set(
-    PAYMENT_ON_BEHALF_PAIRS.map(p => p.fromSubcategory)
-  )
-
-  const maybeCreatePaymentOnBehalfLeg = async (sourceExpenseId, expenseRow, alreadyLinkedId) => {
-    // 1) Look up the pair config that matches the current company + subcategory.
-    const pair = PAYMENT_ON_BEHALF_PAIRS.find(
-      p => p.fromCompany === companyName && p.fromSubcategory === expenseRow.subcategory_name
-    )
-    if (!pair) return null
-
-    // 2) Skip if already linked — user can manage via the 🔗 modal. Prevents
-    //    duplicate mirror rows when an already-linked row is re-saved.
-    if (alreadyLinkedId) return null
-
-    // 3) Resolve the OTHER company + its Current Account + Intercompany
-    //    Funding category + the specific subcategory id on its side.
-    const { data: otherCompany, error: otherErr } = await supabase
-      .from('companies').select('id').eq('name', pair.toCompany).maybeSingle()
-    if (otherErr) throw otherErr
-    if (!otherCompany) throw new Error(`Company "${pair.toCompany}" not found (V2 migration may be incomplete).`)
-
-    const { data: otherAccount, error: accErr } = await supabase
-      .from('accounts').select('id')
-      .eq('company_id', otherCompany.id).eq('name', 'Current Account').maybeSingle()
-    if (accErr) throw accErr
-    if (!otherAccount) throw new Error(`${pair.toCompany} Current Account not found.`)
-
-    const { data: fundingCat, error: catErr } = await supabase
-      .from('expense_categories').select('id').eq('name', 'Intercompany Funding').maybeSingle()
-    if (catErr) throw catErr
-    if (!fundingCat) throw new Error('Category "Intercompany Funding" not found.')
-
-    const { data: fundingSub, error: subErr } = await supabase
-      .from('expense_subcategories').select('id, name')
-      .eq('category_id', fundingCat.id).eq('name', pair.toSubcategory).maybeSingle()
-    if (subErr) throw subErr
-    if (!fundingSub) throw new Error(`Subcategory "${pair.toSubcategory}" not found — run V15/V16 migrations.`)
-
-    // 4) Allocate the other company's main_ref for the same year/month.
-    const otherSeq = await nextMainRefSeq(otherCompany.id, expenseRow.main_ref_year, expenseRow.main_ref_month)
-    const otherRef = buildMainRef(expenseRow.main_ref_year, expenseRow.main_ref_month, otherSeq, pair.toCompany)
-
-    // 5) Build & INSERT the mirror row. No bank_transaction_id —
-    //    notional booking, not tied to any imported transaction.
-    const mirrorRow = {
-      company_id:        otherCompany.id,
-      category_id:       fundingCat.id,
-      subcategory_id:    fundingSub.id,
-      subcategory_name:  fundingSub.name,
-      account_id:        otherAccount.id,
-      date:              expenseRow.date,
-      amount:            expenseRow.amount,
-      currency:          expenseRow.currency || 'EUR',
-      vendor:            expenseRow.vendor,
-      description:       `Funded by ${pair.fromCompany} — original payment ${expenseRow.reference_number} to ${expenseRow.vendor}${expenseRow.description ? ` (${expenseRow.description})` : ''}`,
-      reference_number:  otherRef,
-      expense_type:      'income',
-      direction:         'in',
-      main_ref_year:     expenseRow.main_ref_year,
-      main_ref_month:    expenseRow.main_ref_month,
-      main_ref_seq:      otherSeq,
-      status:            'pending',
-      linked_expense_id: sourceExpenseId,
-    }
-
-    const { data: insertedMirror, error: insErr } = await supabase
-      .from('expenses').insert([mirrorRow]).select('id').single()
-    if (insErr) throw insErr
-
-    // 6) Back-link the source row → mirror row.
-    const { error: backErr } = await supabase
-      .from('expenses')
-      .update({ linked_expense_id: insertedMirror.id, updated_at: new Date().toISOString() })
-      .eq('id', sourceExpenseId)
-    if (backErr) throw backErr
-
-    return insertedMirror.id
-  }
+  // Logic now lives in src/lib/paymentOnBehalf.js so Add Expense (cash
+  // path) can share it. Thin local wrapper preserves the call site.
+  const maybeCreatePaymentOnBehalfLeg = (sourceExpenseId, expenseRow, alreadyLinkedId) =>
+    maybeCreatePaymentOnBehalfLegShared({
+      supabase, companyName, sourceExpenseId, expenseRow, alreadyLinkedId,
+    })
 
   // -------------------------------------------------------------------
   // Client-name canonicalization uses the shared helper from
@@ -790,6 +741,11 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   // -------------------------------------------------------------------
 
   const handleSave = async () => {
+    // Re-entry guard — drop the second click silently. Without this a
+    // double-click during the async save (which includes window.confirm
+    // for canonicalize + multiple DB round-trips) creates duplicate
+    // expense rows because each click allocates a fresh main_ref_seq.
+    if (isSavingRef.current) return
     setSaveError(null)
 
     // SPLIT MODE BRANCH
@@ -940,6 +896,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     }
 
     try {
+      isSavingRef.current = true
       setLoading(true)
 
       const dateParts = parseISODate(transaction.transaction_date)
@@ -1100,11 +1057,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       setSaveError(err.message || 'Failed to finalize transaction')
     } finally {
       setLoading(false)
+      isSavingRef.current = false
     }
   }
 
   // Split save: validates + inserts N expense rows with consecutive refs, linked via split_group_id
   const handleSplitSave = async () => {
+    // Re-entry guard (see comment on handleSave above).
+    if (isSavingRef.current) return
     if (!form.vendor?.trim()) { setSaveError('Vendor is required (shared across all portions)'); return }
     if (!portionMatchesTotal) {
       setSaveError(`Portion total (€${portionTotal.toFixed(2)}) must match bank transaction (€${bankAmount.toFixed(2)})`); return
@@ -1170,6 +1130,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     }
 
     try {
+      isSavingRef.current = true
       setLoading(true)
       const dateParts = parseISODate(transaction.transaction_date)
       if (!dateParts) throw new Error('Transaction has no valid date')
@@ -1454,6 +1415,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       setSaveError(err.message || 'Failed to save split expense')
     } finally {
       setLoading(false)
+      isSavingRef.current = false
     }
   }
 

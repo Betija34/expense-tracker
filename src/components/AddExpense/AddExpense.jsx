@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { maybeCreatePaymentOnBehalfLeg } from '../../lib/paymentOnBehalf'
 import { MonthMultiSelect } from '../MonthMultiSelect/MonthMultiSelect'
 import {
   parseISODate,
@@ -70,11 +71,18 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
     return `${selectedYear}-${mm}-01`
   }, [selectedMonth, selectedYear])
 
-  // Form state
-  const PREDEFINED_CLIENTS = [
-    'Urban City', 'Blue Lagoon', 'Green Field Hotel', 'Kypseli',
-    'BAD City Hall', 'BAD City SPA Hotel', 'Evia Mare', 'Other'
-  ]
+  // Dropdown options for the "Client / Project" field on reimbursable
+  // expenses. Pulled DYNAMICALLY from the clients table for the current
+  // company — single source of truth. The Clients tab is where you add
+  // a new client; the moment it's saved there, it shows up here.
+  // "Other" stays at the end as a free-text fallback (routes through
+  // canonicalizeClientName which offers to create a client record).
+  // Espargos starts empty; Rabona has its existing entries.
+  const [dbClients, setDbClients] = useState([])  // trade_name strings
+  const PREDEFINED_CLIENTS = useMemo(
+    () => [...dbClients, 'Other'],
+    [dbClients]
+  )
   const blankForm = {
     date: defaultDate,
     amount: '',
@@ -231,7 +239,8 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
           .order('sort_order')
         setAllSubcats(subs || [])
 
-        // Client list (from Client Reimbursement subcategories)
+        // Client list (from Client Reimbursement subcategories) — legacy
+        // autocomplete source, retained for backward compatibility.
         const { data: clientCat } = await supabase
           .from('expense_categories')
           .select('id')
@@ -245,6 +254,18 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
             .order('sort_order')
           setClientList(clientSubs || [])
         }
+
+        // CLIENTS TABLE (V19) — the canonical, per-company client list
+        // that drives the reimbursable-client dropdown. Each row in the
+        // Clients tab appears here for THIS company only.
+        const { data: dbClientRows, error: dbClientsErr } = await supabase
+          .from('clients')
+          .select('trade_name')
+          .eq('company_id', comp.id)
+          .eq('active', true)
+          .order('trade_name')
+        if (dbClientsErr) throw dbClientsErr
+        setDbClients((dbClientRows || []).map(r => r.trade_name).filter(Boolean))
       } catch (e) {
         console.error('AddExpense init error:', e)
         setLoadError('Failed to load form data. Did you run the V2 migration?')
@@ -951,6 +972,23 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
           .update({ ...expenseRow, updated_at: new Date().toISOString() })
           .eq('id', editingEntry.id)
         if (updErr) throw updErr
+        // Inter-company Payment-on-Behalf: if user JUST switched this
+        // cash expense INTO an on-behalf subcategory, create the mirror.
+        // Skipped if already linked (the editingEntry.linked_expense_id
+        // sentinel) so re-saves don't duplicate.
+        try {
+          await maybeCreatePaymentOnBehalfLeg({
+            supabase,
+            companyName:     selectedCompany,
+            sourceExpenseId: editingEntry.id,
+            expenseRow:      { ...expenseRow, reference_number: referenceNumber },
+            alreadyLinkedId: editingEntry.linked_expense_id,
+          })
+        } catch (linkErr) {
+          console.warn('Payment-on-Behalf mirror leg failed on edit:', linkErr)
+          // Don't bail — the main update already succeeded. User can
+          // re-trigger via Edit if needed.
+        }
         setSaveSuccess(`Expense updated · ${referenceNumber}`)
       } else {
         const { data: inserted, error: insertErr } = await supabase
@@ -959,6 +997,23 @@ export function AddExpense({ selectedCompany, selectedMonth, selectedYear, onSwi
           .select('id, reference_number')
           .single()
         if (insertErr) throw insertErr
+        // Inter-company Payment-on-Behalf auto-create — fires if the
+        // subcategory is one of the Payment-on-Behalf-of-<Other-Company>
+        // subcategories. Creates a notional incoming row on the OTHER
+        // company's books (no real bank credit) so the receivable is
+        // captured. No-op for ordinary cash expenses.
+        try {
+          await maybeCreatePaymentOnBehalfLeg({
+            supabase,
+            companyName:     selectedCompany,
+            sourceExpenseId: inserted.id,
+            expenseRow:      { ...expenseRow, reference_number: inserted.reference_number },
+            alreadyLinkedId: null,
+          })
+        } catch (linkErr) {
+          console.warn('Payment-on-Behalf mirror leg failed on insert:', linkErr)
+          // Don't bail — the primary expense already saved.
+        }
         setSaveSuccess(`Expense saved · ${inserted.reference_number}`)
       }
 

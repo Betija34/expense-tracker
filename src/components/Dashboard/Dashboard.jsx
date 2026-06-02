@@ -212,13 +212,36 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
       .sort((a, b) => b[1] - a[1])
       .map(([client, amount]) => ({ client, amount }))
 
-    // Inter-company transfers
+    // Inter-company transfers (all kinds)
     const fromOther = sum(inwards.filter(e =>
       e.expense_categories?.name === 'Intercompany Funding'
     ))
     const toOther = sum(outwards.filter(e =>
       e.expense_categories?.name === 'Transfers to Connected Accounts'
     ))
+
+    // Inter-Company Reimbursements — the SUBSET of inter-company traffic
+    // that comes from "Payment Made on Behalf of <Other>" subcategories
+    // (bank-paid OR cash-paid, via the V15/V16 + paymentOnBehalf.js auto-
+    // create logic). This isolates "I paid for them / they paid for me"
+    // from the broader direct-transfer flow.
+    const paidOnBehalfOfOther = sum(outwards.filter(e =>
+      e.subcategory_name === `Payment Made on Behalf of ${otherCompanyName}`
+    ))
+    const paidByOtherOnOurBehalf = sum(inwards.filter(e =>
+      e.subcategory_name === `From ${otherCompanyName} — Payment on Behalf`
+    ))
+    // Positive net = OTHER company owes us this much
+    // Negative net = WE owe other company
+    const reimbOnBehalfNet = paidOnBehalfOfOther - paidByOtherOnOurBehalf
+
+    // Individual rows for the listing in the card
+    const paidOnBehalfOfOtherRows = outwards
+      .filter(e => e.subcategory_name === `Payment Made on Behalf of ${otherCompanyName}`)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+    const paidByOtherOnOurBehalfRows = inwards
+      .filter(e => e.subcategory_name === `From ${otherCompanyName} — Payment on Behalf`)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
 
     // Pending count (current month)
     const pendingExpenses = expenses.filter(e => (e.status || 'pending') === 'pending').length
@@ -233,9 +256,11 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
       reimbursableOutstanding, reimbursementsReceived,
       reimbByClientList,
       fromOther, toOther, netIntercompany: fromOther - toOther,
+      paidOnBehalfOfOther, paidByOtherOnOurBehalf, reimbOnBehalfNet,
+      paidOnBehalfOfOtherRows, paidByOtherOnOurBehalfRows,
       pendingExpenses,
     }
-  }, [expenses])
+  }, [expenses, otherCompanyName])
 
   const fmt = (n) => `€${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
@@ -588,25 +613,75 @@ export function Dashboard({ selectedCompany, selectedMonth, selectedYear, onSwit
         />
       </div>
 
-      {/* Inter-Company Reimbursements — placeholder. Wrapped in no-print so
-          the "Not yet implemented" card doesn't show on the printed dashboard
-          — it's a dev-time stub, not a real report. */}
-      <div className="no-print">
-        <SectionHeader title="Inter-Company Reimbursements" subtitle="Expenses one company paid on behalf of the other — needs tagging" />
+      {/* Inter-Company Reimbursements — pulls from the "Payment Made on
+          Behalf of X" / "From X — Payment on Behalf" subcategory pair
+          (V15/V16 + paymentOnBehalf.js). Both bank-paid and cash-paid
+          on-behalf entries are aggregated here. The net is who-owes-who
+          this month. */}
+      <SectionHeader
+        title="Inter-Company Reimbursements"
+        subtitle={`Payments made by one company on behalf of the other (bank or cash) · ${monthLabel}`}
+      />
+      {stats.paidOnBehalfOfOther === 0 && stats.paidByOtherOnOurBehalf === 0 ? (
         <div style={{
-          background: '#f9fafb', border: '1px dashed #d1d5db',
+          background: '#f9fafb', border: '1px solid #e5e7eb',
           borderRadius: 4, padding: 14, color: '#6b7280', fontSize: 13,
         }}>
-          Not yet implemented — we need a way to tag a specific expense as
-          "paid on behalf of {otherCompanyName}" (e.g., a new flag on the expense row
-          or a dedicated subcategory). Once that exists, this card will show:
-          <ul style={{ margin: '6px 0 0 18px' }}>
-            <li>Expenses paid on behalf of {otherCompanyName}</li>
-            <li>Expenses {otherCompanyName} paid on behalf of {selectedCompany}</li>
-            <li>Balance — who owes who</li>
-          </ul>
+          No inter-company on-behalf payments this month.
         </div>
-      </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {/* 3-card summary: paid by us / paid by them / net */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
+          }}>
+            <StatCard
+              title={`Paid by ${selectedCompany} for ${otherCompanyName}`}
+              value={fmt(stats.paidOnBehalfOfOther)}
+              subtitle={`${stats.paidOnBehalfOfOtherRows.length} expense${stats.paidOnBehalfOfOtherRows.length === 1 ? '' : 's'}`}
+              accent="#dc2626"
+            />
+            <StatCard
+              title={`Paid by ${otherCompanyName} for ${selectedCompany}`}
+              value={fmt(stats.paidByOtherOnOurBehalf)}
+              subtitle={`${stats.paidByOtherOnOurBehalfRows.length} expense${stats.paidByOtherOnOurBehalfRows.length === 1 ? '' : 's'}`}
+              accent="#16a34a"
+            />
+            <StatCard
+              title="Net balance"
+              value={stats.reimbOnBehalfNet === 0
+                ? fmt(0)
+                : (stats.reimbOnBehalfNet > 0
+                    ? `+${fmt(stats.reimbOnBehalfNet)}`
+                    : `−${fmt(Math.abs(stats.reimbOnBehalfNet))}`)}
+              subtitle={
+                stats.reimbOnBehalfNet === 0
+                  ? 'Even — no balance this month'
+                  : stats.reimbOnBehalfNet > 0
+                    ? `${otherCompanyName} owes ${selectedCompany}`
+                    : `${selectedCompany} owes ${otherCompanyName}`
+              }
+              accent={stats.reimbOnBehalfNet >= 0 ? '#16a34a' : '#dc2626'}
+            />
+          </div>
+
+          {/* Detail rows (only show sections that have entries) */}
+          {stats.paidOnBehalfOfOtherRows.length > 0 && (
+            <OnBehalfDetailList
+              title={`${selectedCompany} paid on behalf of ${otherCompanyName}`}
+              rows={stats.paidOnBehalfOfOtherRows}
+              fmt={fmt}
+            />
+          )}
+          {stats.paidByOtherOnOurBehalfRows.length > 0 && (
+            <OnBehalfDetailList
+              title={`${otherCompanyName} paid on behalf of ${selectedCompany}`}
+              rows={stats.paidByOtherOnOurBehalfRows}
+              fmt={fmt}
+            />
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -728,4 +803,63 @@ function CategoryBreakdownCard({ rows, total, accent, emptyText, highlightExclus
       </div>
     </div>
   )
+}
+
+// =============================================================
+// OnBehalfDetailList — list of individual on-behalf expense rows
+// for the Inter-Company Reimbursements card. Compact table format
+// so it fits on a printed dashboard alongside the 3-card summary.
+// =============================================================
+function OnBehalfDetailList({ title, rows, fmt }) {
+  return (
+    <div style={{
+      background: 'white', border: '1px solid #e5e7eb',
+      borderRadius: 4, padding: 10,
+    }}>
+      <div style={{
+        fontSize: 12, fontWeight: 600, color: '#374151',
+        marginBottom: 8,
+      }}>
+        {title}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: '#f9fafb', textAlign: 'left' }}>
+            <th style={onBehalfThStyle}>Date</th>
+            <th style={onBehalfThStyle}>Ref</th>
+            <th style={onBehalfThStyle}>Vendor</th>
+            <th style={onBehalfThStyle}>Description</th>
+            <th style={{ ...onBehalfThStyle, textAlign: 'right' }}>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+              <td style={onBehalfTdStyle}>{r.date}</td>
+              <td style={{ ...onBehalfTdStyle, fontFamily: 'monospace' }}>{r.reference_number || '—'}</td>
+              <td style={onBehalfTdStyle}>{r.vendor || '—'}</td>
+              <td style={onBehalfTdStyle}>{r.description || '—'}</td>
+              <td style={{ ...onBehalfTdStyle, textAlign: 'right', fontFamily: 'monospace' }}>
+                {fmt(r.amount)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const onBehalfThStyle = {
+  padding: '5px 6px',
+  fontWeight: 600,
+  fontSize: 11,
+  color: '#6b7280',
+  borderBottom: '1px solid #e5e7eb',
+  whiteSpace: 'nowrap',
+}
+const onBehalfTdStyle = {
+  padding: '5px 6px',
+  color: '#1f2937',
+  verticalAlign: 'top',
 }

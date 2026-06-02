@@ -1,0 +1,93 @@
+/* ConfirmModal — React-based confirm dialog, replaces window.confirm() */
+
+.confirm-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 20px;
+}
+
+.confirm-modal-dialog {
+  background: white;
+  border-radius: 8px;
+  padding: 22px 26px;
+  max-width: 520px;
+  width: 100%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.confirm-modal-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 10px;
+}
+
+.confirm-modal-message {
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+  margin-bottom: 14px;
+  white-space: pre-wrap;
+}
+
+.confirm-modal-details {
+  font-size: 13px;
+  color: #4b5563;
+  background: #f9fafb;
+  border-radius: 4px;
+  padding: 10px 12px 10px 28px;
+  margin: 0 0 14px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.confirm-modal-details li {
+  margin: 2px 0;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.confirm-modal-btn {
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.confirm-modal-cancel {
+  background: white;
+  color: #374151;
+  border-color: #d1d5db;
+}
+.confirm-modal-cancel:hover {
+  background: #f3f4f6;
+}
+
+.confirm-modal-confirm.confirm-modal-primary {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+.confirm-modal-confirm.confirm-modal-primary:hover {
+  background: #1d4ed8;
+}
+
+.confirm-modal-confirm.confirm-modal-danger {
+  background: #dc2626;
+  color: white;
+  border-color: #dc2626;
+}
+.confirm-modal-confirm.confirm-modal-danger:hover {
+  background: #b91c1c;
+}

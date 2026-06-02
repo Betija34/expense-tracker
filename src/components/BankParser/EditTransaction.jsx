@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../supabaseClient'
 import './BankParser.css'
 
@@ -38,6 +38,20 @@ export function EditTransaction({ transaction, onClose, onSave }) {
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Synchronous re-entry guard for handleSave — prevents double-click from
+  // firing two parallel save flows (which could collide on the un-finalize
+  // DELETE). useRef updates synchronously, unlike setState.
+  const isSavingRef = useRef(false)
+
+  // Defensive reset whenever the modal opens for a new transaction. Prevents
+  // a previous failed save from leaving loading=true forever, which is what
+  // happened on 2026-05-27 (Save Changes button was stuck disabled and
+  // Betija had to fall back to SQL to un-finalize a triple-saved bank tx).
+  useEffect(() => {
+    setLoading(false)
+    setError(null)
+    isSavingRef.current = false
+  }, [transaction?.id])
 
   // Convenience flags driven by current form state vs the persisted state.
   const directionChanged = formData.transaction_type !== transaction.transaction_type
@@ -52,6 +66,10 @@ export function EditTransaction({ transaction, onClose, onSave }) {
   }
 
   const handleSave = async () => {
+    // Re-entry guard — drop the second click silently. Combined with the
+    // useEffect reset on transaction.id change above, this makes the stuck-
+    // disabled-button scenario impossible.
+    if (isSavingRef.current) return
     if (!formData.amount || !formData.transaction_date || !formData.description.trim()) {
       setError('All fields are required')
       return
@@ -77,6 +95,7 @@ export function EditTransaction({ transaction, onClose, onSave }) {
     }
 
     try {
+      isSavingRef.current = true
       setLoading(true)
       setError(null)
 
@@ -92,8 +111,20 @@ export function EditTransaction({ transaction, onClose, onSave }) {
       // -----------------------------------------------------------------
       // 1) Un-finalize path: delete linked expense rows + counterpart links
       // -----------------------------------------------------------------
+      // ORDER MATTERS:
+      //   a. Find all expenses tied to this bank_tx
+      //   b. NULL bank_transactions.matched_expense_id (else the FK
+      //      blocks the delete in step (d)). Same step also flips
+      //      status to 'unmatched' so the row goes back to Pending.
+      //   c. NULL counterpart linked_expense_id on inter-company pairs
+      //   d. DELETE the expense rows
+      // Without (b) running BEFORE (d), Postgres rejects the delete
+      // when matched_expense_id is RESTRICT-ed — which is exactly the
+      // case that's been blocking the save when there are 3 duplicate
+      // expenses linked to one bank tx (the matched_expense_id points
+      // at one of them).
       if (willUnfinalize) {
-        // Find every expense tied to this bank transaction. Single-line
+        // (a) Find every expense tied to this bank transaction. Single-line
         // saves produce one row; split saves produce N rows that all share
         // bank_transaction_id. Both cases are handled here.
         const { data: linkedExpenses, error: lookupErr } = await supabase
@@ -103,8 +134,25 @@ export function EditTransaction({ transaction, onClose, onSave }) {
         if (lookupErr) throw lookupErr
 
         if (linkedExpenses && linkedExpenses.length > 0) {
-          // Unlink any inter-company counterparts that point back at the
-          // expenses we're about to delete (avoids dangling FK references).
+          // (b) Clear matched_expense_id + flip status FIRST so the FK
+          // doesn't block the expense DELETE below. The full bank_tx
+          // update (amount/date/description) still runs at step 3, but
+          // doing the status + matched_expense_id reset here is the
+          // unblock that makes the delete legal.
+          const { error: preErr } = await supabase
+            .from('bank_transactions')
+            .update({
+              matched_expense_id: null,
+              status:             'unmatched',
+              updated_at:         new Date().toISOString(),
+            })
+            .eq('id', transaction.id)
+          if (preErr) throw preErr
+
+          const expIds = linkedExpenses.map(e => e.id)
+
+          // (c1) Break BIDIRECTIONAL inter-company links — null linked_expense_id
+          // on counterparts the OUR rows point to, AND on rows that point AT ours.
           const counterpartIds = linkedExpenses
             .map(e => e.linked_expense_id)
             .filter(Boolean)
@@ -115,8 +163,41 @@ export function EditTransaction({ transaction, onClose, onSave }) {
               .in('id', counterpartIds)
             if (unlinkErr) throw unlinkErr
           }
-          // Delete the expense rows.
-          const expIds = linkedExpenses.map(e => e.id)
+          // Reverse direction — other expenses (in either company) whose
+          // linked_expense_id points at one of OUR rows. Common case if the
+          // duplicates auto-created Espargos legs (V16 symmetric on-behalf).
+          const { error: revUnlinkErr } = await supabase
+            .from('expenses')
+            .update({ linked_expense_id: null, updated_at: new Date().toISOString() })
+            .in('linked_expense_id', expIds)
+          if (revUnlinkErr) throw revUnlinkErr
+
+          // (c2) Clear any invoice rows that auto-linked to one of these
+          // expenses on finalize (task #50 — Bank Parser auto-marks invoice
+          // paid). If invoices.matched_expense_id has a RESTRICT FK, the
+          // delete below would block without this. We swallow the error if
+          // the column doesn't exist on this DB.
+          const { error: invClearErr } = await supabase
+            .from('invoices')
+            .update({ matched_expense_id: null, date_paid: null, status: 'pending', updated_at: new Date().toISOString() })
+            .in('matched_expense_id', expIds)
+          if (invClearErr && invClearErr.code !== 'PGRST204') {
+            // PGRST204 = column not found — fine, skip. Anything else, surface it.
+            console.warn('Invoice unlink:', invClearErr)
+          }
+
+          // (c3) Clear any expense_deferrals rows pointing at our expenses.
+          // Same swallow-on-missing-table pattern.
+          const { error: defErr } = await supabase
+            .from('expense_deferrals')
+            .delete()
+            .in('expense_id', expIds)
+          if (defErr && defErr.code !== '42P01') {
+            // 42P01 = relation does not exist; skip.
+            console.warn('Deferrals clear:', defErr)
+          }
+
+          // (d) Delete the expense rows.
           const { error: delErr } = await supabase
             .from('expenses')
             .delete()
@@ -170,6 +251,7 @@ export function EditTransaction({ transaction, onClose, onSave }) {
       setError(err.message || 'Failed to save transaction')
     } finally {
       setLoading(false)
+      isSavingRef.current = false
     }
   }
 

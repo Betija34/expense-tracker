@@ -3,6 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { nextMainRefSeq, buildMainRef } from '../../lib/refUtils'
 import { EditTransaction } from './EditTransaction'
 import { FinalizeTransaction } from './FinalizeTransaction'
+import { useConfirm } from '../../lib/useConfirm'
 import './BankParser.css'
 
 // Helper: build a [start, nextMonthStart) date range so we can filter
@@ -27,6 +28,10 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   const [expensesMap, setExpensesMap] = useState(new Map()) // bank_tx_id → [linked expenses]
   const [uncategorizedIds, setUncategorizedIds] = useState({ out: null, in: null })
   const [bulkApproving, setBulkApproving] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  // React-based confirm dialog — bypasses Firefox's window.confirm()
+  // suppression. See useConfirm.js + ConfirmModal.jsx for details.
+  const { confirm, confirmModal } = useConfirm()
 
   // Load the Uncategorized category ids once (for the Bulk Approve workflow)
   useEffect(() => {
@@ -206,6 +211,100 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
   // Bulk Approve — verifies imported data is correct and creates expense rows
   // with category = "Uncategorized" for each selected unmatched bank tx.
   // The user then categorizes each one later via the ↻ Re-categorize button.
+  // ----- Per-row delete (PENDING bank transactions only) -----
+  // Extracted from the inline onClick so it's debuggable + reusable. The
+  // console.log at the top is intentional instrumentation: when the dev
+  // server / HMR gets into a state where button clicks silently no-op,
+  // we'll be able to SEE whether the handler is firing (log appears) or
+  // the click never reaches us (no log). Was previously inline and gave
+  // us no way to tell apart "handler ran and silently failed" vs "handler
+  // never ran" — see task #149.
+  const handleDeleteRow = async (transaction) => {
+    console.log('🗑 delete clicked', { id: transaction.id, vendor: transaction.description, status: transaction.status })
+    if (transaction.status === 'matched') {
+      alert('This row is already finalized. Un-finalize it first via the Edit button → set status to Pending.')
+      return
+    }
+    const ok = await confirm({
+      title: 'Delete this bank transaction?',
+      message:
+        `${transaction.description}\n` +
+        `€${Math.abs(transaction.amount).toFixed(2)} · ${transaction.transaction_date}\n\n` +
+        `This row will be removed from the Bank Parser. The source uploaded file is unaffected.\n\n` +
+        `This cannot be undone.`,
+      confirmText: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('bank_transactions')
+        .delete()
+        .eq('id', transaction.id)
+      if (error) throw error
+      loadTransactions()
+      if (onStatusChange) onStatusChange()
+    } catch (err) {
+      alert('Delete failed: ' + (err.message || err))
+    }
+  }
+
+  // ----- Bulk delete (PENDING bank transactions only) -----
+  // Mirrors handleBulkApprove's selection model but DELETES instead of
+  // approving. Skips any selected rows that are already finalized
+  // (matched). Useful for cleaning up duplicate imports — Betija's typical
+  // import is ~10 rows so eyeballing duplicates + selecting + bulk-deleting
+  // is a 2-click workflow.
+  const handleBulkDelete = async () => {
+    console.log('🗑 bulk delete clicked', { selectedCount: selectedTransactions.size })
+    const selected = transactions.filter(
+      t => selectedTransactions.has(t.id) && t.status !== 'matched'
+    )
+    const skippedMatched = transactions.filter(
+      t => selectedTransactions.has(t.id) && t.status === 'matched'
+    ).length
+    if (selected.length === 0) {
+      alert(skippedMatched > 0
+        ? `${skippedMatched} selected row(s) are already finalized — un-finalize them first (Edit → Pending). No pending rows to delete.`
+        : 'No rows selected.')
+      return
+    }
+    const previewLines = selected.slice(0, 5).map(t =>
+      `${t.transaction_date} · €${Math.abs(t.amount).toFixed(2)} · ${t.description.slice(0, 60)}`
+    )
+    if (selected.length > 5) previewLines.push(`…and ${selected.length - 5} more`)
+    const ok = await confirm({
+      title: `Delete ${selected.length} bank transaction${selected.length === 1 ? '' : 's'}?`,
+      message:
+        (skippedMatched > 0
+          ? `${skippedMatched} already-finalized row(s) will be skipped.\n\n`
+          : '') +
+        'This cannot be undone.',
+      details: previewLines,
+      confirmText: `Delete ${selected.length}`,
+      variant: 'danger',
+    })
+    if (!ok) return
+
+    setBulkDeleting(true)
+    let okCount = 0, errCount = 0
+    try {
+      const ids = selected.map(t => t.id)
+      const { error } = await supabase.from('bank_transactions').delete().in('id', ids)
+      if (error) throw error
+      okCount = ids.length
+      setSelectedTransactions(new Set())
+      loadTransactions()
+      if (onStatusChange) onStatusChange()
+      alert(`✓ Deleted ${okCount} bank transaction${okCount === 1 ? '' : 's'}.`)
+    } catch (err) {
+      console.error('Bulk delete error:', err)
+      alert(`Bulk delete failed: ${err.message || err}`)
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleBulkApprove = async () => {
     const selected = transactions.filter(
       t => selectedTransactions.has(t.id) && t.status === 'unmatched'
@@ -218,11 +317,15 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
       alert('"Uncategorized" categories not found. Did you run the V7 migration?')
       return
     }
-    if (!window.confirm(
-      `Approve ${selected.length} bank transaction${selected.length === 1 ? '' : 's'}?\n\n` +
-      `Each will be marked Uncategorized (data verified). You can categorize them later ` +
-      `using the ↻ Re-categorize button on each row.`
-    )) return
+    const ok = await confirm({
+      title: `Approve ${selected.length} bank transaction${selected.length === 1 ? '' : 's'}?`,
+      message:
+        'Each will be marked Uncategorized (data verified). You can categorize them later ' +
+        'using the ↻ Re-categorize button on each row.',
+      confirmText: `Approve ${selected.length}`,
+      variant: 'primary',
+    })
+    if (!ok) return
 
     setBulkApproving(true)
     let okCount = 0, errCount = 0
@@ -432,20 +535,39 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
               </li>
             </ul>
           </div>
-          <button
-            onClick={handleBulkApprove}
-            disabled={bulkApproving}
-            style={{
-              background: '#16a34a', color: 'white', border: 'none',
-              borderRadius: 4, padding: '8px 16px', fontSize: 13,
-              fontWeight: 600, cursor: bulkApproving ? 'wait' : 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {bulkApproving
-              ? '⏳ Approving…'
-              : `✓ Bulk Approve ${selectedCount} (Uncategorized)`}
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkApproving || bulkDeleting}
+              style={{
+                background: '#dc2626', color: 'white', border: 'none',
+                borderRadius: 4, padding: '8px 16px', fontSize: 13,
+                fontWeight: 600, cursor: bulkDeleting ? 'wait' : 'pointer',
+                whiteSpace: 'nowrap',
+                opacity: (bulkApproving || bulkDeleting) ? 0.6 : 1,
+              }}
+              title="Delete the selected pending bank transactions (skips any already finalized)"
+            >
+              {bulkDeleting
+                ? '⏳ Deleting…'
+                : `🗑 Bulk Delete ${selectedCount}`}
+            </button>
+            <button
+              onClick={handleBulkApprove}
+              disabled={bulkApproving || bulkDeleting}
+              style={{
+                background: '#16a34a', color: 'white', border: 'none',
+                borderRadius: 4, padding: '8px 16px', fontSize: 13,
+                fontWeight: 600, cursor: bulkApproving ? 'wait' : 'pointer',
+                whiteSpace: 'nowrap',
+                opacity: (bulkApproving || bulkDeleting) ? 0.6 : 1,
+              }}
+            >
+              {bulkApproving
+                ? '⏳ Approving…'
+                : `✓ Bulk Approve ${selectedCount} (Uncategorized)`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -530,36 +652,7 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
                       )}
                       {transaction.status !== 'matched' && (
                         <button
-                          onClick={async () => {
-                            // Row-level delete for PENDING bank transactions only.
-                            // Useful when OCR captures a duplicate or garbage row —
-                            // the user can remove it without deleting the whole file.
-                            // Matched rows go through the View Expenses delete flow
-                            // (which un-matches the bank tx first).
-                            if (!window.confirm(
-                              `Delete this bank transaction?\n\n` +
-                              `${transaction.description}\n` +
-                              `€${Math.abs(transaction.amount).toFixed(2)} · ${transaction.transaction_date}\n\n` +
-                              `This row will be removed from the Bank Parser. The source uploaded file is unaffected.\n\n` +
-                              `This cannot be undone.`
-                            )) return
-                            try {
-                              const { error } = await supabase
-                                .from('bank_transactions')
-                                .delete()
-                                .eq('id', transaction.id)
-                              if (error) throw error
-                              loadTransactions()
-                              // Bump parent refreshTrigger so the top
-                              // stat cards (Total / Pending / Finalized /
-                              // Finalization Status) recount via
-                              // BankParser.loadStats(). Without this the
-                              // table reloads but the cards stay stale.
-                              if (onStatusChange) onStatusChange()
-                            } catch (err) {
-                              alert('Delete failed: ' + (err.message || err))
-                            }
-                          }}
+                          onClick={() => handleDeleteRow(transaction)}
                           className="btn-edit"
                           title="Delete this row (only available before finalizing)"
                           style={{ background: '#dc2626', color: 'white', borderColor: '#dc2626' }}
@@ -650,6 +743,11 @@ export function TransactionTable({ selectedCompany, selectedMonth, selectedYear,
           }}
         />
       )}
+
+      {/* React-rendered confirm dialog — replaces window.confirm() so
+          Firefox can't suppress it. Mounted once at the component root;
+          imperative `confirm()` calls from handlers show/hide it. */}
+      {confirmModal}
     </div>
   )
 }
