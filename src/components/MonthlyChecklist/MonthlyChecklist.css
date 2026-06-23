@@ -286,6 +286,16 @@
 .cover-page-row.is-sub {
   padding-left: 22px;
 }
+.cover-page-sub-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+  padding-left: 22px;
+  margin: 4px 0 2px;
+}
+.cover-page-row.is-sub2 {
+  padding-left: 44px;
+}
 .cover-page-row input[type="checkbox"] {
   width: 18px;
   height: 18px;
@@ -346,6 +356,10 @@
   .cover-page-parent-label {
     font-size: 18px !important;
     margin-bottom: 10px !important;
+  }
+  .cover-page-sub-label {
+    font-size: 17px !important;
+    margin: 6px 0 4px !important;
   }
   .cover-page-row {
     padding: 8px 4px !important;

@@ -774,81 +774,7 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
           </label>
         </div>
 
-        {/* 2. Bank Statement — Current Account (always) + Mastercard Account
-              (Rabona only — Espargos has no Mastercard). */}
-        <div className="cover-page-section">
-          <div className="cover-page-parent-label">Bank Statement</div>
-          <label className="cover-page-row is-sub">
-            <input
-              type="checkbox"
-              checked={!!coverChecks.bank_current}
-              onChange={() => toggleCoverCheck('bank_current')}
-            />
-            <span className="cover-page-row-label">{selectedCompany} Current Account</span>
-          </label>
-          {selectedCompany !== 'Espargos' && (
-            <label className="cover-page-row is-sub">
-              <input
-                type="checkbox"
-                checked={!!coverChecks.bank_mastercard}
-                onChange={() => toggleCoverCheck('bank_mastercard')}
-              />
-              <span className="cover-page-row-label">{selectedCompany} Mastercard Account</span>
-            </label>
-          )}
-        </div>
-
-        {/* 3. Expenses — subheading with the expense chart + supporting
-              invoice/receipt copies. Both apply to every company. */}
-        <div className="cover-page-section">
-          <div className="cover-page-parent-label">Expenses</div>
-          <label className="cover-page-row is-sub">
-            <input
-              type="checkbox"
-              checked={!!coverChecks.expense_chart}
-              onChange={() => toggleCoverCheck('expense_chart')}
-            />
-            <span className="cover-page-row-label">{selectedCompany} Expense Chart</span>
-          </label>
-          <label className="cover-page-row is-sub">
-            <input
-              type="checkbox"
-              checked={!!coverChecks.invoice_receipt_copies}
-              onChange={() => toggleCoverCheck('invoice_receipt_copies')}
-            />
-            <span className="cover-page-row-label">Copies of invoices and receipts</span>
-          </label>
-        </div>
-
-        {/* 4. Reimbursements — one row per client with reimbursable expenses
-              this month. Pulled from clientExp (the same source the existing
-              dynamic_clients_with_expenses task uses). */}
-        <div className="cover-page-section">
-          <div className="cover-page-parent-label">Reimbursements — Client Expense Reports</div>
-          {clientExp.length === 0 ? (
-            <div className="cover-page-empty">
-              No clients with reimbursable expenses this month.
-            </div>
-          ) : (
-            clientExp.map(c => {
-              const key = `reimbursement:${c.client_name}`
-              return (
-                <label className="cover-page-row is-sub" key={key}>
-                  <input
-                    type="checkbox"
-                    checked={!!coverChecks[key]}
-                    onChange={() => toggleCoverCheck(key)}
-                  />
-                  <span className="cover-page-row-label">
-                    {c.client_name} Expense Report {monthName(selectedMonth)} {selectedYear} — {formatEuro(c.total)}
-                  </span>
-                </label>
-              )
-            })
-          )}
-        </div>
-
-        {/* 5. Invoicing — small subheading with two tickable sub-rows:
+        {/* 2. Invoicing — small subheading with two tickable sub-rows:
               (a) the physical Invoices Issued Chart/report, and
               (b) confirmation that the issued invoices have been sent by
                   email to the clients.
@@ -863,13 +789,22 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
             </div>
           ) : (
             <>
-              <label className="cover-page-row is-sub">
+              <div className="cover-page-sub-label">{selectedCompany} Invoices Issued Chart</div>
+              <label className="cover-page-row is-sub2">
                 <input
                   type="checkbox"
-                  checked={!!coverChecks.invoices_chart}
-                  onChange={() => toggleCoverCheck('invoices_chart')}
+                  checked={!!coverChecks.invoices_chart_previous}
+                  onChange={() => toggleCoverCheck('invoices_chart_previous')}
                 />
-                <span className="cover-page-row-label">{selectedCompany} Invoices Issued Chart</span>
+                <span className="cover-page-row-label">Previous Month's Chart</span>
+              </label>
+              <label className="cover-page-row is-sub2">
+                <input
+                  type="checkbox"
+                  checked={!!coverChecks.invoices_chart_current}
+                  onChange={() => toggleCoverCheck('invoices_chart_current')}
+                />
+                <span className="cover-page-row-label">Current Month's Chart</span>
               </label>
               <label className="cover-page-row is-sub">
                 <input
@@ -883,11 +818,32 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
           )}
         </div>
 
-        {/* 6. Travel Expenses — YK Log, BK Log, Prepaid (Rabona only —
+        {/* 3. Shareholder Reports — YK and BK */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Shareholder Reports</div>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.shareholder_yk}
+              onChange={() => toggleCoverCheck('shareholder_yk')}
+            />
+            <span className="cover-page-row-label">YK Shareholder Report</span>
+          </label>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.shareholder_bk}
+              onChange={() => toggleCoverCheck('shareholder_bk')}
+            />
+            <span className="cover-page-row-label">BK Shareholder Report</span>
+          </label>
+        </div>
+
+        {/* 4. Travel Expenses — YK Log, BK Log, Prepaid (Rabona only —
               Espargos shareholders don't travel under that company). */}
         {selectedCompany !== 'Espargos' && (
           <div className="cover-page-section">
-            <div className="cover-page-parent-label">Travel Expenses</div>
+            <div className="cover-page-parent-label">Travel Expense Reports</div>
             <label className="cover-page-row is-sub">
               <input
                 type="checkbox"
@@ -915,24 +871,77 @@ export function MonthlyChecklist({ selectedCompany, selectedMonth, selectedYear,
           </div>
         )}
 
-        {/* 6. Shareholder Reports — YK and BK */}
+        {/* 5. Bank Statement — Current Account (always) + Mastercard Account
+              (Rabona only — Espargos has no Mastercard). */}
         <div className="cover-page-section">
-          <div className="cover-page-parent-label">Shareholder Reports</div>
+          <div className="cover-page-parent-label">Bank Statement</div>
           <label className="cover-page-row is-sub">
             <input
               type="checkbox"
-              checked={!!coverChecks.shareholder_yk}
-              onChange={() => toggleCoverCheck('shareholder_yk')}
+              checked={!!coverChecks.bank_current}
+              onChange={() => toggleCoverCheck('bank_current')}
             />
-            <span className="cover-page-row-label">YK Shareholder Report</span>
+            <span className="cover-page-row-label">{selectedCompany} Current Account</span>
+          </label>
+          {selectedCompany !== 'Espargos' && (
+            <label className="cover-page-row is-sub">
+              <input
+                type="checkbox"
+                checked={!!coverChecks.bank_mastercard}
+                onChange={() => toggleCoverCheck('bank_mastercard')}
+              />
+              <span className="cover-page-row-label">{selectedCompany} Mastercard Account</span>
+            </label>
+          )}
+        </div>
+
+        {/* 6. Reimbursements — one row per client with reimbursable expenses
+              this month. Pulled from clientExp (the same source the existing
+              dynamic_clients_with_expenses task uses). */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Reimbursements — Client Expense Reports</div>
+          {clientExp.length === 0 ? (
+            <div className="cover-page-empty">
+              No clients with reimbursable expenses this month.
+            </div>
+          ) : (
+            clientExp.map(c => {
+              const key = `reimbursement:${c.client_name}`
+              return (
+                <label className="cover-page-row is-sub" key={key}>
+                  <input
+                    type="checkbox"
+                    checked={!!coverChecks[key]}
+                    onChange={() => toggleCoverCheck(key)}
+                  />
+                  <span className="cover-page-row-label">
+                    {c.client_name} Expense Report {monthName(selectedMonth)} {selectedYear} — {formatEuro(c.total)}
+                  </span>
+                </label>
+              )
+            })
+          )}
+        </div>
+
+        {/* 7. Expenses — subheading with the expense chart + supporting
+              invoice/receipt copies. Both apply to every company. */}
+        <div className="cover-page-section">
+          <div className="cover-page-parent-label">Expenses</div>
+          <label className="cover-page-row is-sub">
+            <input
+              type="checkbox"
+              checked={!!coverChecks.expense_chart}
+              onChange={() => toggleCoverCheck('expense_chart')}
+            />
+            <span className="cover-page-row-label">{selectedCompany} Expense Chart</span>
           </label>
           <label className="cover-page-row is-sub">
             <input
               type="checkbox"
-              checked={!!coverChecks.shareholder_bk}
-              onChange={() => toggleCoverCheck('shareholder_bk')}
+              checked={!!coverChecks.invoice_receipt_copies}
+              onChange={() => toggleCoverCheck('invoice_receipt_copies')}
             />
-            <span className="cover-page-row-label">BK Shareholder Report</span>
+            <span className="cover-page-row-label">Copies of invoices and receipts</span>
           </label>
         </div>
       </div>

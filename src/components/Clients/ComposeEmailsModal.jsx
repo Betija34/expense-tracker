@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import {
   groupInvoicesIntoEmails,
-  buildMailtoUrl,
+  buildOutlookComposeUrl,
 } from '../../lib/emailTemplateBuilder'
 
 // =====================================================================
@@ -16,9 +16,10 @@ import {
 //
 // Per card the user can:
 //   - tweak To / Cc / Subject / Body before sending
-//   - click "Open in Mail" — opens a mailto: link in her default mail
-//     client with everything prefilled (she attaches the PDFs by hand,
-//     since mailto: can't carry attachments per RFC 6068)
+//   - click "Open in Outlook" — opens Outlook on the web compose in a
+//     new tab with everything prefilled, composing from the company
+//     account (never the Mac's default/personal mail app). She attaches
+//     the PDFs by hand, since the compose deeplink can't carry them.
 //   - click "Mark as Sent" — sets email_sent_at = NOW() on each invoice
 //     in this card, removing it from the unsent queue
 //
@@ -136,8 +137,10 @@ export function ComposeEmailsModal({ companyId, selectedMonth, selectedYear, onC
 
   const openInMail = (client, card, cardIdx) => {
     const fields = effective(client, card, cardIdx)
-    const url    = buildMailtoUrl(fields)
-    window.location.href = url
+    const url    = buildOutlookComposeUrl(fields)
+    // Open Outlook on the web in a new tab so the email composes from the
+    // company account, never the Mac's default (personal) mail app.
+    window.open(url, '_blank', 'noopener')
     setCardFlag(client.id, cardIdx, 'opened', true)
   }
 
@@ -282,9 +285,9 @@ export function ComposeEmailsModal({ companyId, selectedMonth, selectedYear, onC
                           padding: '6px 12px', fontSize: 13, cursor: 'pointer',
                           fontWeight: 500,
                         }}
-                        title="Open this email in your default mail client. Attach PDFs by hand."
+                        title="Open this email in Outlook on the web (company account). Attach PDFs by hand."
                       >
-                        📧 Open in Mail
+                        📧 Open in Outlook
                       </button>
                       <button
                         type="button"
@@ -303,7 +306,7 @@ export function ComposeEmailsModal({ companyId, selectedMonth, selectedYear, onC
                     </div>
 
                     <small style={{ color: '#9ca3af', fontSize: 11, marginTop: 6, display: 'block' }}>
-                      💡 mailto: links can't carry attachments — attach the PDF(s) manually in your mail client before hitting Send.
+                      💡 Opens in Outlook on the web — attach the PDF(s) manually in the compose window before hitting Send.
                     </small>
                   </div>
                 )

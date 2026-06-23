@@ -376,3 +376,30 @@ export function buildMailtoUrl({ to, cc, subject, body }) {
   const qs     = params.toString().replace(/\+/g, '%20')   // spaces as %20, not +
   return `mailto:${encodeURIComponent(toPart)}${qs ? `?${qs}` : ''}`
 }
+
+// ---------------------------------------------------------------------
+// Outlook on the web compose URL builder
+// ---------------------------------------------------------------------
+// Build an Outlook "deeplink/compose" URL that prefills To, Cc, Subject
+// and Body and opens in a new browser tab. It composes from whatever
+// account is signed into Outlook on the web — the company
+// accounts@rabonaholdings.com account — regardless of the Mac's default
+// mail app. This deliberately bypasses mailto:/Apple Mail so company
+// invoices never go out from a personal account.
+//
+// Host is outlook.office.com (Microsoft 365 work/school accounts). If
+// the account were a personal outlook.com mailbox this would instead be
+// https://outlook.live.com/mail/0/deeplink/compose. Like mailto:, this
+// can't carry attachments — the PDF(s) are attached by hand in the
+// compose window before sending.
+export function buildOutlookComposeUrl({ to, cc, subject, body }) {
+  const params = new URLSearchParams()
+  const toPart = (to || '').trim()
+  if (toPart)          params.set('to', toPart)
+  if (cc?.trim())      params.set('cc', cc.trim())
+  if (subject?.trim()) params.set('subject', subject.trim())
+  if (body?.trim())    params.set('body', body)
+
+  const qs = params.toString().replace(/\+/g, '%20')   // spaces as %20, not +
+  return `https://outlook.office.com/mail/deeplink/compose${qs ? `?${qs}` : ''}`
+}

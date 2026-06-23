@@ -543,6 +543,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
       <PrepaidTravelExpensesPanel
         prepaidExpenses={prepaidExpenses}
         periods={periods}
+        selectedCompany={selectedCompany}
         selectedMonth={selectedMonth}
         selectedYear={selectedYear}
         onViewExpense={onViewExpense}
@@ -2113,8 +2114,20 @@ const inpStyle = {
 // shows with a "None this month." note when empty. Included in
 // print.
 // =============================================================
-function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedMonth, selectedYear, onViewExpense }) {
+function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany, selectedMonth, selectedYear, onViewExpense }) {
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
+
+  // Free-text comment for this panel, scoped per company + month and
+  // persisted in localStorage. Shows on screen and in the printout.
+  const COMMENT_KEY = `travelLogPrepaidComment:${selectedCompany}:${selectedYear}:${selectedMonth}`
+  const [comment, setComment] = useState('')
+  useEffect(() => {
+    try { setComment(localStorage.getItem(COMMENT_KEY) || '') } catch { setComment('') }
+  }, [COMMENT_KEY])
+  const handleCommentChange = (value) => {
+    setComment(value)
+    try { localStorage.setItem(COMMENT_KEY, value) } catch {}
+  }
 
   // Build a quick lookup of period.id → period for the assigned-trip
   // column. Some prepaid expenses come from the expected_travel_month
@@ -2236,6 +2249,29 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedMonth, s
           </table>
         </div>
       )}
+
+      {/* Free-text comment for this month's pre-paid travel. Persisted in
+          localStorage (per company + month) and included in the printout. */}
+      <div style={{ marginTop: 14 }}>
+        <label
+          htmlFor="prepaid-travel-comment"
+          style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#155e75', marginBottom: 4 }}
+        >
+          Comment
+        </label>
+        <textarea
+          id="prepaid-travel-comment"
+          value={comment}
+          onChange={(e) => handleCommentChange(e.target.value)}
+          rows={2}
+          placeholder="Add a comment about this month's pre-paid travel…"
+          style={{
+            width: '100%', boxSizing: 'border-box', font: 'inherit', fontSize: 13,
+            color: '#1f2937', padding: '6px 8px', border: '1px solid #0e7490',
+            borderRadius: 4, resize: 'vertical', background: '#fff',
+          }}
+        />
+      </div>
     </div>
   )
 }
