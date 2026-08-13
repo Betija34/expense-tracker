@@ -166,7 +166,24 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
     return { accountNumber: null, accountType: 'Unknown', company: null }
   }
 
-  // Extract transactions from OCR text
+  // Extract transactions from OCR text.
+  //
+  // Bank of Cyprus statements are laid out as a multi-column table:
+  //   Date | Description | Transaction type | Reference number | Debit | Credit | Balance | Value date
+  // The Reference number (a 9-digit integer on cash rows, e.g. 271022255) sits
+  // immediately BEFORE the Debit/Credit amount. OCR frequently loses the space
+  // between them ("270937251" + "1.000,00" -> "2709372511.000,00"), and the old
+  // greedy amount regex swallowed the reference number INTO the amount, so a
+  // 1.000,00 transaction was recorded as 2709372511000. That is the bug this
+  // extractor fixes.
+  //
+  // Amount sourcing, most reliable first:
+  //   1. The "<n>.<2> EUR" descriptor embedded in every description
+  //      (e.g. "1500.00 EUR", "49.54 EUR"). US period-decimal, always present,
+  //      and NEVER adjacent to the reference number -> immune to column merging.
+  //   2. Fallback: the first non-zero European-format Debit/Credit column value
+  //      ("1.500,00", "33,30"), matched with boundary guards (?<![\d.,]) /
+  //      (?![\d.,]) so a neighbouring reference number can never be absorbed.
   const extractTransactions = (text) => {
     const transactions = []
 
@@ -176,142 +193,68 @@ export function FileUpload({ selectedCompany, selectedMonth, selectedYear, onUpl
       return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
     }
 
-    // Helper: dedup check between Pattern 1/2 and Pattern 3.
-    // We KEY on date + abs(amount) + vendor-prefix + SOURCE-TEXT POSITION.
-    //
-    //   The position is critical: two LEGITIMATE transactions with the
-    //   same date+vendor+amount (e.g. two €300 BOC transfers on the same
-    //   day) appear at DIFFERENT positions in the OCR'd text and must
-    //   both be kept. A phantom duplicate — the same source row matched
-    //   by Pattern 1 (decimal "300,00") AND Pattern 3 ("N/A 30000") —
-    //   has OVERLAPPING positions and must be dropped.
-    //
-    //   The amount is also part of the key: two Wolt Greece orders on
-    //   19/03 with different amounts have different positions AND
-    //   different keys, so both are kept either way.
-    //
-    // matchStart/matchEnd are the regex match's [index, index + length]
-    // range in the source text. Two ranges overlap iff NOT(a.end < b.start
-    // OR a.start > b.end). If they overlap, treat as a phantom duplicate.
-    const alreadyCaptured = (date, vendor, amount, matchStart, matchEnd) => {
-      const prefix = vendor.trim().toLowerCase().substring(0, 15)
-      const targetAmount = Math.abs(amount).toFixed(2)
-      return transactions.some(t =>
-        t.date === date &&
-        Math.abs(t.amount).toFixed(2) === targetAmount &&
-        t.vendor.toLowerCase().startsWith(prefix) &&
-        // Position overlap → same source row matched twice (phantom).
-        // No overlap → two real source rows that just happen to share
-        // date+vendor+amount; keep both.
-        !(t._matchEnd < matchStart || t._matchStart > matchEnd)
-      )
-    }
-
-    // Helper: keyword-based direction detection. OCR frequently drops minus
-    // signs and there's no reliable visual cue (color) in the text — so we
-    // look for direction-indicating words in the description.
-    //   • "deposit", "refund", "credit", "received", "transfer from",
-    //     "incoming", "payment in", "inward", "credit transfer" → INCOMING
-    //   • everything else → OUTGOING (safer default for card/account flows)
-    // User can always flip via Edit Transaction in Bank Parser before
-    // finalizing if a row is mis-classified.
-    //
-    // Note: "inward" is the BoC term for an incoming wire/transfer
-    // (e.g. "INWARD CY260407044566 by 613 INVESTMENT…"). Add new banking
-    // dialect terms here as they show up in real statements.
+    // Keyword-based direction detection. OCR drops minus signs and there is no
+    // reliable visual cue in text, so infer from description wording.
+    //   deposit / refund / received / transfer from / inward ... -> INCOMING (credit)
+    //   everything else -> OUTGOING (debit, the safe default for card flows)
+    // User can flip any row via Edit Transaction before finalizing.
     const detectDirection = (vendor) => {
       const v = vendor.toLowerCase()
       const incomingMarkers = /\b(deposit|refund|received|credit\s|credit transfer|transfer from|incoming|payment in|inward)\b/i
       return incomingMarkers.test(v) ? 'credit' : 'debit'
     }
 
-    // ---------- Pattern 1 & 2: European decimal format (preferred) ----------
-    // DD/MM/YYYY or DD-MM-YYYY + description + amount like 8.000,00 or -35,45.
-    // Used when OCR preserves the comma decimal.
-    const decimalPatterns = [
-      /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
-      /(\d{2}-\d{2}-\d{4})\s+(.+?)\s+([-]?[\d.]+,\d{2})/gi,
-    ]
-    for (const pattern of decimalPatterns) {
-      let match
-      while ((match = pattern.exec(text)) !== null) {
-        const [, dateStr, vendor, amountStr] = match
-        if (!vendor || vendor.trim().length === 0) continue
-        const parsedAmount = parseFloat(amountStr.replace(/\./g, '').replace(',', '.'))
-        const isoDate = toISODate(dateStr)
-        const matchStart = match.index
-        const matchEnd   = match.index + match[0].length
-        if (alreadyCaptured(isoDate, vendor, parsedAmount, matchStart, matchEnd)) continue
-        // Apply keyword-based direction (overrides OCR'd sign which is often
-        // dropped). If the keyword detection says outgoing but the OCR'd sign
-        // was already negative, both agree — leave it. If they disagree,
-        // trust the keyword.
-        const dir = detectDirection(vendor)
-        const signedAmount = dir === 'credit'
-          ? Math.abs(parsedAmount)
-          : -Math.abs(parsedAmount)
-        transactions.push({
-          date: isoDate,
-          vendor: vendor.trim(),
-          amount: signedAmount,
-          currency: 'EUR',
-          type: dir,
-          status: 'pending',
-          _matchStart: matchStart,
-          _matchEnd:   matchEnd,
-        })
-      }
+    // "<n>.<2> EUR" descriptor — primary, most reliable magnitude.
+    const EUR_DESCRIPTOR = /(?<![\d.,])(\d+\.\d{2})\s*EUR\b/i
+    // European Debit/Credit column value, guarded against reference-number merge.
+    const EURO_COLUMN = /(?<![\d.,])(\d{1,3}(?:\.\d{3})*,\d{2})(?![\d.,])/g
+    const parseEuro = (s) => parseFloat(s.replace(/\./g, '').replace(',', '.'))
+
+    // Magnitude for a single statement line.
+    const amountFrom = (line) => {
+      const desc = line.match(EUR_DESCRIPTOR)
+      if (desc) return parseFloat(desc[1])
+      const euros = [...line.matchAll(EURO_COLUMN)]
+        .map(m => parseEuro(m[1]))
+        .filter(v => v !== 0)   // 0,00 is the empty Debit/Credit cell, not the amount
+      return euros.length ? euros[0] : null
     }
 
-    // ---------- Pattern 3: decimal-stripped fallback ----------
-    // When OCR drops the comma decimal (and often the negative sign), each
-    // row in the source statement comes out like:
-    //   11/03/2026 GT GET TAXI SYSTEMS LT TEL AVIV-JAF ISR 125.60... N/A 3545
-    //                                                                ↑
-    //                                       trailing integer = amount × 100
-    // We rely on the "N/A" reference-number column as an anchor: any integer
-    // right after "N/A" is the amount with the last 2 digits being cents.
-    //
-    // The negative lookahead (?!,\d) prevents this pattern from grabbing the
-    // INTEGER PART of a comma-decimal amount. E.g. for "N/A 101,80" we do NOT
-    // want to match "101" and treat it as 1.01 cents — Pattern 1 already
-    // captured the full 101,80 → 101.80 from that same line. Without this
-    // guard, Pattern 3 produces a phantom €1.01 row alongside the real €101.80.
-    //
-    // Direction comes from the keyword detector — "Cash deposit" lines come
-    // out as credit (incoming), everything else defaults to debit.
-    const integerAmountPattern = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(.+?)\s+N\/A\s+(\d+)(?!,\d)\b/gi
-    let m3
-    while ((m3 = integerAmountPattern.exec(text)) !== null) {
-      const [, dateStr, vendor, intStr] = m3
-      if (!vendor || vendor.trim().length === 0) continue
-      const intNum = parseInt(intStr, 10)
-      if (Number.isNaN(intNum)) continue
-      const absAmount = intNum / 100
-      const isoDate = toISODate(dateStr)
-      const matchStart = m3.index
-      const matchEnd   = m3.index + m3[0].length
-      // Phantom dedup: this Pattern 3 match shouldn't overlap a Pattern 1/2
-      // match that already captured the same source row. Different position
-      // → real separate transaction; keep it.
-      if (alreadyCaptured(isoDate, vendor, absAmount, matchStart, matchEnd)) continue
-      const dir = detectDirection(vendor)
-      const signedAmount = dir === 'credit' ? absAmount : -absAmount
+    // Process line by line: each transaction row carries a date and its amount
+    // on the same line in the OCR output.
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim()
+      const dateMatch = line.match(/(\d{1,2}\/\d{1,2}\/\d{4})/)
+      if (!dateMatch) continue
+
+      const amount = amountFrom(line)
+      if (amount === null || Number.isNaN(amount)) continue
+
+      const isoDate = toISODate(dateMatch[1])
+
+      // Description = line with the dates and the numeric Debit/Credit columns
+      // stripped out.
+      const vendor = line
+        .replace(/\d{1,2}\/\d{1,2}\/\d{4}/g, ' ')
+        .replace(/(?<![\d.,])\d{1,3}(?:\.\d{3})*,\d{2}(?![\d.,])/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120)
+
+      const dir = detectDirection(vendor || line)
+      const signedAmount = dir === 'credit' ? Math.abs(amount) : -Math.abs(amount)
+
       transactions.push({
         date: isoDate,
-        vendor: vendor.trim(),
+        vendor: vendor,
         amount: signedAmount,
         currency: 'EUR',
         type: dir,
         status: 'pending',
-        _matchStart: matchStart,
-        _matchEnd:   matchEnd,
       })
     }
 
-    // Strip internal position-tracking fields before returning — they're
-    // only needed by alreadyCaptured() during parsing.
-    return transactions.map(({ _matchStart, _matchEnd, ...rest }) => rest)
+    return transactions
   }
 
   // Process image with OCR

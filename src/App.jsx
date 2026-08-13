@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
+import { Login } from './components/Login/Login'
 import { BankParser } from './components/BankParser/BankParser'
 import { ViewExpenses } from './components/ViewExpenses/ViewExpenses'
 import { AddExpense } from './components/AddExpense/AddExpense'
@@ -14,6 +15,14 @@ import { LockBanner } from './components/LockBanner/LockBanner'
 import './App.css'
 
 function App() {
+  // ---- Auth gate ----------------------------------------------------------
+  // The system is private: only a signed-in user may load any data. `session`
+  // is null until a valid Supabase session exists. `authChecked` flips true
+  // once we've asked Supabase whether a session is already stored (so we don't
+  // flash the login screen for an already-logged-in user on refresh).
+  const [session, setSession] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
   // `companies` holds the full [{ id, name }] rows so child components
   // (like LockContext) can do per-company lookups by id. The top-bar
   // dropdown only needs the names, but ids are required for FKs.
@@ -34,8 +43,28 @@ function App() {
     setCurrentTab('view-expenses')
   }
 
-  // Load companies on mount
+  // Track the Supabase auth session. Runs once on mount, then listens for
+  // sign-in / sign-out events for the rest of the app's life.
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      setAuthChecked(true)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s)
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    // onAuthStateChange sets session to null → the Login screen renders.
+  }
+
+  // Load companies once the user is signed in. Gated on `session` because,
+  // with Row-Level Security on, an anonymous request returns nothing.
+  useEffect(() => {
+    if (!session) return
     const loadCompanies = async () => {
       try {
         setLoading(true)
@@ -59,7 +88,7 @@ function App() {
     }
 
     loadCompanies()
-  }, [])
+  }, [session])
 
   // If the user is on a tab that's hidden for the newly selected company
   // (Client Report or Travel Log when on Espargos), bounce back to Dashboard.
@@ -68,6 +97,16 @@ function App() {
       setCurrentTab('dashboard')
     }
   }, [selectedCompany, currentTab])
+
+  // Still checking for an existing session — show nothing jarring.
+  if (!authChecked) {
+    return <div className="loading">Loading…</div>
+  }
+
+  // Not signed in → the only thing a visitor can see is the login screen.
+  if (!session) {
+    return <Login />
+  }
 
   if (loading) {
     return <div className="loading">Loading Rabona Expense Tracker...</div>
@@ -126,6 +165,8 @@ function App() {
               ))}
             </select>
           </div>
+
+          <button onClick={handleSignOut} className="signout-btn">Sign out</button>
         </div>
 
         {/* Tabs */}
@@ -172,10 +213,6 @@ function App() {
           >
             Shareholder Report
           </button>
-          {/* Travel Log tab — hidden for Espargos since shareholders don't currently
-              travel for Espargos. To re-enable, remove the `selectedCompany !== 'Espargos' &&`
-              condition (and similarly the Allowances hide in ShareholderReport.jsx).
-              All travel_periods data stays in the DB regardless of this UI hide. */}
           {selectedCompany !== 'Espargos' && (
             <button
               className={`tab-button ${currentTab === 'travel' ? 'active' : ''}`}
@@ -184,10 +221,6 @@ function App() {
               Travel Log
             </button>
           )}
-          {/* Client Report tab — hidden for Espargos since it doesn't currently
-              reimburse clients. To re-enable for Espargos later, remove the
-              `selectedCompany !== 'Espargos' &&` condition (and similarly in
-              the Reimbursable Tracking section of Dashboard.jsx). */}
           {selectedCompany !== 'Espargos' && (
             <button
               className={`tab-button ${currentTab === 'client' ? 'active' : ''}`}
