@@ -76,10 +76,13 @@ export function parseInvoiceNumbers(raw) {
 //                 (includes numbers that ONLY match a pro_forma or
 //                 credit_note — those count as missing for payment
 //                 purposes)
-//   • conflicts — typed numbers that match MORE THAN ONE payable
-//                 invoice (data anomaly — shouldn't happen in normal
-//                 use, but surface it so the user can fix the duplicate
-//                 numbering in the Invoicing tab)
+//   • conflicts — typed numbers that match payable invoices belonging
+//                 to MORE THAN ONE client (a real numbering mistake —
+//                 surface it so the user can fix it in the Invoicing
+//                 tab). Several rows sharing a number for the SAME
+//                 client are NOT a conflict: that is one issued
+//                 document covering several months (V27 per-month
+//                 splits), and every one of its rows gets marked paid.
 // ---------------------------------------------------------------------
 export async function findInvoicesByNumbers({ supabase, companyId, invoiceNumbers }) {
   if (!supabase || !companyId || !invoiceNumbers?.length) {
@@ -112,7 +115,24 @@ export async function findInvoicesByNumbers({ supabase, companyId, invoiceNumber
     if (payable.length === 0) {
       missing.push(num)
     } else if (payable.length > 1) {
-      conflicts.push({ number: num, rows: payable })
+      // Several rows carry this number. Two very different situations:
+      //
+      //   a) ONE issued document covering several months for the SAME
+      //      client — e.g. an August invoice billing the June and July
+      //      fees. V27 stores those as one invoice row per source month
+      //      (represents_period_*), all sharing the same invoice_number,
+      //      because VAT/VIES treats each month's fee as its own
+      //      service. Legitimate: the client pays the document once, so
+      //      every row belonging to it must be marked paid together.
+      //
+      //   b) The same number reused across DIFFERENT clients — a real
+      //      numbering mistake. Keep blocking so the user can fix it.
+      const clientIds = new Set(payable.map(r => r.client_id))
+      if (clientIds.size === 1) {
+        found.push(...payable)
+      } else {
+        conflicts.push({ number: num, rows: payable })
+      }
     } else {
       found.push(payable[0])
     }
@@ -188,7 +208,8 @@ export function buildInvoiceMatchError({ missing, conflicts }) {
     parts.push(
       `Invoice ${conflicts.length === 1 ? 'number' : 'numbers'} ` +
       conflicts.map(c => `"${c.number}"`).join(', ') +
-      ` ${conflicts.length === 1 ? 'matches' : 'match'} more than one invoice in the Invoicing tab. Fix the duplicate numbering there before saving.`
+      ` ${conflicts.length === 1 ? 'is' : 'are'} used by more than one CLIENT in the Invoicing tab. Fix the duplicate numbering there before saving.` +
+      ` (Several rows under one client sharing a number is fine — that's one invoice covering several months.)`
     )
   }
   return parts.length ? parts.join(' ') : null
