@@ -19,7 +19,8 @@
 // Used by:
 //   - BankParser/FinalizeTransaction.jsx (incoming Client Payment finalize)
 //   - AddExpense.jsx (manual reimbursable cash entries)
-//   - ViewExpenses/EditManualExpenseModal.jsx (TBD)
+//   - ViewExpenses/EditManualExpenseModal.jsx (edit reimbursable client)
+//   - BankParser/FinalizeTransaction.jsx split portions (incoming shared client + outgoing client portion)
 // =====================================================================
 
 /**

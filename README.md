@@ -1,87 +1,65 @@
-# Rabona Expense Tracking System - Rebuild
+# Rabona Expense Tracking System
 
-**Status:** 🚀 In Progress  
-**Timeline:** May 10 - May 24, 2026  
-**Tech Stack:** React + Node.js + Supabase (PostgreSQL)
+**Status:** 🟢 Live & private
+**Stack:** React + Vite · Supabase (PostgreSQL) · deployed on Vercel
 
----
-
-## Overview
-
-Complete rebuild of the Rabona Holdings & Espargos expense tracking system with:
-- ✅ Cloud-based data (Supabase PostgreSQL)
-- ✅ Automatic daily backups
-- ✅ Multi-device access
-- ✅ Full Git version history
-- ✅ Daily approval workflow
-- ✅ Zero unprotected deletions
+Expense, invoicing, and travel tracking for **Rabona Holdings** and **Espargos**.
 
 ---
 
-## How This Rebuild Works
+## Using the app
 
-### Daily Workflow
-1. **Development:** Claude builds features, makes commits
-2. **End of Day:** `DAILY_SUMMARY_[DATE].md` created with changes
-3. **Review:** You review additions, changes, and pending deletions
-4. **Approval:** You say YES (delete permanently) or NO (keep for now)
-5. **Commit:** Approved state saved to Git
-6. **Next Day:** Work continues from clean, approved state
+**Live URL:** https://expense-tracker-six-neon-72.vercel.app
 
-### Safety Features
-- **Git:** Full history, instant revert capability
-- **Database:** Automatic backups, point-in-time recovery
-- **Approval Gates:** Nothing deleted without your sign-off
-- **Audit Trail:** Every change documented
+Open the link, sign in with your email + password, and you're in — it works from any device (laptop, phone, another computer). No local setup is needed for everyday use.
+
+> **If the app shows "failed to load" everywhere:** the Supabase project has auto-paused (this happens on the free plan after ~7 days of no use). Open the Supabase dashboard and click **Resume project** — it's free and takes about a minute. Upgrading Supabase to Pro stops the pauses (optional).
 
 ---
 
-## Getting Started
+## Security
 
-### Prerequisites
-1. **Supabase Account** (free): https://supabase.com
-2. **Node.js** 16+ (if running locally)
-3. **Git** (for version control)
-
-### Setup (Once)
-1. Create Supabase project at https://supabase.com
-2. Provide API credentials to Claude
-3. Claude will initialize database schema
-
-### Daily Use
-1. Claude works on features
-2. Review `DAILY_SUMMARY_[DATE].md` each evening
-3. Approve/reject deletions
-4. Next day continues from clean state
+The system is private:
+- **Login:** Supabase Auth. There is one account; new sign-ups are disabled.
+- **Database:** Row-Level Security is enabled on every table, so data can only be read or written by a signed-in user (see `DATABASE_SCHEMA_V35_MIGRATION.sql`).
 
 ---
 
-## Key Files
+## What's inside
 
-- **REBUILD_PLAN.md** - Architecture and phases
-- **CHANGELOG.md** - High-level version history
-- **DAILY_SUMMARY_[DATE].md** - Daily work summaries (created each day)
-- **.git/** - Git repository (full change history)
+Tabs: **Dashboard**, **Monthly Checklist**, **Bank Statement Parser**, **Add Expense**, **View Expenses**, **Client Invoicing**, **Shareholder Report**, **Travel Log**, **Client Report**.
 
----
-
-## What Not to Do
-
-❌ Manually edit the database (use the app)  
-❌ Delete .git folder (loses all history)  
-❌ Edit daily summaries after approval  
-❌ Skip reviewing daily summaries  
+Highlights include multi-file bank-statement import with OCR, client invoicing with a Statement-of-Account (.xlsx) generator, month locking (closed periods), and a Travel Log with per-trip pre-paid tracking and month-deferral history.
 
 ---
 
-## Contact & Questions
+## Running locally (only for development)
 
-During rebuild, all work is documented in daily summaries. Review and approve at end of each day.
+Local dev is needed only when changing the code — not for normal use.
 
-**Backup Schedule:**
-- Daily Git commits
-- Weekly CSV exports
-- Supabase automatic backups (daily)
+```
+cd "path/to/Rabona expense tracking sistem"
+npm install   # first time only
+npm run dev
+```
+
+Then open the URL it prints (http://localhost:3000). Leave the terminal open; closing it stops the dev server.
+
+## Deploying changes
+
+The site auto-deploys when you push to the `main` branch on GitHub (`Betija34/expense-tracker`):
+
+```
+git add -A && git commit -m "your message" && git push
+```
+
+Vercel rebuilds within a minute or two.
 
 ---
 
+## Files
+
+- `src/` — the application (React components + `lib/` helpers)
+- `DATABASE_SCHEMA*.sql` — the database schema and its numbered migrations
+- `CHANGELOG.md`, `SETUP.md`, `QUICK_START.md`, `RUN_LOCALLY.md` — current reference docs
+- `docs_archive/` — historical daily/session summaries, feature notes, and status files (kept for reference, not needed day-to-day)
