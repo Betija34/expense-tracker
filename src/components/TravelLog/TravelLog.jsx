@@ -2023,14 +2023,39 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
           here by an explicit manual assignment (so the user knows the
           date-match would otherwise place it elsewhere). The same row
           also carries the "View / Edit →" jump-out to View Expenses. */}
+      {/* Trip (manual) line — hideable per expense via hide_trip_line.
+          Shown by default: an interactive control row (screen only) plus a
+          static "Trip: …" line that PRINTS. Hidden: only a small "Show trip
+          line" button (screen only); nothing prints. The choice is saved on
+          the expense, so it persists across devices. */}
       {(onAssignToPeriod || onViewExpense) && (
-        <TripAssignmentRow
-          expense={expense}
-          currentPeriodId={currentPeriodId}
-          allPeriods={allPeriods}
-          onAssignToPeriod={onAssignToPeriod}
-          onViewExpense={onViewExpense}
-        />
+        expense.hide_trip_line ? (
+          <button
+            type="button"
+            className="no-print"
+            onClick={() => onUpdate({ hide_trip_line: false })}
+            title="Show the trip assignment line again"
+            style={{ marginTop: 8, padding: '3px 10px', fontSize: 11, border: '1px dashed #fde68a', background: '#fffbeb', color: '#92400e', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+          >
+            📌 Show trip line
+          </button>
+        ) : (
+          <Fragment>
+            {/* Print-only static representation of the current assignment
+                (the interactive row below is screen-only). */}
+            <div className="print-only" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #fde68a', fontSize: 12, color: '#374151' }}>
+              Trip: {tripLabelFor(expense, allPeriods)}
+            </div>
+            <TripAssignmentRow
+              expense={expense}
+              currentPeriodId={currentPeriodId}
+              allPeriods={allPeriods}
+              onAssignToPeriod={onAssignToPeriod}
+              onViewExpense={onViewExpense}
+              onHide={() => onUpdate({ hide_trip_line: true })}
+            />
+          </Fragment>
+        )
       )}
     </div>
   )
@@ -2043,7 +2068,22 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
 // destination), plus an "(auto — by date)" option that clears
 // assigned_period_id.
 // =============================================================
-function TripAssignmentRow({ expense, currentPeriodId, allPeriods = [], onAssignToPeriod, onViewExpense }) {
+// Static one-line label of an expense's current trip assignment. Used for the
+// print-only version of the Trip line (the interactive dropdown is screen-only).
+function tripLabelFor(expense, allPeriods = []) {
+  if (!expense.assigned_period_id) return 'Auto (matched by date)'
+  const p = allPeriods.find(pp => pp.id === expense.assigned_period_id)
+  if (!p) return 'Manually assigned'
+  const short = (iso) => {
+    if (!iso) return ''
+    const [, m, d] = iso.split('-')
+    return `${d}/${m}`
+  }
+  const dest = (p.destination || '').trim()
+  return `${p.shareholder_code || ''} · ${short(p.from_date)}–${short(p.to_date)}${dest ? ` · ${dest}` : ''}`.trim()
+}
+
+function TripAssignmentRow({ expense, currentPeriodId, allPeriods = [], onAssignToPeriod, onViewExpense, onHide }) {
   const isManual = !!expense.assigned_period_id
   const fmtShort = (iso) => {
     if (!iso) return ''
@@ -2114,6 +2154,19 @@ function TripAssignmentRow({ expense, currentPeriodId, allPeriods = [], onAssign
           </>
         )}
       </div>
+
+      {/* Hide the whole trip line (persists on the expense; also drops it
+          from print). Un-hide via the "Show trip line" button. */}
+      {onHide && (
+        <button
+          type="button"
+          onClick={onHide}
+          title="Hide this trip line (also hides it in print)"
+          style={{ padding: '2px 8px', fontSize: 11, border: '1px solid #d1d5db', background: '#fff', color: '#6b7280', borderRadius: 4, cursor: 'pointer' }}
+        >
+          🙈 Hide line
+        </button>
+      )}
 
       {/* Right side — jump to View Expenses for editing */}
       {onViewExpense && (
