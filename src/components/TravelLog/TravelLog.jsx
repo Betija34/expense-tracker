@@ -235,6 +235,18 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
   // -------------------------------------------------------------
   // Update expense travel-detail fields (where / who / why)
   // -------------------------------------------------------------
+  const updatePrepaidExpense = async (expenseId, patch) => {
+    const { error } = await supabase
+      .from('expenses')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', expenseId)
+    if (error) {
+      alert('Failed to save: ' + error.message)
+      return
+    }
+    setPrepaidExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, ...patch } : e))
+  }
+
   const updateExpenseDetails = async (expenseId, patch) => {
     const { error } = await supabase
       .from('expenses')
@@ -546,6 +558,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         selectedCompany={selectedCompany}
         selectedMonth={selectedMonth}
         selectedYear={selectedYear}
+        onUpdateExpense={updatePrepaidExpense}
         onViewExpense={onViewExpense}
       />
 
@@ -781,6 +794,11 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods
     </div>
   )
 
+  // Empty notes stay hidden (screen + print); typing any text shows the
+  // note. `adding` reveals the editor to type a new one.
+  const [adding, setAdding] = useState(false)
+  const hasNote = note.trim().length > 0
+
   return (
     <div style={{
       padding: '10px 12px',
@@ -864,36 +882,57 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods
         </Cell>
       </div>
 
-      {/* One freestyle Notes textarea — same data model as the main
-          TravelExpenseCard so notes entered here flow straight into
-          reports once a trip is assigned. */}
-      <div style={{ marginTop: 8 }}>
-        <label style={{
-          display: 'block', fontSize: 11, color: '#3730a3',
-          fontWeight: 600, marginBottom: 4,
-        }}>
-          Notes
-        </label>
-        <AutoGrowTextarea
-          rows={2}
-          placeholder="e.g. Flight booked in advance for July sales conference in Athens. BK + YK."
-          value={note}
-          onChange={(ev) => setNote(ev.target.value)}
-          onBlur={commitNote}
+      {/* Notes — only present when it has text; empty notes are hidden
+          (screen + print) and collapse to a small "Add note" button. */}
+      {(hasNote || adding) ? (
+        <div className={`travel-note-block${hasNote ? '' : ' no-print'}`} style={{ marginTop: 8 }}>
+          <label style={{
+            display: 'block', fontSize: 11, color: '#3730a3',
+            fontWeight: 600, marginBottom: 4,
+          }}>
+            Notes
+          </label>
+          <AutoGrowTextarea
+            rows={2}
+            autoFocus={adding && !hasNote}
+            placeholder="e.g. Flight booked in advance for July sales conference in Athens. BK + YK."
+            value={note}
+            onChange={(ev) => setNote(ev.target.value)}
+            onBlur={() => { commitNote(); if (!note.trim()) setAdding(false) }}
+            style={{
+              width: '100%',
+              padding: '6px 8px',
+              border: '1px solid #c7d2fe',
+              borderRadius: 4,
+              fontSize: 13,
+              fontFamily: 'inherit',
+              resize: 'vertical',
+              boxSizing: 'border-box',
+              background: '#f5f7ff',
+              overflow: 'hidden',
+            }}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="no-print"
+          onClick={() => setAdding(true)}
           style={{
-            width: '100%',
-            padding: '6px 8px',
-            border: '1px solid #c7d2fe',
-            borderRadius: 4,
-            fontSize: 13,
-            fontFamily: 'inherit',
-            resize: 'vertical',
-            boxSizing: 'border-box',
+            marginTop: 8,
+            padding: '3px 10px',
+            fontSize: 11,
+            border: '1px dashed #c7d2fe',
             background: '#f5f7ff',
-            overflow: 'hidden',
+            color: '#3730a3',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontWeight: 600,
           }}
-        />
-      </div>
+        >
+          + Add note
+        </button>
+      )}
 
       {/* "Assign to trip" dropdown — the primary tool for moving a
           pre-paid / off-window expense into a specific trip card.
@@ -2143,7 +2182,132 @@ const inpStyle = {
 // shows with a "None this month." note when empty. Included in
 // print.
 // =============================================================
-function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany, selectedMonth, selectedYear, onViewExpense }) {
+// One row of the "Pre-paid in Earlier Months" panel: the expense data row
+// plus an always-visible Note row. The Related Trip cell shows the chain of
+// planned months (from expected_travel_month) and a "Defer to a later month"
+// picker that APPENDS a month (keeping history), so the expense then also
+// appears under that later month. Screen-only controls (the defer picker and
+// the remove ✕) are no-print; the month chain and the note print.
+function PrepaidEarlierRow({ e, periods, selectedMonth, selectedYear, onUpdateExpense, onViewExpense, tripCellFor }) {
+  const tokens = (e.expected_travel_month || '').split(',').map(s => s.trim()).filter(Boolean)
+  const sortedTokens = [...tokens].sort()
+
+  // Per-expense note (always visible). Stored on the expense (travel_why) so
+  // the same note shows in every month this expense appears in.
+  const [note, setNote] = useState(e.travel_why || '')
+  useEffect(() => { setNote(e.travel_why || '') }, [e.travel_why])
+  const commitNote = () => {
+    if ((note || '') === (e.travel_why || '')) return
+    onUpdateExpense && onUpdateExpense(e.id, { travel_why: note || null })
+  }
+
+  // "Defer to" options — the next 18 months from the selected month, minus
+  // ones already planned.
+  const deferOptions = []
+  {
+    const d = new Date(selectedYear, selectedMonth - 1, 1)
+    for (let i = 0; i < 18; i++) {
+      const tok = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      if (!tokens.includes(tok)) deferOptions.push(tok)
+      d.setMonth(d.getMonth() + 1)
+    }
+  }
+  const addMonth = (tok) => {
+    if (!tok || tokens.includes(tok)) return
+    onUpdateExpense && onUpdateExpense(e.id, { expected_travel_month: [...tokens, tok].sort().join(',') })
+  }
+  const removeMonth = (tok) => {
+    onUpdateExpense && onUpdateExpense(e.id, { expected_travel_month: tokens.filter(t => t !== tok).join(',') || null })
+  }
+
+  const ref = e.reference_number || '—'
+
+  return (
+    <Fragment>
+      <tr>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none' }}>{fmtDate(e.date)}</td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none', fontFamily: 'monospace' }}>
+          {onViewExpense ? (
+            <button
+              onClick={() => onViewExpense(e.id)}
+              style={{
+                background: 'none', border: 'none', padding: 0,
+                color: '#2563eb', cursor: 'pointer', fontFamily: 'monospace',
+                fontSize: 13, textDecoration: 'underline',
+              }}
+              title="View / edit this expense"
+            >
+              {ref}
+            </button>
+          ) : ref}
+        </td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none' }}>{e.vendor || '—'}</td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none' }}>
+          {e.description || (e.expense_categories?.name || '—')}
+        </td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none', textAlign: 'right', fontFamily: 'monospace' }}>
+          {fmt(e.amount)}
+        </td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none' }}>{e.shareholder_code || '—'}</td>
+        <td style={{ ...prepaidTdStyle, borderBottom: 'none' }}>
+          {sortedTokens.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+              {sortedTokens.map((tok, i) => (
+                <span key={tok} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  {i > 0 && <span style={{ color: '#9ca3af' }}>→</span>}
+                  <span style={{
+                    background: i === sortedTokens.length - 1 ? '#0e7490' : '#e5e7eb',
+                    color: i === sortedTokens.length - 1 ? '#fff' : '#374151',
+                    padding: '1px 6px', borderRadius: 999, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+                  }}>
+                    {formatMonthYear(tok)}
+                  </span>
+                  <button
+                    type="button" className="no-print"
+                    onClick={() => removeMonth(tok)}
+                    title="Remove this planned month"
+                    style={{ border: 'none', background: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: 11, padding: 0 }}
+                  >✕</button>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span>{tripCellFor(e)}</span>
+          )}
+          <select
+            className="no-print"
+            value=""
+            onChange={(ev) => addMonth(ev.target.value)}
+            style={{ marginTop: 4, padding: '2px 4px', fontSize: 11, border: '1px solid #0e7490', borderRadius: 4, background: '#fff', maxWidth: '100%' }}
+          >
+            <option value="">Defer to a later month…</option>
+            {deferOptions.map(tok => <option key={tok} value={tok}>{formatMonthYear(tok)}</option>)}
+          </select>
+        </td>
+      </tr>
+      <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+        <td colSpan={7} style={{ ...prepaidTdStyle, borderBottom: 'none', paddingTop: 0 }}>
+          <label style={{ display: 'block', fontSize: 10, color: '#155e75', fontWeight: 600, marginBottom: 2 }}>Note</label>
+          <AutoGrowTextarea
+            rows={1}
+            value={note}
+            onChange={(ev) => setNote(ev.target.value)}
+            onBlur={commitNote}
+            placeholder="e.g. Deferred to September — tickets rebooked. Ref no: 268/123"
+            style={{
+              width: '100%', boxSizing: 'border-box', font: 'inherit', fontSize: 12,
+              color: '#1f2937', padding: '4px 6px', border: '1px solid #a5f3fc',
+              borderRadius: 4, resize: 'vertical', background: '#fff', overflow: 'hidden',
+            }}
+          />
+        </td>
+      </tr>
+    </Fragment>
+  )
+}
+
+
+function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany, selectedMonth, selectedYear, onUpdateExpense, onViewExpense }) {
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
 
   // Free-text comment for this panel, scoped per company + month and
@@ -2242,38 +2406,18 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
               </tr>
             </thead>
             <tbody>
-              {prepaidExpenses.map(e => {
-                const ref = e.reference_number || '—'
-                return (
-                  <tr key={e.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                    <td style={prepaidTdStyle}>{fmtDate(e.date)}</td>
-                    <td style={{ ...prepaidTdStyle, fontFamily: 'monospace' }}>
-                      {onViewExpense ? (
-                        <button
-                          onClick={() => onViewExpense(e.id)}
-                          style={{
-                            background: 'none', border: 'none', padding: 0,
-                            color: '#2563eb', cursor: 'pointer', fontFamily: 'monospace',
-                            fontSize: 13, textDecoration: 'underline',
-                          }}
-                          title="View / edit this expense"
-                        >
-                          {ref}
-                        </button>
-                      ) : ref}
-                    </td>
-                    <td style={prepaidTdStyle}>{e.vendor || '—'}</td>
-                    <td style={prepaidTdStyle}>
-                      {e.description || (e.expense_categories?.name || '—')}
-                    </td>
-                    <td style={{ ...prepaidTdStyle, textAlign: 'right', fontFamily: 'monospace' }}>
-                      {fmt(e.amount)}
-                    </td>
-                    <td style={prepaidTdStyle}>{e.shareholder_code || '—'}</td>
-                    <td style={prepaidTdStyle}>{tripCellFor(e)}</td>
-                  </tr>
-                )
-              })}
+              {prepaidExpenses.map(e => (
+                <PrepaidEarlierRow
+                  key={e.id}
+                  e={e}
+                  periods={periods}
+                  selectedMonth={selectedMonth}
+                  selectedYear={selectedYear}
+                  onUpdateExpense={onUpdateExpense}
+                  onViewExpense={onViewExpense}
+                  tripCellFor={tripCellFor}
+                />
+              ))}
             </tbody>
           </table>
         </div>
