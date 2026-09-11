@@ -1797,6 +1797,11 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
     </div>
   )
 
+  // Empty notes stay hidden (screen + print); typing any text reveals
+  // the note and prints it. `adding` reveals the editor for a new note.
+  const [adding, setAdding] = useState(false)
+  const hasNote = note.trim().length > 0
+
   return (
     <div className="travel-expense-card" style={{
       background: 'white', border: '1px solid #e5e7eb',
@@ -1865,37 +1870,61 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
         </Cell>
       </div>
 
-      {/* One freestyle Notes textarea — replaces the previous three
-          Where/Who/Why inputs. Pre-populated with merged content from
-          the legacy three fields the first time it's opened, so the
-          user simply edits + blurs to save into travel_why. */}
-      <div style={{ marginTop: 8 }}>
-        <label style={{
-          display: 'block', fontSize: 11, color: '#92400e',
-          fontWeight: 600, marginBottom: 4,
-        }}>
-          Notes
-        </label>
-        <AutoGrowTextarea
-          rows={3}
-          placeholder="e.g. Dinner with prospective client ABC Ltd. Attended by BK and YK. Discussed Q2 renewal."
-          value={note}
-          onChange={(ev) => setNote(ev.target.value)}
-          onBlur={commitNote}
+      {/* Notes — only present when the note actually has text. An empty
+          note is hidden on screen (collapsed to a small "Add note"
+          button) and never printed, so blank expenses stay clean on the
+          printed sheet. Typing text reveals it immediately and it prints;
+          clearing the text and blurring collapses it back to the button.
+          The Trip row below is separately no-print (screen only). */}
+      {(hasNote || adding) ? (
+        <div className={`travel-note-block${hasNote ? '' : ' no-print'}`} style={{ marginTop: 8 }}>
+          <label style={{
+            display: 'block', fontSize: 11, color: '#92400e',
+            fontWeight: 600, marginBottom: 4,
+          }}>
+            Notes
+          </label>
+          <AutoGrowTextarea
+            rows={3}
+            autoFocus={adding && !hasNote}
+            placeholder="e.g. Dinner with prospective client ABC Ltd. Attended by BK and YK. Discussed Q2 renewal."
+            value={note}
+            onChange={(ev) => setNote(ev.target.value)}
+            onBlur={() => { commitNote(); if (!note.trim()) setAdding(false) }}
+            style={{
+              width: '100%',
+              padding: '6px 8px',
+              border: '1px solid #fde68a',
+              borderRadius: 4,
+              fontSize: 13,
+              fontFamily: 'inherit',
+              resize: 'vertical',
+              boxSizing: 'border-box',
+              background: '#fffbeb',
+              overflow: 'hidden',
+            }}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="no-print"
+          onClick={() => setAdding(true)}
           style={{
-            width: '100%',
-            padding: '6px 8px',
-            border: '1px solid #fde68a',
-            borderRadius: 4,
-            fontSize: 13,
-            fontFamily: 'inherit',
-            resize: 'vertical',
-            boxSizing: 'border-box',
+            marginTop: 8,
+            padding: '3px 10px',
+            fontSize: 11,
+            border: '1px dashed #fde68a',
             background: '#fffbeb',
-            overflow: 'hidden',
+            color: '#92400e',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontWeight: 600,
           }}
-        />
-      </div>
+        >
+          + Add note
+        </button>
+      )}
 
       {/* Trip assignment footer — lets the user move this expense to a
           different trip, or un-pin it back to date-based auto-grouping.
