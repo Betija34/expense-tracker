@@ -1318,6 +1318,14 @@ function ShareholderTravelSection({
         const matchDate = e.invoice_date || e.date
         return matchDate >= p.from_date && matchDate <= p.to_date
       })
+      // Sort each period's expenses oldest → newest by invoice date
+      // (fall back to Date Paid when a row has no invoice date). ISO
+      // date strings sort correctly with plain comparison.
+      myExpenses.sort((a, b) => {
+        const da = a.invoice_date || a.date || ''
+        const db = b.invoice_date || b.date || ''
+        return da < db ? -1 : da > db ? 1 : 0
+      })
       expensesByPeriod.set(p.id, myExpenses)
       for (const e of myExpenses) expenseToPeriodId.set(e.id, p.id)
       totalCompanyPaid += sumAmounts(myExpenses.filter(e => !e.is_reimbursable))
