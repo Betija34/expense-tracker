@@ -247,6 +247,23 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
     setPrepaidExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, ...patch } : e))
   }
 
+  const assignPrepaidToPeriod = async (expenseId, periodId) => {
+    const patch = { assigned_period_id: periodId }
+    if (periodId) {
+      const p = periods.find(pp => pp.id === periodId)
+      if (p?.shareholder_code) patch.shareholder_code = p.shareholder_code
+    }
+    const { error } = await supabase
+      .from('expenses')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', expenseId)
+    if (error) {
+      alert('Failed to assign trip: ' + error.message)
+      return
+    }
+    setPrepaidExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, ...patch } : e))
+  }
+
   const updateExpenseDetails = async (expenseId, patch) => {
     const { error } = await supabase
       .from('expenses')
@@ -559,6 +576,7 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
         selectedMonth={selectedMonth}
         selectedYear={selectedYear}
         onUpdateExpense={updatePrepaidExpense}
+        onAssignPrepaid={assignPrepaidToPeriod}
         onViewExpense={onViewExpense}
       />
 
@@ -585,6 +603,9 @@ export function TravelLog({ selectedCompany, selectedMonth, selectedYear, onSwit
             periods={periods.filter(p => p.shareholder_code === s.code)}
             allPeriods={periods}
             travelExpenses={myExpenses}
+            prepaidExpenses={prepaidExpenses.filter(e => e.assigned_period_id && myPeriodIds.has(e.assigned_period_id))}
+            onAssignPrepaid={assignPrepaidToPeriod}
+            onUpdatePrepaid={updatePrepaidExpense}
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
             onAddPeriod={() => addPeriod(s.code)}
@@ -1235,7 +1256,8 @@ function UnassignedTravelSection({ periods, travelExpenses, onSwitchTab, onUpdat
 // One shareholder's full Travel Log section
 // =============================================================
 function ShareholderTravelSection({
-  shareholder, periods, allPeriods, travelExpenses,
+  shareholder, periods, allPeriods, travelExpenses, prepaidExpenses = [],
+  onAssignPrepaid, onUpdatePrepaid,
   selectedMonth, selectedYear,
   onAddPeriod, onUpdatePeriod, onDeletePeriod, onUpdateExpense,
   onAssignExpenseToPeriod, onViewExpense,
@@ -1449,6 +1471,9 @@ function ShareholderTravelSection({
                 <TravelPeriodRow
                   period={p}
                   expenses={totals.expensesByPeriod.get(p.id) || []}
+                  prepaidExpenses={prepaidExpenses.filter(e => e.assigned_period_id === p.id)}
+                  onAssignPrepaid={onAssignPrepaid}
+                  onUpdatePrepaid={onUpdatePrepaid}
                   allPeriods={allPeriods}
                   selectedMonth={selectedMonth}
                   selectedYear={selectedYear}
@@ -1475,7 +1500,7 @@ function ShareholderTravelSection({
 // =============================================================
 // One travel period row (editable inline)
 // =============================================================
-function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selectedYear, accentColor, onUpdate, onDelete, onUpdateExpense, onAssignExpenseToPeriod, onViewExpense }) {
+function TravelPeriodRow({ period, expenses, prepaidExpenses = [], allPeriods, selectedMonth, selectedYear, accentColor, onUpdate, onDelete, onUpdateExpense, onAssignExpenseToPeriod, onAssignPrepaid, onUpdatePrepaid, onViewExpense }) {
   // Local inputs for inline editing — save on blur
   const [fromDate, setFromDate] = useState(period.from_date || '')
   const [toDate, setToDate] = useState(period.to_date || '')
@@ -1494,6 +1519,7 @@ function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selected
 
   const days = daysBetween(fromDate, toDate)
   const periodCompanyPaid = sumAmounts(expenses.filter(e => !e.is_reimbursable))
+  const periodPrepaidTotal = sumAmounts(prepaidExpenses.filter(e => !e.is_reimbursable))
 
   // ---------- Header dirty state + validation + save/cancel ----------
   // The 4 header fields (From, To, Destination, Reason) save TOGETHER
@@ -1738,13 +1764,39 @@ function TravelPeriodRow({ period, expenses, allPeriods, selectedMonth, selected
             />
           ))
         )}
-        {/* Period total (company-paid) */}
+        {/* Pre-paid (paid in earlier months) assigned to this trip.
+            Reference only — NOT added to the company-paid total. */}
+        {prepaidExpenses.length > 0 && (
+          <div style={{
+            marginTop: 8, border: '1px solid #a5f3fc', borderRadius: 4,
+            background: '#ecfeff', padding: '8px 10px',
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#155e75', marginBottom: 4 }}>
+              Pre-paid earlier for this trip (reference only — not in the Paid This Month total)
+            </div>
+            {prepaidExpenses.map(e => (
+              <PeriodPrepaidRow
+                key={e.id}
+                e={e}
+                onUnassign={() => onAssignPrepaid && onAssignPrepaid(e.id, null)}
+                onUpdatePrepaid={onUpdatePrepaid}
+                onViewExpense={onViewExpense}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Period totals — paid this month, and pre-paid earlier (reference). */}
         <div style={{
           marginTop: 6, padding: '8px 10px',
           background: '#dbeafe', border: '1px solid #93c5fd',
           borderRadius: 4, color: '#1e40af', fontSize: 13, fontWeight: 600,
+          display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8,
         }}>
-          Total Company-Paid Travel Expenses (this period): {fmt(periodCompanyPaid)}
+          <span>Total Paid This Month (this period): {fmt(periodCompanyPaid)}</span>
+          {prepaidExpenses.length > 0 && (
+            <span style={{ color: '#155e75' }}>Pre-paid earlier (reference): {fmt(periodPrepaidTotal)}</span>
+          )}
         </div>
       </div>
 
@@ -2188,7 +2240,57 @@ const inpStyle = {
 // picker that APPENDS a month (keeping history), so the expense then also
 // appears under that later month. Screen-only controls (the defer picker and
 // the remove ✕) are no-print; the month chain and the note print.
-function PrepaidEarlierRow({ e, periods, selectedMonth, selectedYear, onUpdateExpense, onViewExpense, tripCellFor }) {
+// Compact pre-paid expense line shown INSIDE a trip period card. Reference
+// only — its amount is NOT added to the trip's company-paid total. The note
+// is editable and stored on the expense; "Remove from trip" unassigns it
+// (it returns to the top "Pre-paid in Earlier Months" panel).
+function PeriodPrepaidRow({ e, onUnassign, onUpdatePrepaid, onViewExpense }) {
+  const [note, setNote] = useState(e.travel_why || '')
+  useEffect(() => { setNote(e.travel_why || '') }, [e.travel_why])
+  const commitNote = () => {
+    if ((note || '') === (e.travel_why || '')) return
+    onUpdatePrepaid && onUpdatePrepaid(e.id, { travel_why: note || null })
+  }
+  return (
+    <div style={{ padding: '6px 0', borderTop: '1px dashed #a5f3fc' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 8, fontSize: 12, color: '#1f2937' }}>
+        <span style={{ fontFamily: 'monospace', color: '#155e75' }}>{fmtDate(e.date)}</span>
+        {e.reference_number && onViewExpense ? (
+          <button
+            type="button"
+            onClick={() => onViewExpense(e.id)}
+            title="View / edit this expense"
+            style={{ background: 'none', border: 'none', padding: 0, color: '#2563eb', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12 }}
+          >
+            {e.reference_number}
+          </button>
+        ) : null}
+        <strong>{e.vendor || '—'}</strong>
+        {e.description ? <span style={{ fontStyle: 'italic', color: '#4b5563' }}>{e.description}</span> : null}
+        <span style={{ marginLeft: 'auto', fontFamily: 'monospace', fontWeight: 700 }}>{fmt(e.amount)}</span>
+        <button
+          type="button"
+          className="no-print"
+          onClick={onUnassign}
+          title="Remove from this trip (back to the pre-paid panel)"
+          style={{ border: '1px solid #d1d5db', background: '#fff', color: '#6b7280', borderRadius: 4, padding: '1px 8px', fontSize: 11, cursor: 'pointer' }}
+        >
+          ✕ Remove from trip
+        </button>
+      </div>
+      <AutoGrowTextarea
+        rows={1}
+        value={note}
+        onChange={(ev) => setNote(ev.target.value)}
+        onBlur={commitNote}
+        placeholder="Note (e.g. deferred here from August)…"
+        style={{ marginTop: 4, width: '100%', boxSizing: 'border-box', font: 'inherit', fontSize: 12, color: '#1f2937', padding: '4px 6px', border: '1px solid #a5f3fc', borderRadius: 4, resize: 'vertical', background: '#fff', overflow: 'hidden' }}
+      />
+    </div>
+  )
+}
+
+function PrepaidEarlierRow({ e, periods, selectedMonth, selectedYear, onUpdateExpense, onViewExpense, onAssignPrepaid, tripCellFor }) {
   const tokens = (e.expected_travel_month || '').split(',').map(s => s.trim()).filter(Boolean)
   const sortedTokens = [...tokens].sort()
 
@@ -2283,6 +2385,25 @@ function PrepaidEarlierRow({ e, periods, selectedMonth, selectedYear, onUpdateEx
             <option value="">Defer to a later month…</option>
             {deferOptions.map(tok => <option key={tok} value={tok}>{formatMonthYear(tok)}</option>)}
           </select>
+          {periods.length > 0 && onAssignPrepaid && (
+            <select
+              className="no-print"
+              value=""
+              onChange={(ev) => { if (ev.target.value) onAssignPrepaid(e.id, ev.target.value) }}
+              style={{ marginTop: 4, marginLeft: 4, padding: '2px 4px', fontSize: 11, border: '1px solid #0e7490', borderRadius: 4, background: '#fff', maxWidth: '100%' }}
+            >
+              <option value="">Show under trip…</option>
+              {[...periods].sort(byFromDateAsc).map(p => {
+                const f = (p.from_date || '').slice(8) + '/' + (p.from_date || '').slice(5, 7)
+                const t = (p.to_date || '').slice(8) + '/' + (p.to_date || '').slice(5, 7)
+                return (
+                  <option key={p.id} value={p.id}>
+                    {p.shareholder_code} · {f}–{t}{p.destination ? ` · ${p.destination}` : ''}
+                  </option>
+                )
+              })}
+            </select>
+          )}
         </td>
       </tr>
       <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
@@ -2307,20 +2428,8 @@ function PrepaidEarlierRow({ e, periods, selectedMonth, selectedYear, onUpdateEx
 }
 
 
-function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany, selectedMonth, selectedYear, onUpdateExpense, onViewExpense }) {
+function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany, selectedMonth, selectedYear, onUpdateExpense, onAssignPrepaid, onViewExpense }) {
   const monthLabel = `${String(selectedMonth).padStart(2, '0')}/${selectedYear}`
-
-  // Free-text comment for this panel, scoped per company + month and
-  // persisted in localStorage. Shows on screen and in the printout.
-  const COMMENT_KEY = `travelLogPrepaidComment:${selectedCompany}:${selectedYear}:${selectedMonth}`
-  const [comment, setComment] = useState('')
-  useEffect(() => {
-    try { setComment(localStorage.getItem(COMMENT_KEY) || '') } catch { setComment('') }
-  }, [COMMENT_KEY])
-  const handleCommentChange = (value) => {
-    setComment(value)
-    try { localStorage.setItem(COMMENT_KEY, value) } catch {}
-  }
 
   // Build a quick lookup of period.id → period for the assigned-trip
   // column. Some prepaid expenses come from the expected_travel_month
@@ -2333,6 +2442,9 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
   }, [periods])
 
   const monthToken = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
+
+  const monthPeriodIds = new Set(periods.map(p => p.id))
+  const shown = prepaidExpenses.filter(e => !(e.assigned_period_id && monthPeriodIds.has(e.assigned_period_id)))
 
   const tripCellFor = (e) => {
     // Prefer assigned_period_id (most specific)
@@ -2391,6 +2503,12 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
         }}>
           None this month.
         </div>
+      ) : shown.length === 0 ? (
+        <div style={{
+          padding: '12px 4px', color: '#155e75', fontStyle: 'italic', fontSize: 13,
+        }}>
+          All pre-paid expenses for this month are assigned to trips — see them below within their travel periods.
+        </div>
       ) : (
         <div style={{ overflowX: 'auto', marginTop: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -2406,7 +2524,7 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
               </tr>
             </thead>
             <tbody>
-              {prepaidExpenses.map(e => (
+              {shown.map(e => (
                 <PrepaidEarlierRow
                   key={e.id}
                   e={e}
@@ -2415,6 +2533,7 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
                   selectedYear={selectedYear}
                   onUpdateExpense={onUpdateExpense}
                   onViewExpense={onViewExpense}
+                  onAssignPrepaid={onAssignPrepaid}
                   tripCellFor={tripCellFor}
                 />
               ))}
@@ -2423,28 +2542,6 @@ function PrepaidTravelExpensesPanel({ prepaidExpenses, periods, selectedCompany,
         </div>
       )}
 
-      {/* Free-text comment for this month's pre-paid travel. Persisted in
-          localStorage (per company + month) and included in the printout. */}
-      <div style={{ marginTop: 14 }}>
-        <label
-          htmlFor="prepaid-travel-comment"
-          style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#155e75', marginBottom: 4 }}
-        >
-          Comment
-        </label>
-        <textarea
-          id="prepaid-travel-comment"
-          value={comment}
-          onChange={(e) => handleCommentChange(e.target.value)}
-          rows={2}
-          placeholder="Add a comment about this month's pre-paid travel…"
-          style={{
-            width: '100%', boxSizing: 'border-box', font: 'inherit', fontSize: 13,
-            color: '#1f2937', padding: '6px 8px', border: '1px solid #0e7490',
-            borderRadius: 4, resize: 'vertical', background: '#fff',
-          }}
-        />
-      </div>
     </div>
   )
 }
