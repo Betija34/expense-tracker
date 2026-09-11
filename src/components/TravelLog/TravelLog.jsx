@@ -916,6 +916,7 @@ function PrepaidExpenseRow({ expense: e, fmt, fmtDate, AssignButtons, allPeriods
           <AutoGrowTextarea
             rows={2}
             autoFocus={adding && !hasNote}
+            onFocus={() => setAdding(true)}
             placeholder="e.g. Flight booked in advance for July sales conference in Athens. BK + YK."
             value={note}
             onChange={(ev) => setNote(ev.target.value)}
@@ -1986,6 +1987,7 @@ function TravelExpenseCard({ expense, index, currentPeriodId, allPeriods = [], o
           <AutoGrowTextarea
             rows={3}
             autoFocus={adding && !hasNote}
+            onFocus={() => setAdding(true)}
             placeholder="e.g. Dinner with prospective client ABC Ltd. Attended by BK and YK. Discussed Q2 renewal."
             value={note}
             onChange={(ev) => setNote(ev.target.value)}
