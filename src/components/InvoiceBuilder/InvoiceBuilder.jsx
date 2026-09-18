@@ -278,11 +278,19 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         for (const d of (defs || [])) deferBySource.set(`${d.source_year}-${d.source_month}`, d)
 
         const { data: invs } = await supabase
-          .from('invoices').select('covered_expense_periods')
+          .from('invoices').select('covered_expense_periods, period_year, period_month')
           .eq('company_id', companyId).eq('client_id', form.client_id).eq('invoice_type', 'variable_expense')
         const covered = new Set()
         for (const iv of (invs || [])) {
-          for (const p of (iv.covered_expense_periods || [])) covered.add(`${p.year}-${p.month}`)
+          const cp = Array.isArray(iv.covered_expense_periods) ? iv.covered_expense_periods : []
+          if (cp.length > 0) {
+            // New picker invoices: the exact source months they covered.
+            for (const p of cp) covered.add(`${p.year}-${p.month}`)
+          } else if (iv.period_year && iv.period_month) {
+            // Older variable invoices (e.g. from the Client Invoicing tab):
+            // fall back to their own billing period.
+            covered.add(`${iv.period_year}-${iv.period_month}`)
+          }
         }
 
         const opts = []
@@ -613,7 +621,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
               </div>
             )}
             <div className="ib-plegend">
-              Pulled from the system — this project's reimbursable expenses not yet invoiced. Deferred expenses appear only once their target month has arrived. Untick any you don't want on this invoice.
+              Totals come straight from the Client Report (reimbursable expenses per project per month), for reports not yet invoiced. Deferred expenses appear only once their target month has arrived. Untick any you don't want on this invoice.
             </div>
           </div>
         )}
