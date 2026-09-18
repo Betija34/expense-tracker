@@ -326,3 +326,7 @@
 
 /* ---- Right-align the Amount column header over its figures -------------- */
 .ib-lines th.ib-col-amt { text-align: right; }
+
+/* ---- Line items: description far left, amount hard right ---------------- */
+.ib-lines .ib-col-desc { width: auto; }
+.ib-lines .ib-col-amt { width: 1%; white-space: nowrap; }
