@@ -323,3 +323,6 @@
   display: flex; justify-content: space-between; padding: 8px 8px 2px;
   font-weight: 700; font-size: 13.5px;
 }
+
+/* ---- Right-align the Amount column header over its figures -------------- */
+.ib-lines th.ib-col-amt { text-align: right; }
