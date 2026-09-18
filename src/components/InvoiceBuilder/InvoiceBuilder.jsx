@@ -526,7 +526,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       )}
       <div className="ib-paper">
         <div className="ib-doc">
-          <header className="ib-doc-head">
+          <div className="ib-doc-head">
             <div className="ib-logo">{LogoEl}</div>
             <div className="ib-issuer">
               <div className="ib-issuer-name">{issuer.legalName}</div>
@@ -537,7 +537,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
               {issuer.email && <div className="ib-issuer-line">{issuer.email}</div>}
               {issuer.web && <div className="ib-issuer-line">{issuer.web}</div>}
             </div>
-          </header>
+          </div>
 
           <div className="ib-title-row">
             <h1 className="ib-doc-title">INVOICE</h1>
@@ -587,13 +587,13 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             </tbody></table>
           </div>
 
-          <footer className="ib-doc-foot">
+          <div className="ib-doc-foot">
             <div className="ib-foot-name">{issuer.legalName}</div>
             {(issuer.regNo || issuer.vatNo) && <div>{[issuer.regNo, issuer.vatNo].filter(Boolean).join('  |  ')}</div>}
             {(issuer.addressLines || []).map((l, i) => <div key={i}>{l}</div>)}
             {issuer.email && <div>{issuer.email}</div>}
             {issuer.web && <div>{issuer.web}</div>}
-          </footer>
+          </div>
         </div>
       </div>
     </div>

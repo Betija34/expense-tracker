@@ -291,3 +291,9 @@
 .ib-willmake td.a { text-align: right; white-space: nowrap; }
 
 .ib-papernote { text-align: center; font-size: 12px; color: #6b7280; margin: 0 0 10px; }
+
+/* ---- Guard against the app's global header/footer styling bleeding in --- */
+.ib-doc-head, .ib-doc-foot { background: transparent !important; }
+.ib-doc-head { color: #1d1d1b; }
+.ib-doc-foot { color: #6b7280; }
+.ib-doc-head *, .ib-doc-foot * { background: transparent !important; }
