@@ -247,7 +247,10 @@
   .ib-doc {
     page: ib-invoice;
     width: auto;
-    min-height: 0;
+    /* Fill the printable page so the flex column keeps the footer pinned to
+       the bottom (margin-top:auto on .ib-doc-foot), just like on screen.
+       Small buffer avoids spilling onto a blank second page. */
+    min-height: calc(100vh - 6mm);
     box-shadow: none !important;
     padding: 0 !important;
   }
@@ -330,3 +333,15 @@
 /* ---- Line items: description far left, amount hard right ---------------- */
 .ib-lines .ib-col-desc { width: auto; }
 .ib-lines .ib-col-amt { width: 1%; white-space: nowrap; }
+
+/* ---- Bank details block (bottom of invoice, replaces old footer) -------- */
+.ib-doc-bank {
+  margin-top: auto;            /* pin to the bottom of the page */
+  padding-top: 18px;
+  border-top: 1px solid #1d1d1b;
+  font-size: 11.5px;
+  color: #1d1d1b;
+  line-height: 1.55;
+}
+.ib-bank-label { font-size: 10px; letter-spacing: .12em; color: #6b7280; font-weight: 700; margin-bottom: 6px; }
+.ib-bank-gap { margin-top: 8px; }

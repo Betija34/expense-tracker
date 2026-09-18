@@ -38,6 +38,20 @@ const ISSUERS = {
   'Espargos': { legalName: 'ESPARGOS', regNo: '', vatNo: '', addressLines: [], email: '', web: '' },
 }
 
+// Bank / payment details printed at the bottom of the invoice (from the
+// real invoice template).
+const BANK = {
+  'Rabona Holdings': {
+    bank: 'Bank of Cyprus',
+    branch: 'Corporate Banking Centre Limassol 1',
+    address: 'Corner G. Neofytou &, Georgiou Griva Digeni 121',
+    beneficiary: 'RABONA HOLDINGS LTD',
+    account: '357032438089',
+    iban: 'CY76002001950000357032438089',
+    swift: 'BCYPCY2N',
+  },
+}
+
 const TYPES = [
   { value: 'monthly_fee',           label: 'Monthly fee (§6.1)',                 vat: 'client', multi: true,  src: 'fee' },
   { value: 'fixed_expense',         label: 'Fixed expenses reimbursement (§6.2)', vat: false,    multi: true,  src: 'fixed' },
@@ -74,13 +88,14 @@ function lastDayLabel(m, y) { return `${MONTHS[(m || 1) - 1]} ${ordinal(new Date
 function describe(client, type, m, y) {
   if (!client) return ''
   const M = MONTHS[(m || 1) - 1]
+  const proj = (client.trade_name || client.legal_name || '').toUpperCase()
   const sec = SECTION_BY_TRADE[client.trade_name] || '6.1'
   const sched = SCHEDULE_BY_TRADE[client.trade_name] || '2'
   switch (type) {
     case 'monthly_fee':
-      return `Services per Consultancy Service Agreement section ${sec} and Schedule ${sched}, ${M} fee ${y}`
+      return `Services per Consultancy Service Agreement section ${sec} and Schedule ${sched}, ${M} fee ${y}\nProject ${proj}`
     case 'fixed_expense':
-      return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Fixed Procure and Running Expenses) ${M} ${y}`
+      return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Fixed Procure and Running Expenses) ${M} ${y}\nProject ${proj}`
     case 'variable_expense':
       return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Procure and Running Expenses)\nExpenses as of ${lastDayLabel(m, y)} expense report`
     case 'one_off_service':
@@ -129,6 +144,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const [reportsLoading, setReportsLoading] = useState(false)
 
   const issuer = ISSUERS[selectedCompany] || { legalName: selectedCompany, addressLines: [] }
+  const bank = BANK[selectedCompany] || null
   const selectedClient = clients.find(c => c.id === form.client_id) || null
   const info = typeInfo(form.invoice_type)
 
@@ -732,13 +748,18 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             </tbody></table>
           </div>
 
-          <div className="ib-doc-foot">
-            <div className="ib-foot-name">{issuer.legalName}</div>
-            {(issuer.regNo || issuer.vatNo) && <div>{[issuer.regNo, issuer.vatNo].filter(Boolean).join('  |  ')}</div>}
-            {(issuer.addressLines || []).map((l, i) => <div key={i}>{l}</div>)}
-            {issuer.email && <div>{issuer.email}</div>}
-            {issuer.web && <div>{issuer.web}</div>}
-          </div>
+          {bank && (
+            <div className="ib-doc-bank">
+              <div className="ib-bank-label">BANK DETAILS</div>
+              <div>{bank.bank}</div>
+              <div>{bank.branch}</div>
+              <div>{bank.address}</div>
+              <div className="ib-bank-gap">Beneficiary: {bank.beneficiary}</div>
+              <div>Account No: {bank.account}</div>
+              <div>IBAN: {bank.iban}</div>
+              <div>SWIFT: {bank.swift}</div>
+            </div>
+          )}
         </div>
       </div>
     </div>
