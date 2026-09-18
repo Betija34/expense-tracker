@@ -1,0 +1,293 @@
+/* =====================================================================
+   InvoiceBuilder — "Issue Invoice" tab
+   Screen: editing controls + a live paper-style preview.
+   Print : a named @page (portrait) so the invoice prints portrait even
+           though the report tabs set the global @page to landscape. Only
+           the .ib-paper document prints; .no-print controls are hidden.
+   ===================================================================== */
+
+.invoice-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---- Editing controls -------------------------------------------------- */
+.ib-controls h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+.ib-sub {
+  margin: 0 0 14px;
+  color: #6b7280;
+  font-size: 13px;
+  max-width: 720px;
+}
+
+.ib-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px 16px;
+  align-items: end;
+}
+.ib-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+}
+.ib-field > span { font-weight: 600; }
+.ib-field select,
+.ib-field input,
+.ib-field textarea {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+}
+.ib-field textarea { resize: vertical; }
+.ib-field input:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+/* First two fields (client, type) span two columns each on wide screens. */
+.ib-grid > .ib-field:nth-child(1),
+.ib-grid > .ib-field:nth-child(2) { grid-column: span 2; }
+.ib-field-wide { grid-column: 1 / -1; }
+
+.ib-hint {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.ib-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.ib-btn {
+  padding: 9px 16px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ib-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ib-btn-primary { background: #1d4ed8; color: #fff; }
+.ib-btn-primary:not(:disabled):hover { background: #1e40af; }
+.ib-btn-secondary { background: #fff; color: #1f2937; border-color: #d1d5db; }
+.ib-btn-secondary:not(:disabled):hover { background: #f9fafb; }
+
+.ib-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+.ib-success {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  color: #065f46;
+  font-size: 13px;
+}
+
+/* ---- The paper / invoice document -------------------------------------- */
+.ib-paper {
+  display: flex;
+  justify-content: center;
+  background: #f3f4f6;
+  padding: 24px;
+  border-radius: 8px;
+}
+.ib-doc {
+  background: #fff;
+  width: 210mm;
+  max-width: 100%;
+  min-height: 297mm;
+  box-sizing: border-box;
+  padding: 18mm 16mm;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+  color: #1d1d1b;
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+}
+
+.ib-doc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding-bottom: 14px;
+}
+.ib-issuer { text-align: right; font-size: 11px; color: #4b5563; }
+.ib-issuer-name { font-weight: 700; color: #1d1d1b; font-size: 12px; letter-spacing: 0.02em; }
+.ib-issuer-line { }
+
+.ib-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 10px;
+  border-top: 2px solid #1d1d1b;
+  padding-top: 16px;
+}
+.ib-doc-title {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: 0.18em;
+  font-weight: 300;
+}
+.ib-meta { border-collapse: collapse; font-size: 12px; }
+.ib-meta td { padding: 2px 0 2px 14px; text-align: right; }
+.ib-meta td:first-child { color: #6b7280; text-align: left; padding-left: 0; }
+
+.ib-billto {
+  margin: 22px 0 10px;
+}
+.ib-billto-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+.ib-billto-name { font-weight: 700; font-size: 13px; }
+.ib-billto-line { font-size: 12px; }
+.ib-billto-trade { color: #4b5563; }
+
+.ib-lines {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+}
+.ib-lines th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: #6b7280;
+  border-bottom: 1.5px solid #1d1d1b;
+  padding: 6px 4px;
+}
+.ib-lines td {
+  padding: 12px 4px;
+  vertical-align: top;
+  border-bottom: 1px solid #e5e7eb;
+}
+.ib-col-amt { text-align: right; white-space: nowrap; width: 30%; }
+.ib-col-desc { width: 70%; }
+
+.ib-totals {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.ib-totals table { border-collapse: collapse; min-width: 240px; }
+.ib-totals td { padding: 5px 4px; font-size: 13px; }
+.ib-totals td:last-child { text-align: right; white-space: nowrap; }
+.ib-total-grand td {
+  border-top: 2px solid #1d1d1b;
+  font-weight: 700;
+  font-size: 15px;
+  padding-top: 8px;
+}
+
+.ib-doc-foot {
+  margin-top: auto;
+  padding-top: 20px;
+  text-align: center;
+  font-size: 10px;
+  color: #6b7280;
+  border-top: 1px solid #e5e7eb;
+}
+.ib-foot-name { font-weight: 700; color: #1d1d1b; }
+
+.ib-muted { color: #9ca3af; }
+
+/* ---- Responsive -------------------------------------------------------- */
+@media (max-width: 900px) {
+  .ib-grid { grid-template-columns: repeat(2, 1fr); }
+  .ib-grid > .ib-field:nth-child(1),
+  .ib-grid > .ib-field:nth-child(2) { grid-column: span 2; }
+  .ib-doc { padding: 12mm 10mm; }
+  .ib-paper { padding: 10px; }
+}
+
+/* ---- Print: portrait, invoice only ------------------------------------- */
+@page ib-invoice {
+  size: A4 portrait;
+  margin: 12mm;
+}
+@media print {
+  /* Only the paper prints. Everything else on the page is hidden by the
+     global print rules (.no-print) + these. */
+  .invoice-builder .no-print { display: none !important; }
+
+  .ib-paper {
+    background: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+  .ib-doc {
+    page: ib-invoice;
+    width: auto;
+    min-height: 0;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+}
+
+/* ---- Additions: client info panel, multi-month picker ------------------ */
+.ib-field-wide2 { grid-column: span 2; }
+.ib-link {
+  background: none; border: none; color: #1d4ed8; font-size: 12px;
+  cursor: pointer; padding: 0; text-decoration: underline; align-self: flex-start; margin-top: 2px;
+}
+
+.ib-clientinfo {
+  margin-top: 12px; background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 8px; padding: 12px 14px; font-size: 12.5px; color: #334155; line-height: 1.6;
+}
+.ib-clientinfo strong { color: #0f172a; }
+.ib-phasebox {
+  margin-top: 8px; padding: 8px 10px; background: #fff7ed; border: 1px dashed #fdba74;
+  border-radius: 6px; color: #9a3412; font-size: 12px;
+}
+
+.ib-periods {
+  margin-top: 14px; padding: 12px 14px; background: #f0f9ff;
+  border: 1px solid #bae6fd; border-radius: 8px;
+}
+.ib-periods-lbl { font-size: 12px; font-weight: 700; color: #075985; margin-bottom: 8px; }
+.ib-months { display: flex; flex-wrap: wrap; gap: 6px; }
+.ib-mchip {
+  border: 1px solid #cbd5e1; background: #fff; border-radius: 999px;
+  padding: 5px 12px; font-size: 12.5px; cursor: pointer; font-family: inherit; color: #1f2937;
+}
+.ib-mchip.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+.ib-mchip.past { border-style: dashed; }
+.ib-mchip.done { opacity: 0.5; }
+.ib-plegend { font-size: 11px; color: #64748b; margin-top: 8px; line-height: 1.5; }
+.ib-willmake { margin-top: 10px; font-size: 12.5px; }
+.ib-willmake table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.ib-willmake td { padding: 4px 6px; border-bottom: 1px solid #e5e7eb; font-size: 12px; }
+.ib-willmake td.n { color: #6b7280; white-space: nowrap; }
+.ib-willmake td.a { text-align: right; white-space: nowrap; }
+
+.ib-papernote { text-align: center; font-size: 12px; color: #6b7280; margin: 0 0 10px; }

@@ -10,6 +10,7 @@ import { TravelLog } from './components/TravelLog/TravelLog'
 import { ClientReport } from './components/ClientReport/ClientReport'
 import { MonthlyChecklist } from './components/MonthlyChecklist/MonthlyChecklist'
 import { Clients } from './components/Clients/Clients'
+import { InvoiceBuilder } from './components/InvoiceBuilder/InvoiceBuilder'
 import { LockProvider } from './lib/LockContext'
 import { LockBanner } from './components/LockBanner/LockBanner'
 import './App.css'
@@ -208,6 +209,12 @@ function App() {
             Client Invoicing
           </button>
           <button
+            className={`tab-button ${currentTab === 'issue-invoice' ? 'active' : ''}`}
+            onClick={() => setCurrentTab('issue-invoice')}
+          >
+            Issue Invoice
+          </button>
+          <button
             className={`tab-button ${currentTab === 'shareholder' ? 'active' : ''}`}
             onClick={() => setCurrentTab('shareholder')}
           >
@@ -275,6 +282,13 @@ function App() {
         )}
         {currentTab === 'clients' && (
           <Clients
+            selectedCompany={selectedCompany}
+            selectedMonth={selectedMonth}
+            selectedYear={selectedYear}
+          />
+        )}
+        {currentTab === 'issue-invoice' && (
+          <InvoiceBuilder
             selectedCompany={selectedCompany}
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
