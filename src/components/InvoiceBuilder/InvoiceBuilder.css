@@ -297,3 +297,29 @@
 .ib-doc-head { color: #1d1d1b; }
 .ib-doc-foot { color: #6b7280; }
 .ib-doc-head *, .ib-doc-foot * { background: transparent !important; }
+
+/* ---- Invoice-number field: fixed YYYY/MM prefix + editable sequence ----- */
+.ib-num { display: flex; align-items: stretch; }
+.ib-num-prefix {
+  display: flex; align-items: center; padding: 8px 8px;
+  border: 1px solid #d1d5db; border-right: none; border-radius: 6px 0 0 6px;
+  background: #f3f4f6; color: #6b7280; font-size: 13px; white-space: nowrap;
+}
+.ib-num-seq { border-radius: 0 6px 6px 0 !important; width: 100%; }
+
+/* ---- Multi-line descriptions (e.g. variable-expense report lines) ------- */
+.ib-lines td.ib-col-desc { white-space: pre-line; }
+
+/* ---- Variable-expense report picker ------------------------------------ */
+.ib-reports { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.ib-report {
+  display: flex; align-items: center; gap: 10px; padding: 7px 8px;
+  border-bottom: 1px solid #e5e7eb; font-size: 13px; cursor: pointer;
+}
+.ib-report input { margin: 0; }
+.ib-report-lbl { flex: 1; }
+.ib-report-amt { font-variant-numeric: tabular-nums; white-space: nowrap; color: #111827; }
+.ib-report-total {
+  display: flex; justify-content: space-between; padding: 8px 8px 2px;
+  font-weight: 700; font-size: 13.5px;
+}

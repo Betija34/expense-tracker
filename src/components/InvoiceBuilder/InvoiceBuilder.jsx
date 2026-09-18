@@ -8,28 +8,21 @@ import './InvoiceBuilder.css'
 /**
  * InvoiceBuilder — "Issue Invoice" tab.
  *
- * Produces the actual printable invoice document and, on save, writes an
- * `issued` row (or several, for multi-month runs) to the invoices table so
- * it shows up in the Client Invoicing tracker.
+ * Produces the printable invoice document and, on save, writes an `issued`
+ * row (or several, for multi-month runs) to the invoices table so it shows
+ * up in the Client Invoicing tracker.
  *
- * Behaviour (per the user's spec):
- *   - Project dropdown → auto-fills the legal entity.
- *   - Type dropdown drives amount + VAT + wording.
- *   - Monthly fee / fixed expense support MULTIPLE months in one run: any
- *     month with no invoice on record is auto-ticked (catch-up); future
- *     months can be ticked to bill in advance. Each ticked month becomes
- *     its own separately-numbered invoice.
- *   - Invoice number auto-generates from the ISSUE month (YYYY/MM/NNN),
- *     overridable for single invoices.
- *   - Date of issue defaults to today, overridable (pre-prepare invoices).
- *   - Description = project + section wording + period; auto, editable.
- *   - VAT: shown (as a subtotal→VAT%→total block) only when it applies;
- *     never on any reimbursement.
- *   - "View client details" link surfaces the client's identity + fee, and
- *     a placeholder for the fee-phase schedule (built next).
+ * Invoice numbers are YYYY/MM/NNN where YYYY/MM ALWAYS comes from the
+ * top-bar (accounting) month — only the running sequence NNN is editable.
+ * So an invoice can never be numbered outside the month selected up top:
+ * to issue an October number, switch the top bar to October.
+ *
+ * Monthly fee / fixed expense support MULTIPLE months in one run: months
+ * with no invoice on record are auto-ticked (catch-up); future months can
+ * be ticked to bill in advance. Each ticked month is its own invoice, but
+ * all carry the top-bar month's number (the period lives in the description).
  */
 
-// Issuer identity — from the company letterhead (RABONA LETTERHEAD.pdf).
 const ISSUERS = {
   'Rabona Holdings': {
     legalName: 'RABONA HOLDINGS LTD',
@@ -42,17 +35,12 @@ const ISSUERS = {
     email: 'accounts@rabonaholdings.com',
     web: 'www.rabonaholdings.com',
   },
-  'Espargos': {
-    legalName: 'ESPARGOS', regNo: '', vatNo: '', addressLines: [], email: '', web: '',
-  },
+  'Espargos': { legalName: 'ESPARGOS', regNo: '', vatNo: '', addressLines: [], email: '', web: '' },
 }
 
-// Type table. vat: 'client' = use the client's VAT rate; false = never.
-// multi: supports the multi-month picker. src: where the default amount
-// comes from.
 const TYPES = [
   { value: 'monthly_fee',           label: 'Monthly fee (§6.1)',                 vat: 'client', multi: true,  src: 'fee' },
-  { value: 'fixed_expense',         label: 'Fixed expense reimbursement (§6.2)', vat: false,    multi: true,  src: 'fixed' },
+  { value: 'fixed_expense',         label: 'Fixed expenses reimbursement (§6.2)', vat: false,    multi: true,  src: 'fixed' },
   { value: 'variable_expense',      label: 'Variable expense reimbursement',     vat: false,    multi: false, src: 'manual' },
   { value: 'one_off_service',       label: 'One-off — service',                  vat: 'client', multi: false, src: 'manual' },
   { value: 'one_off_reimbursement', label: 'One-off — reimbursement',            vat: false,    multi: false, src: 'manual' },
@@ -64,53 +52,45 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
-// Default agreement section per project, used only to seed the editable
-// description text. This moves into the client record in the next phase
-// (client info + fee phases); until then it lives here.
-const SECTION_BY_TRADE = {
-  'Urban City': '6.1', 'Blue Lagoon': '6.1', 'Green Field Hotel': '6.1',
-  'Kypseli': '', 'Evia Mare': '6.1', 'BAD City Hall': '6.1', 'BAD City SPA Hotel': '6.1',
-}
+// Default agreement section + schedule per project, used only to seed the
+// editable description. These become per-client fields in the next phase
+// (client info); until then everyone defaults to section 6.1 / Schedule 2.
+const SECTION_BY_TRADE = {}   // e.g. { 'Urban City': '6.1' } — filled per client later
+const SCHEDULE_BY_TRADE = {}  // e.g. { 'Urban City': '2' }  — filled per client later
 
 function typeInfo(t) { return TYPES.find(x => x.value === t) || TYPES[0] }
 function pad3(n) { return String(n).padStart(3, '0') }
+function pad2(n) { return String(n).padStart(2, '0') }
 function fmtEuro(n) {
   const v = Number(n || 0)
   return (v < 0 ? '-' : '') + '€' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 function todayISO() { return new Date().toISOString().slice(0, 10) }
 
-// YYYY/MM/ prefix taken from the ISSUE date (numbers reset per issue-month).
-function issuePrefix(dateStr) {
-  const s = dateStr || todayISO()
-  const [y, m] = s.split('-')
-  return `${y}/${m}/`
-}
+// "June 30th, 2026" — last day of the given month with an ordinal suffix.
+function ordinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]) }
+function lastDayLabel(m, y) { return `${MONTHS[(m || 1) - 1]} ${ordinal(new Date(y, m, 0).getDate())}, ${y}` }
 
-// Build the invoice line description: project + section wording + period.
 function describe(client, type, m, y) {
   if (!client) return ''
-  const proj = client.trade_name || client.legal_name
   const M = MONTHS[(m || 1) - 1]
-  const secRaw = SECTION_BY_TRADE[client.trade_name]
-  const sec = secRaw === undefined ? '6.1' : secRaw
+  const sec = SECTION_BY_TRADE[client.trade_name] || '6.1'
+  const sched = SCHEDULE_BY_TRADE[client.trade_name] || '2'
   switch (type) {
-    case 'monthly_fee': {
-      const s = sec ? ` per Consultancy Service Agreement §${sec}` : ''
-      return `${proj} — Consultancy services${s}, ${M} fee ${y}`
-    }
+    case 'monthly_fee':
+      return `Services per Consultancy Service Agreement section ${sec} and Schedule ${sched}, ${M} fee ${y}`
     case 'fixed_expense':
-      return `${proj} — Fixed procure & running expenses per §6.2, ${M} ${y}`
+      return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Fixed Procure and Running Expenses) ${M} ${y}`
     case 'variable_expense':
-      return `${proj} — Reimbursement of procure & running expenses per §6.2, expenses as of ${M} ${y} expense report`
+      return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Procure and Running Expenses)\nExpenses as of ${lastDayLabel(m, y)} expense report`
     case 'one_off_service':
-      return `${proj} — [describe the service], ${M} ${y}`
+      return `Services per Consultancy Service Agreement — [describe the service], ${M} ${y}`
     case 'one_off_reimbursement':
-      return `${proj} — Reimbursement of [describe], ${M} ${y}`
+      return `Reimbursement of [describe] — expenses as of ${lastDayLabel(m, y)} expense report`
     case 'credit_note':
-      return `${proj} — Credit note re invoice [number] (amount wrongly issued)`
+      return `Credit note re invoice [number] (amount wrongly issued)`
     default:
-      return proj
+      return ''
   }
 }
 
@@ -124,8 +104,6 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const [form, setForm] = useState({
     client_id: '',
     invoice_type: 'monthly_fee',
-    period_month: selectedMonth,
-    period_year: selectedYear,
     date_issued: todayISO(),
     amount_net: '',
     vat_rate: '0',
@@ -133,21 +111,29 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     notes: '',
   })
 
-  const [selMonths, setSelMonths] = useState(() => new Set())   // multi-month selection
-  const [issuedMonths, setIssuedMonths] = useState(() => new Set()) // already-invoiced (client+type+year)
-  const [baseSeq, setBaseSeq] = useState(1)                     // next sequence for the issue-month
-  const [invoiceNumber, setInvoiceNumber] = useState('')       // single-invoice number (editable)
+  const [selMonths, setSelMonths] = useState(() => new Set())
+  const [issuedMonths, setIssuedMonths] = useState(() => new Set())
+  const [baseSeq, setBaseSeq] = useState(1)
+  const [seqInput, setSeqInput] = useState('')          // editable running sequence
   const [numberTouched, setNumberTouched] = useState(false)
   const [descTouched, setDescTouched] = useState(false)
 
   const [showInfo, setShowInfo] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
-  const [savedInfo, setSavedInfo] = useState(null)             // { count, numbers: [] }
+  const [savedInfo, setSavedInfo] = useState(null)
+
+  // Variable-expense report picker (pulled from the system).
+  const [reportOptions, setReportOptions] = useState([]) // [{ y, m, amount, deferredTo }]
+  const [selReports, setSelReports] = useState(() => new Set())
+  const [reportsLoading, setReportsLoading] = useState(false)
 
   const issuer = ISSUERS[selectedCompany] || { legalName: selectedCompany, addressLines: [] }
   const selectedClient = clients.find(c => c.id === form.client_id) || null
   const info = typeInfo(form.invoice_type)
+
+  // Numbers are YYYY/MM from the TOP-BAR month; only the sequence is editable.
+  const dashPrefix = `${selectedYear}/${pad2(selectedMonth)}/`
 
   // ---- Load clients ------------------------------------------------------
   useEffect(() => {
@@ -175,7 +161,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     return () => { cancelled = true }
   }, [selectedCompany])
 
-  // ---- Fetch which months are already invoiced (multi types) -------------
+  // ---- Which months are already invoiced (multi types) -------------------
   useEffect(() => {
     let cancelled = false
     const run = async () => {
@@ -186,36 +172,32 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           .eq('company_id', companyId)
           .eq('client_id', form.client_id)
           .eq('invoice_type', form.invoice_type)
-          .eq('period_year', form.period_year)
+          .eq('period_year', selectedYear)
         if (error) throw error
         if (cancelled) return
         const s = new Set((data || []).map(r => r.period_month))
         setIssuedMonths(s)
-        // Default selection: every month up to the anchor (top-bar) month
-        // that isn't already invoiced. If none, tick the anchor itself.
-        const anchor = form.period_month
         const def = new Set()
-        for (let m = 1; m <= anchor; m++) if (!s.has(m)) def.add(m)
-        if (def.size === 0) def.add(anchor)
+        for (let m = 1; m <= selectedMonth; m++) if (!s.has(m)) def.add(m)
+        if (def.size === 0) def.add(selectedMonth)
         setSelMonths(def)
       } catch {
-        if (!cancelled) { setIssuedMonths(new Set()); setSelMonths(new Set([form.period_month])) }
+        if (!cancelled) { setIssuedMonths(new Set()); setSelMonths(new Set([selectedMonth])) }
       }
     }
     run()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companyId, form.client_id, form.invoice_type, form.period_year, savedInfo])
+  }, [companyId, form.client_id, form.invoice_type, selectedYear, selectedMonth, savedInfo])
 
-  // ---- Next sequence for the issue-month ---------------------------------
+  // ---- Next sequence for the top-bar month -------------------------------
   useEffect(() => {
     let cancelled = false
     const run = async () => {
-      const prefix = issuePrefix(form.date_issued)
       try {
         const { data, error } = await supabase
           .from('invoices').select('invoice_number')
-          .ilike('invoice_number', `${prefix}%`)
+          .ilike('invoice_number', `${dashPrefix}%`)
         if (error) throw error
         if (cancelled) return
         let max = 0
@@ -230,27 +212,107 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     }
     run()
     return () => { cancelled = true }
-  }, [form.date_issued, companyId, savedInfo])
+  }, [dashPrefix, companyId, savedInfo])
 
-  // ---- Keep the single-invoice number in step (unless user edited it) ----
+  // When the top-bar month changes, re-suggest the sequence for that month.
+  useEffect(() => { setNumberTouched(false) }, [dashPrefix])
+
+  // Keep the running sequence in step (unless the user edited it).
   useEffect(() => {
     if (numberTouched) return
-    setInvoiceNumber(issuePrefix(form.date_issued) + pad3(baseSeq))
-  }, [baseSeq, form.date_issued, numberTouched])
+    setSeqInput(pad3(baseSeq))
+  }, [baseSeq, numberTouched])
 
-  // ---- Anchor month = first selected (multi) or period_month (single) ----
+  // ---- Anchor month = first selected (multi) or top-bar month (single) ---
   const anchorMonth = info.multi
-    ? ([...selMonths].sort((a, b) => a - b)[0] || form.period_month)
-    : form.period_month
+    ? ([...selMonths].sort((a, b) => a - b)[0] || selectedMonth)
+    : selectedMonth
 
-  // ---- Auto-build the description (unless user edited it) -----------------
+  // ---- Auto-build the description (unless the user edited it) -------------
   useEffect(() => {
     if (descTouched) return
-    setForm(f => ({ ...f, description: describe(selectedClient, f.invoice_type, anchorMonth, f.period_year) }))
+    setForm(f => ({ ...f, description: describe(selectedClient, f.invoice_type, anchorMonth, selectedYear) }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.client_id, form.invoice_type, anchorMonth, form.period_year, clients, descTouched])
+  }, [form.client_id, form.invoice_type, anchorMonth, selectedYear, clients, descTouched])
 
-  // ---- When client or type changes, reset amount / VAT / edit flags ------
+  // ---- Variable expense: pull un-invoiced reimbursable expense reports ----
+  // For the chosen project, group reimbursable expenses by the month they
+  // were incurred, apply the client's deferrals (a deferred month shows only
+  // once its target month has arrived), drop any already covered by an
+  // earlier variable-expense invoice, and offer what's left.
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      if (!companyId || !form.client_id || form.invoice_type !== 'variable_expense') {
+        setReportOptions([]); setSelReports(new Set()); return
+      }
+      setReportsLoading(true)
+      try {
+        const client = clients.find(c => c.id === form.client_id) || null
+        const names = [client?.trade_name, client?.legal_name]
+          .filter(Boolean).map(s => s.trim().toLowerCase())
+
+        // Match the Client Report exactly: reimbursable outgoing expenses
+        // (is_reimbursable), bucketed by the period they're attributed to
+        // (main_ref_year / main_ref_month), summed per project.
+        const { data: exp, error: eErr } = await supabase
+          .from('expenses').select('client_name, amount, main_ref_year, main_ref_month')
+          .eq('company_id', companyId)
+          .eq('is_reimbursable', true)
+          .not('client_name', 'is', null)
+        if (eErr) throw eErr
+        const byMonth = new Map()
+        for (const r of (exp || [])) {
+          const nm = (r.client_name || '').trim().toLowerCase()
+          if (!names.includes(nm)) continue
+          const yy = Number(r.main_ref_year), mm = Number(r.main_ref_month)
+          if (!yy || !mm) continue
+          const key = `${yy}-${mm}`
+          byMonth.set(key, (byMonth.get(key) || 0) + Number(r.amount || 0))
+        }
+
+        const { data: defs } = await supabase
+          .from('expense_deferrals').select('*')
+          .eq('company_id', companyId).eq('client_id', form.client_id)
+        const deferBySource = new Map()
+        for (const d of (defs || [])) deferBySource.set(`${d.source_year}-${d.source_month}`, d)
+
+        const { data: invs } = await supabase
+          .from('invoices').select('covered_expense_periods')
+          .eq('company_id', companyId).eq('client_id', form.client_id).eq('invoice_type', 'variable_expense')
+        const covered = new Set()
+        for (const iv of (invs || [])) {
+          for (const p of (iv.covered_expense_periods || [])) covered.add(`${p.year}-${p.month}`)
+        }
+
+        const opts = []
+        for (const [key, amount] of byMonth.entries()) {
+          if (amount <= 0 || covered.has(key)) continue
+          const [yy, mm] = key.split('-').map(Number)
+          const def = deferBySource.get(key)
+          if (def) {
+            const targetInFuture = def.target_year > selectedYear ||
+              (def.target_year === selectedYear && def.target_month > selectedMonth)
+            if (targetInFuture) continue // deferred to a month that hasn't arrived — hide
+          }
+          opts.push({ y: yy, m: mm, amount, deferredTo: def ? { y: def.target_year, m: def.target_month } : null })
+        }
+        opts.sort((a, b) => (a.y - b.y) || (a.m - b.m))
+        if (cancelled) return
+        setReportOptions(opts)
+        setSelReports(new Set(opts.map(o => `${o.y}-${o.m}`)))
+      } catch {
+        if (!cancelled) { setReportOptions([]); setSelReports(new Set()) }
+      } finally {
+        if (!cancelled) setReportsLoading(false)
+      }
+    }
+    run()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, form.client_id, form.invoice_type, selectedYear, selectedMonth, savedInfo, clients])
+
+  // ---- Defaults when client / type changes -------------------------------
   const applyDefaults = useCallback((clientId, type) => {
     const client = clients.find(c => c.id === clientId) || null
     const ti = typeInfo(type)
@@ -261,7 +323,6 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     }
     const vat_rate = ti.vat === 'client' && client ? String(client.vat_rate ?? '0') : '0'
     setDescTouched(false)
-    setNumberTouched(false)
     setForm(f => ({ ...f, client_id: clientId, invoice_type: type, amount_net, vat_rate }))
   }, [clients])
 
@@ -275,59 +336,92 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       return n
     })
   }
+  const toggleReport = (key) => {
+    setSelReports(prev => {
+      const n = new Set(prev)
+      if (n.has(key)) n.delete(key); else n.add(key)
+      return n
+    })
+  }
 
-  // ---- Derived amounts (for the on-screen document) ----------------------
-  const net = parseFloat(form.amount_net) || 0
+  // ---- Variable expense: selected reports + their sum --------------------
+  const isVar = form.invoice_type === 'variable_expense'
+  const VAR_HEADING = 'Services per Consultancy Service Agreement section 6.2 (Reimbursement of Procure and Running Expenses)'
+  const selectedReportList = reportOptions.filter(o => selReports.has(`${o.y}-${o.m}`))
+  const variableTotal = selectedReportList.reduce((s, o) => s + o.amount, 0)
+  const variableDescription = isVar
+    ? [VAR_HEADING, ...selectedReportList.map(o => `Expenses as of ${lastDayLabel(o.m, o.y)} expense report`)].join('\n')
+    : ''
+
+  // ---- Derived amounts ---------------------------------------------------
+  const net = isVar ? variableTotal : (parseFloat(form.amount_net) || 0)
   const vatRate = info.vat === 'client' ? (parseFloat(form.vat_rate) || 0) : 0
   const vatAmount = net * vatRate
   const total = net + vatAmount
 
-  const monthsToIssue = info.multi
-    ? [...selMonths].sort((a, b) => a - b)
-    : [form.period_month]
-
-  const plannedNumbers = monthsToIssue.map((_, i) => issuePrefix(form.date_issued) + pad3(baseSeq + i))
-  const singleNumber = info.multi ? plannedNumbers[0] : invoiceNumber
+  const monthsToIssue = info.multi ? [...selMonths].sort((a, b) => a - b) : [selectedMonth]
+  const startSeq = Number.isNaN(parseInt(seqInput, 10)) ? baseSeq : parseInt(seqInput, 10)
+  const plannedNumbers = monthsToIssue.map((_, i) => dashPrefix + pad3(startSeq + i))
+  const singleNumber = plannedNumbers[0] || (dashPrefix + pad3(startSeq))
 
   // ---- Save --------------------------------------------------------------
   const canSave =
     !!form.client_id &&
-    !Number.isNaN(parseFloat(form.amount_net)) &&
-    parseFloat(form.amount_net) !== 0 &&
-    monthsToIssue.length > 0 &&
-    (info.multi || !!invoiceNumber.trim())
+    !Number.isNaN(parseInt(seqInput, 10)) &&
+    (isVar
+      ? (selectedReportList.length > 0 && variableTotal !== 0)
+      : (!Number.isNaN(parseFloat(form.amount_net)) && parseFloat(form.amount_net) !== 0 && monthsToIssue.length > 0))
 
   const handleSave = async () => {
     setSaveError(null); setSavedInfo(null)
     if (isLocked) {
-      setSaveError(`🔒 The period ${String(selectedMonth).padStart(2, '0')}/${selectedYear} is closed for ${selectedCompany}. Unlock it via the Monthly Checklist tab to issue invoices.`)
+      setSaveError(`🔒 The period ${pad2(selectedMonth)}/${selectedYear} is closed for ${selectedCompany}. Unlock it via the Monthly Checklist tab to issue invoices.`)
       return
     }
-    if (!canSave) { setSaveError('Pick a client, a non-zero amount, and at least one month / an invoice number.'); return }
+    if (!canSave) { setSaveError('Pick a client, a sequence number, and an amount / at least one expense report.'); return }
     setSaving(true)
     try {
-      const prefix = issuePrefix(form.date_issued)
-      const rows = monthsToIssue.map((m, i) => {
-        const number = info.multi ? (prefix + pad3(baseSeq + i)) : invoiceNumber.trim()
-        const desc = info.multi
-          ? describe(selectedClient, form.invoice_type, m, form.period_year)
-          : (form.description || '').trim()
-        return {
+      let rows
+      if (isVar) {
+        rows = [{
           company_id: companyId,
           client_id: form.client_id,
-          period_year: form.period_year,
-          period_month: m,
-          invoice_type: form.invoice_type,
-          description: desc || null,
-          amount_net: net,
-          vat_rate: vatRate,
-          amount_total: total,
+          period_year: selectedYear,
+          period_month: selectedMonth,
+          invoice_type: 'variable_expense',
+          description: variableDescription,
+          amount_net: variableTotal,
+          vat_rate: 0,
+          amount_total: variableTotal,
           status: 'issued',
-          invoice_number: number,
+          invoice_number: dashPrefix + pad3(startSeq),
           date_issued: form.date_issued,
           notes: (form.notes || '').trim() || null,
-        }
-      })
+          covered_expense_periods: selectedReportList.map(o => ({ year: o.y, month: o.m, amount: o.amount })),
+        }]
+      } else {
+        rows = monthsToIssue.map((m, i) => {
+          const number = dashPrefix + pad3(startSeq + i)
+          const desc = info.multi
+            ? describe(selectedClient, form.invoice_type, m, selectedYear)
+            : (form.description || '').trim()
+          return {
+            company_id: companyId,
+            client_id: form.client_id,
+            period_year: selectedYear,
+            period_month: m,
+            invoice_type: form.invoice_type,
+            description: desc || null,
+            amount_net: net,
+            vat_rate: vatRate,
+            amount_total: total,
+            status: 'issued',
+            invoice_number: number,
+            date_issued: form.date_issued,
+            notes: (form.notes || '').trim() || null,
+          }
+        })
+      }
       const { error } = await supabase.from('invoices').insert(rows).select('id')
       if (error) throw error
       setSavedInfo({ count: rows.length, numbers: rows.map(r => r.invoice_number) })
@@ -342,7 +436,6 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     setSavedInfo(null); setSaveError(null)
     setNumberTouched(false); setDescTouched(false)
     setForm(f => ({ ...f, notes: '' }))
-    // baseSeq + issuedMonths refresh via the savedInfo-keyed effects.
   }
 
   const LogoEl = selectedCompany === 'Espargos'
@@ -357,8 +450,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       <div className="ib-controls no-print">
         <h2>Issue Invoice</h2>
         <p className="ib-sub">
-          Company: <strong>{selectedCompany}</strong>. Choose a client and type, fill the rest,
-          then Print / Save as PDF and Save invoice — it appears in the Client Invoicing tracker.
+          Company: <strong>{selectedCompany}</strong> · Invoice month: <strong>{MONTHS[selectedMonth - 1]} {selectedYear}</strong> (from the top bar).
+          Choose a client and type, then Print / Save as PDF and Save invoice.
         </p>
 
         {loadError && <div className="ib-error">{loadError}</div>}
@@ -387,28 +480,28 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </label>
 
           <label className="ib-field ib-field-sm">
-            <span>Invoice number{info.multi ? ' (auto per month)' : ''}</span>
-            <input
-              type="text"
-              value={singleNumber}
-              disabled={info.multi}
-              onChange={e => { setNumberTouched(true); setInvoiceNumber(e.target.value) }}
-              placeholder="2026/09/002"
-            />
+            <span>Invoice number{info.multi ? ' (first of the batch)' : ''}</span>
+            <div className="ib-num">
+              <span className="ib-num-prefix">{dashPrefix}</span>
+              <input
+                type="text"
+                className="ib-num-seq"
+                value={seqInput}
+                onChange={e => { setNumberTouched(true); setSeqInput(e.target.value.replace(/[^0-9]/g, '')) }}
+                placeholder="002"
+              />
+            </div>
           </label>
 
           <label className="ib-field ib-field-sm">
             <span>Date issued</span>
-            <input
-              type="date"
-              value={form.date_issued}
-              onChange={e => { setNumberTouched(false); setForm(f => ({ ...f, date_issued: e.target.value })) }}
-            />
+            <input type="date" value={form.date_issued}
+              onChange={e => setForm(f => ({ ...f, date_issued: e.target.value }))} />
           </label>
 
           <label className="ib-field ib-field-sm">
-            <span>Amount (net €){info.src !== 'manual' ? ' — from agreement' : ''}</span>
-            <input type="number" step="0.01" value={form.amount_net}
+            <span>Amount (net €){isVar ? ' — from expense reports' : (info.src !== 'manual' ? ' — from agreement' : '')}</span>
+            <input type="number" step="0.01" value={isVar ? variableTotal : form.amount_net} disabled={isVar}
               onChange={e => setForm(f => ({ ...f, amount_net: e.target.value }))} placeholder="0.00" />
           </label>
 
@@ -421,8 +514,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </label>
 
           <label className="ib-field ib-field-wide">
-            <span>Line description (auto — editable{info.multi ? '; applies per-month automatically for multi-month runs' : ''})</span>
-            <textarea rows={2} value={form.description} disabled={info.multi}
+            <span>Line description ({isVar ? 'auto from the selected expense reports' : info.multi ? 'auto — per-month for multi-month runs' : 'auto — editable'})</span>
+            <textarea rows={isVar ? 3 : 2} value={isVar ? variableDescription : form.description} disabled={info.multi || isVar}
               onChange={e => { setDescTouched(true); setForm(f => ({ ...f, description: e.target.value })) }}
               placeholder="Description shown on the invoice line" />
           </label>
@@ -440,15 +533,15 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             {selectedClient ? (
               <>
                 <div><strong>{selectedClient.legal_name}</strong> · project <strong>{selectedClient.trade_name || '—'}</strong></div>
-                <div>Reg. No: {selectedClient.registration_number || '—'} · VAT: {selectedClient.vat_id || '—'}</div>
-                <div>{selectedClient.address || '— no address on file —'}</div>
+                <div>Company number: {selectedClient.registration_number || '—'} · VAT number: {selectedClient.vat_id || '—'}</div>
+                <div>Address: {selectedClient.address || '— none on file —'}</div>
                 <div>
                   Current monthly fee: <strong>{fmtEuro(selectedClient.monthly_fee_net)}</strong>
                   {Number(selectedClient.monthly_fixed_expense_net) > 0 && <> · Fixed reimb: <strong>{fmtEuro(selectedClient.monthly_fixed_expense_net)}</strong></>}
                   {' '}· VAT rate: <strong>{(Number(selectedClient.vat_rate) * 100)}%</strong>
                 </div>
                 <div className="ib-phasebox">
-                  Fee <strong>phase schedule</strong> will live here (next build): amount auto-matches the period's phase, still overridable above.
+                  Fee <strong>phase schedule</strong> will live here (next build): the amount auto-matches the period's phase, still overridable above.
                   Edit identity &amp; wording on the Client Invoicing tab.
                 </div>
               </>
@@ -458,21 +551,19 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
         {info.multi && selectedClient && (
           <div className="ib-periods">
-            <div className="ib-periods-lbl">Periods to invoice — {form.period_year}</div>
+            <div className="ib-periods-lbl">Periods to invoice — {selectedYear}</div>
             <div className="ib-months">
               {MONTHS.map((m, i) => {
                 const mo = i + 1
                 const already = issuedMonths.has(mo)
-                const past = mo <= form.period_month && !already
+                const past = mo <= selectedMonth && !already
                 const on = selMonths.has(mo)
                 const title = already ? `${m} — already invoiced`
-                  : (mo <= form.period_month ? `${m} — not yet invoiced` : `${m} — advance`)
+                  : (mo <= selectedMonth ? `${m} — not yet invoiced` : `${m} — advance`)
                 return (
-                  <button
-                    key={mo} type="button" title={title}
+                  <button key={mo} type="button" title={title}
                     className={`ib-mchip${on ? ' on' : ''}${past ? ' past' : ''}${already ? ' done' : ''}`}
-                    onClick={() => toggleMonth(mo)}
-                  >
+                    onClick={() => toggleMonth(mo)}>
                     {m.slice(0, 3)}
                   </button>
                 )
@@ -480,7 +571,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             </div>
             <div className="ib-plegend">
               Dashed = a month with no invoice on record (auto-ticked to catch up). Grey = already invoiced.
-              Tick future months to bill in advance. Each ticked month becomes its own numbered invoice.
+              Tick future months to bill in advance. Each ticked month becomes its own invoice — all numbered under {MONTHS[selectedMonth - 1]} {selectedYear}.
             </div>
             {monthsToIssue.length > 0 && (
               <div className="ib-willmake">
@@ -489,13 +580,41 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                   {monthsToIssue.map((m, i) => (
                     <tr key={m}>
                       <td className="n">{plannedNumbers[i]}</td>
-                      <td>{describe(selectedClient, form.invoice_type, m, form.period_year)}</td>
+                      <td>{describe(selectedClient, form.invoice_type, m, selectedYear)}</td>
                       <td className="a">{fmtEuro(total)}</td>
                     </tr>
                   ))}
                 </tbody></table>
               </div>
             )}
+          </div>
+        )}
+
+        {isVar && selectedClient && (
+          <div className="ib-periods">
+            <div className="ib-periods-lbl">Expense reports to include — {selectedClient.trade_name || selectedClient.legal_name}</div>
+            {reportsLoading ? (
+              <div className="ib-muted">Looking up un-invoiced reimbursable expenses…</div>
+            ) : reportOptions.length === 0 ? (
+              <div className="ib-muted">No un-invoiced reimbursable expenses found for this project.</div>
+            ) : (
+              <div className="ib-reports">
+                {reportOptions.map(o => {
+                  const key = `${o.y}-${o.m}`
+                  return (
+                    <label key={key} className="ib-report">
+                      <input type="checkbox" checked={selReports.has(key)} onChange={() => toggleReport(key)} />
+                      <span className="ib-report-lbl">Expenses as of {lastDayLabel(o.m, o.y)} expense report{o.deferredTo ? ' (deferred)' : ''}</span>
+                      <span className="ib-report-amt">{fmtEuro(o.amount)}</span>
+                    </label>
+                  )
+                })}
+                <div className="ib-report-total"><span>Total</span><span>{fmtEuro(variableTotal)}</span></div>
+              </div>
+            )}
+            <div className="ib-plegend">
+              Pulled from the system — this project's reimbursable expenses not yet invoiced. Deferred expenses appear only once their target month has arrived. Untick any you don't want on this invoice.
+            </div>
           </div>
         )}
 
@@ -518,7 +637,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         )}
       </div>
 
-      {/* ---- Invoice document (screen preview + print) ------------------- */}
+      {/* ---- Invoice document -------------------------------------------- */}
       {monthsToIssue.length > 1 && (
         <div className="ib-papernote no-print">
           Showing 1 of {monthsToIssue.length} — each ticked month is a separate, separately-numbered invoice.
@@ -552,9 +671,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             {selectedClient ? (
               <>
                 <div className="ib-billto-name">{selectedClient.legal_name}</div>
-                {selectedClient.registration_number && <div className="ib-billto-line">Reg. No: {selectedClient.registration_number}</div>}
-                {selectedClient.vat_id && <div className="ib-billto-line">VAT: {selectedClient.vat_id}</div>}
-                {selectedClient.address && <div className="ib-billto-line">{selectedClient.address}</div>}
+                {selectedClient.registration_number && <div className="ib-billto-line">Company number: {selectedClient.registration_number}</div>}
+                {selectedClient.vat_id && <div className="ib-billto-line">VAT number: {selectedClient.vat_id}</div>}
+                {selectedClient.address && <div className="ib-billto-line">Address: {selectedClient.address}</div>}
               </>
             ) : <div className="ib-billto-line ib-muted">Select a client above…</div>}
           </div>
@@ -562,14 +681,32 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           <table className="ib-lines">
             <thead><tr><th className="ib-col-desc">Description</th><th className="ib-col-amt">Amount</th></tr></thead>
             <tbody>
-              <tr>
-                <td className="ib-col-desc">
-                  {info.multi
-                    ? describe(selectedClient, form.invoice_type, docMonth, form.period_year)
-                    : (form.description || <span className="ib-muted">—</span>)}
-                </td>
-                <td className="ib-col-amt">{fmtEuro(net)}</td>
-              </tr>
+              {isVar ? (
+                <>
+                  <tr>
+                    <td className="ib-col-desc">{VAR_HEADING}</td>
+                    <td className="ib-col-amt"></td>
+                  </tr>
+                  {selectedReportList.map(o => (
+                    <tr key={`${o.y}-${o.m}`}>
+                      <td className="ib-col-desc">Expenses as of {lastDayLabel(o.m, o.y)} expense report</td>
+                      <td className="ib-col-amt">{fmtEuro(o.amount)}</td>
+                    </tr>
+                  ))}
+                  {selectedReportList.length === 0 && (
+                    <tr><td className="ib-col-desc ib-muted">No expense reports selected</td><td className="ib-col-amt"></td></tr>
+                  )}
+                </>
+              ) : (
+                <tr>
+                  <td className="ib-col-desc">
+                    {info.multi
+                      ? describe(selectedClient, form.invoice_type, docMonth, selectedYear)
+                      : (form.description || <span className="ib-muted">—</span>)}
+                  </td>
+                  <td className="ib-col-amt">{fmtEuro(net)}</td>
+                </tr>
+              )}
             </tbody>
           </table>
 
