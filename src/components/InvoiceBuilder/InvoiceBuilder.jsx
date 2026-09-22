@@ -131,6 +131,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const [baseSeq, setBaseSeq] = useState(1)
   const [seqInput, setSeqInput] = useState('')          // editable running sequence
   const [numberTouched, setNumberTouched] = useState(false)
+  const [numberApproved, setNumberApproved] = useState(false)
+  const [dateTouched, setDateTouched] = useState(false)
+  const [dateApproved, setDateApproved] = useState(false)
   const [descTouched, setDescTouched] = useState(false)
 
   const [showInfo, setShowInfo] = useState(false)
@@ -231,7 +234,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   }, [dashPrefix, companyId, savedInfo])
 
   // When the top-bar month changes, re-suggest the sequence for that month.
-  useEffect(() => { setNumberTouched(false) }, [dashPrefix])
+  useEffect(() => { setNumberTouched(false); setNumberApproved(false) }, [dashPrefix])
 
   // Keep the running sequence in step (unless the user edited it).
   useEffect(() => {
@@ -388,10 +391,27 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const plannedNumbers = monthsToIssue.map((_, i) => dashPrefix + pad3(startSeq + i))
   const singleNumber = plannedNumbers[0] || (dashPrefix + pad3(startSeq))
 
+  // ---- Confirmation state (screen aid only) ------------------------------
+  // The invoice number and the issue date arrive pre-filled (next free
+  // sequence / today), and the project comes from the client picker. Until
+  // each one is explicitly confirmed - edited, or ticked - it is shown in
+  // RED on the invoice document so it is obvious at a glance what has not
+  // been checked. Red never prints: the printed/PDF invoice is always black.
+  // Printing and saving stay blocked while anything is still red.
+  const seqValid = !Number.isNaN(parseInt(seqInput, 10))
+  const numberOk = seqValid && (numberTouched || numberApproved)
+  const dateOk = dateTouched || dateApproved
+  const clientOk = !!form.client_id
+  const allConfirmed = clientOk && numberOk && dateOk
+  const pendingLabels = [
+    !clientOk && 'project',
+    !numberOk && 'invoice number',
+    !dateOk && 'date issued',
+  ].filter(Boolean)
+
   // ---- Save --------------------------------------------------------------
   const canSave =
-    !!form.client_id &&
-    !Number.isNaN(parseInt(seqInput, 10)) &&
+    allConfirmed &&
     (isVar
       ? (selectedReportList.length > 0 && variableTotal !== 0)
       : (!Number.isNaN(parseFloat(form.amount_net)) && parseFloat(form.amount_net) !== 0 && monthsToIssue.length > 0))
@@ -458,7 +478,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
   const handleNew = () => {
     setSavedInfo(null); setSaveError(null)
-    setNumberTouched(false); setDescTouched(false)
+    setNumberTouched(false); setNumberApproved(false)
+    setDateTouched(false); setDateApproved(false)
+    setDescTouched(false)
     setForm(f => ({ ...f, notes: '' }))
   }
 
@@ -515,12 +537,22 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 placeholder="002"
               />
             </div>
+            <span className="ib-confirm">
+              <input type="checkbox" checked={numberTouched || numberApproved} disabled={numberTouched}
+                onChange={e => setNumberApproved(e.target.checked)} />
+              <span>Number confirmed</span>
+            </span>
           </label>
 
           <label className="ib-field ib-field-sm">
             <span>Date issued</span>
             <input type="date" value={form.date_issued}
-              onChange={e => setForm(f => ({ ...f, date_issued: e.target.value }))} />
+              onChange={e => { setDateTouched(true); setForm(f => ({ ...f, date_issued: e.target.value })) }} />
+            <span className="ib-confirm">
+              <input type="checkbox" checked={dateTouched || dateApproved} disabled={dateTouched}
+                onChange={e => setDateApproved(e.target.checked)} />
+              <span>Date confirmed</span>
+            </span>
           </label>
 
           <label className="ib-field ib-field-sm">
@@ -643,7 +675,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         )}
 
         <div className="ib-actions">
-          <button className="ib-btn ib-btn-secondary" onClick={() => window.print()} disabled={!form.client_id}>
+          <button className="ib-btn ib-btn-secondary" onClick={() => window.print()} disabled={!allConfirmed}>
             🖨 Print / Save as PDF
           </button>
           <button className="ib-btn ib-btn-primary" onClick={handleSave} disabled={saving || !canSave}>
@@ -651,6 +683,12 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </button>
           {savedInfo && <button className="ib-btn ib-btn-secondary" onClick={handleNew}>+ New invoice</button>}
         </div>
+
+        {pendingLabels.length > 0 && (
+          <div className="ib-pending">
+            Shown in red on the invoice - still to confirm: {pendingLabels.join(', ')}.
+          </div>
+        )}
 
         {saveError && <div className="ib-error">{saveError}</div>}
         {savedInfo && (
@@ -685,8 +723,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           <div className="ib-title-row">
             <h1 className="ib-doc-title">INVOICE</h1>
             <table className="ib-meta"><tbody>
-              <tr><td>Invoice No</td><td>{singleNumber || '—'}</td></tr>
-              <tr><td>Date issued</td><td>{form.date_issued || '—'}</td></tr>
+              <tr><td>Invoice No</td><td className={numberOk ? undefined : 'ib-unconfirmed'}>{singleNumber || '—'}</td></tr>
+              <tr><td>Date issued</td><td className={dateOk ? undefined : 'ib-unconfirmed'}>{form.date_issued || '—'}</td></tr>
             </tbody></table>
           </div>
 
@@ -699,7 +737,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 {selectedClient.vat_id && <div className="ib-billto-line">VAT number: {selectedClient.vat_id}</div>}
                 {selectedClient.address && <div className="ib-billto-line">Address: {selectedClient.address}</div>}
               </>
-            ) : <div className="ib-billto-line ib-muted">Select a client above…</div>}
+            ) : <div className="ib-billto-line ib-unconfirmed">Select a project above…</div>}
           </div>
 
           <table className="ib-lines">
@@ -723,10 +761,10 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 </>
               ) : (
                 <tr>
-                  <td className="ib-col-desc">
+                  <td className={'ib-col-desc' + (clientOk ? '' : ' ib-unconfirmed')}>
                     {info.multi
-                      ? describe(selectedClient, form.invoice_type, docMonth, selectedYear)
-                      : (form.description || <span className="ib-muted">—</span>)}
+                      ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear) || 'Select a project above…')
+                      : (form.description || (clientOk ? '—' : 'Select a project above…'))}
                   </td>
                   <td className="ib-col-amt">{fmtEuro(net)}</td>
                 </tr>
