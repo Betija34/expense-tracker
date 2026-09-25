@@ -145,7 +145,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   })
 
   const [selMonths, setSelMonths] = useState(() => new Set())
-  const [issuedMonths, setIssuedMonths] = useState(() => new Set())
+  // month -> [invoice rows covering it] (a Map; .has() works like the old Set)
+  const [issuedMonths, setIssuedMonths] = useState(() => new Map())
+  const [doneInfo, setDoneInfo] = useState(null)   // popup for an already-invoiced month
   const [baseSeq, setBaseSeq] = useState(1)
   const [seqInput, setSeqInput] = useState('')          // editable running sequence
   const [numberTouched, setNumberTouched] = useState(false)
@@ -246,25 +248,25 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   useEffect(() => {
     let cancelled = false
     const run = async () => {
-      if (!companyId || !form.client_id || !info.multi) { setIssuedMonths(new Set()); return }
+      if (!companyId || !form.client_id || !info.multi) { setIssuedMonths(new Map()); return }
       try {
         // A month counts as invoiced when a row of this type covers it:
         // its represents_period (V27 — e.g. Jan + Feb fees billed in March
         // after a deferral are filed under March but represent Jan / Feb),
         // or, when that is empty, its own period.
         const { data, error } = await supabase
-          .from('invoices').select('period_year, period_month, represents_period_year, represents_period_month')
+          .from('invoices').select('period_year, period_month, represents_period_year, represents_period_month, invoice_number, date_issued, amount_net, status')
           .eq('company_id', companyId)
           .eq('client_id', form.client_id)
           .eq('invoice_type', form.invoice_type)
           .or(`period_year.eq.${selectedYear},represents_period_year.eq.${selectedYear}`)
         if (error) throw error
         if (cancelled) return
-        const s = new Set()
+        const s = new Map()
         for (const r of (data || [])) {
           const y = r.represents_period_year && r.represents_period_month ? r.represents_period_year : r.period_year
           const m = r.represents_period_year && r.represents_period_month ? r.represents_period_month : r.period_month
-          if (y === selectedYear && m) s.add(m)
+          if (y === selectedYear && m) s.set(m, [...(s.get(m) || []), r])
         }
         setIssuedMonths(s)
         const def = new Set()
@@ -272,7 +274,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         if (def.size === 0) def.add(selectedMonth)
         setSelMonths(def)
       } catch {
-        if (!cancelled) { setIssuedMonths(new Set()); setSelMonths(new Set([selectedMonth])) }
+        if (!cancelled) { setIssuedMonths(new Map()); setSelMonths(new Set([selectedMonth])) }
       }
     }
     run()
@@ -456,6 +458,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     const vat_rate = ti.vat === 'client' && client ? String(client.vat_rate ?? '0') : '0'
     setDescTouched(false)
     setAmountTouched(false)
+    setDoneInfo(null)
     setForm(f => ({ ...f, client_id: clientId, invoice_type: type, amount_net, vat_rate }))
   }, [clients])
 
@@ -582,11 +585,17 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           const desc = info.multi
             ? describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m))
             : (form.description || '').trim()
+          // Monthly fee / fixed expenses: every row is FILED under the
+          // top-bar (issue) month and tagged with the month it covers
+          // (represents_period, V27) — e.g. Sep + Oct billed in September
+          // both sit in September; October then shows "already invoiced".
           return {
             company_id: companyId,
             client_id: form.client_id,
             period_year: selectedYear,
-            period_month: m,
+            period_month: info.multi ? selectedMonth : m,
+            represents_period_year: info.multi ? selectedYear : null,
+            represents_period_month: info.multi ? m : null,
             invoice_type: form.invoice_type,
             description: desc || null,
             amount_net: amountForMonth(m),
@@ -842,14 +851,28 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 return (
                   <button key={mo} type="button" title={title}
                     className={`ib-mchip${on ? ' on' : ''}${past ? ' past' : ''}${already ? ' done' : ''}`}
-                    onClick={() => toggleMonth(mo)}>
+                    onClick={() => already ? setDoneInfo({ month: mo, rows: issuedMonths.get(mo) || [] }) : toggleMonth(mo)}>
                     {m.slice(0, 3)}
                   </button>
                 )
               })}
             </div>
+            {doneInfo && (
+              <div className="ib-doneinfo">
+                <button type="button" className="ib-doneinfo-x" onClick={() => setDoneInfo(null)}>×</button>
+                <strong>✓ {MONTHS[doneInfo.month - 1]} {selectedYear} is already invoiced</strong> — do not invoice it again.
+                {doneInfo.rows.map((r, i) => (
+                  <div key={i} className="ib-doneinfo-row">
+                    Inv. <strong>{r.invoice_number || '—'}</strong>
+                    {' '}· issued {r.date_issued ? r.date_issued.split('-').reverse().join('/') : '—'}
+                    {' '}· filed under {MONTHS[(r.period_month || 1) - 1]} {r.period_year}
+                    {' '}· {fmtEuro(r.amount_net)}{r.status ? ` · ${r.status}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="ib-plegend">
-              Dashed = a month with no invoice on record (auto-ticked to catch up). Grey = already invoiced.
+              Dashed = a month with no invoice on record (auto-ticked to catch up). Purple = already invoiced (click it to see the invoice).
               Tick future months to bill in advance. Each ticked month becomes its own invoice — all numbered under {MONTHS[selectedMonth - 1]} {selectedYear}.
             </div>
             {unresolvedMonths.length > 0 && (
@@ -951,7 +974,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                   <button key={r.invoice_number + i} type="button"
                     className={`ib-mchip${i === savedIdx ? ' on' : ''}`}
                     onClick={() => setSavedIdx(i)}>
-                    {r.invoice_number} · {MONTHS[(r.period_month || 1) - 1].slice(0, 3)}
+                    {r.invoice_number} · {MONTHS[((r.represents_period_month || r.period_month) || 1) - 1].slice(0, 3)}
                   </button>
                 ))}
               </div>

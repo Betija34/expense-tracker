@@ -858,3 +858,16 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px;
   border: 1px solid #d1d5db; border-radius: 4px; resize: vertical; font-family: inherit;
 }
+
+/* Month already invoiced in another month (advance / later) */
+.billed-elsewhere-row td { background: #f5f3ff; color: #4c1d95; font-size: 13px; }
+.billed-elsewhere-row:hover td { background: #ede9fe; }
+.billed-elsewhere-badge {
+  display: inline-block; margin-right: 8px; padding: 1px 8px; border-radius: 10px;
+  background: #7c3aed; color: #fff; font-size: 11px; font-weight: 700;
+}
+.billed-elsewhere-more { margin-left: 10px; font-size: 11px; color: #6d28d9; text-decoration: underline; }
+.billed-info-modal { max-width: 520px; width: 100%; }
+.billed-info-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.billed-info-table td { padding: 4px 6px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+.billed-info-table td:first-child { color: #6b7280; width: 38%; }

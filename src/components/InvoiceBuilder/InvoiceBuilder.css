@@ -395,3 +395,12 @@ fieldset.ib-lockable:disabled { opacity: 0.55; }
 /* Multi-month: one combined invoice vs separate invoices */
 .ib-combine { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 4px; font-size: 13px; }
 .ib-combine label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+/* Already-invoiced month: purple chip + details popup */
+.ib-mchip.done { opacity: 1; background: #ede9fe; border-color: #a78bfa; color: #5b21b6; cursor: help; }
+.ib-doneinfo {
+  position: relative; margin-top: 10px; padding: 10px 30px 10px 12px; background: #f5f3ff;
+  border: 1px solid #c4b5fd; border-radius: 8px; color: #4c1d95; font-size: 13px;
+}
+.ib-doneinfo-row { margin-top: 4px; }
+.ib-doneinfo-x { position: absolute; top: 4px; right: 8px; background: none; border: 0; font-size: 18px; color: #6d28d9; cursor: pointer; }

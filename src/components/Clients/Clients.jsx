@@ -108,6 +108,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // INSERTed to this list when the user types into any lifecycle field
   // (lazy-create — keeps the DB clean from un-touched draft rows).
   const [invoices, setInvoices]   = useState([])
+  // Fees for the SELECTED month that were already invoiced in ANOTHER
+  // month (billed in advance, or caught up later): invoices whose
+  // represents_period = selected month but which are filed elsewhere.
+  // They are shown as coloured "already invoiced" rows instead of a new
+  // draft, so the month can't be invoiced twice.
+  const [billedElsewhere, setBilledElsewhere] = useState([])
+  const [billedInfo, setBilledInfo] = useState(null)   // popup
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState(null)
   // editing = null (closed) | { mode: 'add' | 'edit', client: {...} }
@@ -208,6 +215,17 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             .eq('period_month', selectedMonth)
           if (invErr) throw invErr
           if (!cancelled) setInvoices(inv || [])
+
+          const { data: elsewhere, error: elsErr } = await supabase
+            .from('invoices')
+            .select('*')
+            .eq('company_id', comp.id)
+            .eq('represents_period_year', selectedYear)
+            .eq('represents_period_month', selectedMonth)
+            .in('invoice_type', ['monthly_fee', 'fixed_expense'])
+          if (elsErr) throw elsErr
+          if (!cancelled) setBilledElsewhere((elsewhere || []).filter(i =>
+            !(i.period_year === selectedYear && i.period_month === selectedMonth)))
 
           // Deferrals for this company. Small table; load all rows and
           // filter in memory by source/target period as needed.
@@ -777,6 +795,41 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       i.represents_period_year  === representsPeriod.year &&
       i.represents_period_month === representsPeriod.month
     ) || null
+
+  const billedElsewhereFor = (clientId, invoiceType) =>
+    billedElsewhere.filter(i => i.client_id === clientId && i.invoice_type === invoiceType)
+
+  const fmtDMY = (iso) => {
+    if (!iso) return '—'
+    const [y, m, d] = String(iso).slice(0, 10).split('-')
+    return `${d}/${m}/${y}`
+  }
+
+  // Coloured, read-only row: this month's fee / fixed reimbursement was
+  // already invoiced in another month. Click for the details popup.
+  const renderBilledElsewhereRow = (inv, colCount) => {
+    const c = clients.find(x => x.id === inv.client_id) || {}
+    const filedIn = `${monthName(inv.period_month)} ${inv.period_year}`
+    const what = inv.invoice_type === 'fixed_expense' ? 'fixed expenses' : 'fee'
+    const advance = inv.period_year < selectedYear ||
+      (inv.period_year === selectedYear && inv.period_month < selectedMonth)
+    return (
+      <tr key={`elsewhere-${inv.id}`} className="billed-elsewhere-row"
+        onClick={() => setBilledInfo(inv)} style={{ cursor: 'pointer' }}
+        title="Already invoiced — click for details">
+        {renderProjectCell(c)}
+        <td colSpan={colCount - 1}>
+          <span className="billed-elsewhere-badge">✓ Already invoiced</span>
+          <strong>{monthName(selectedMonth)} {selectedYear} {what}</strong>
+          {' '}— {advance ? 'billed in advance' : 'billed later'} in {filedIn}
+          {' '}· Inv. <strong>{inv.invoice_number || '—'}</strong>
+          {' '}· issued {fmtDMY(inv.date_issued)}
+          {' '}· {formatEuro(Number(inv.amount_net || 0))}{Number(inv.vat_rate) > 0 ? ' + VAT' : ''}
+          <span className="billed-elsewhere-more">ℹ️ details</span>
+        </td>
+      </tr>
+    )
+  }
 
   // Patch one or more fields on an invoice row. INSERTs the row if it
   // doesn't exist yet (lazy-create), UPDATEs in place if it does.
@@ -1920,11 +1973,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     for (const c of clients) {
       if (!c.active) continue
       if (Number(c.monthly_fee_net || 0) > 0 &&
-          !clientIdsByType.get('monthly_fee')?.has(c.id)) {
+          !clientIdsByType.get('monthly_fee')?.has(c.id) &&
+          billedElsewhereFor(c.id, 'monthly_fee').length === 0) {
         placeholderTotal += 1
       }
       if (Number(c.monthly_fixed_expense_net || 0) > 0 &&
-          !clientIdsByType.get('fixed_expense')?.has(c.id)) {
+          !clientIdsByType.get('fixed_expense')?.has(c.id) &&
+          billedElsewhereFor(c.id, 'fixed_expense').length === 0) {
         placeholderTotal += 1
       }
       // Use the EFFECTIVE amount (natural + inbound deferrals; 0 if
@@ -1942,7 +1997,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     return { total, finalized, pending, pct }
     // reimbursableByClient is the underlying state behind reimbursableFor;
     // deferrals + reimbursableBySourcePeriod feed effectiveReimbursableFor.
-  }, [invoices, clients, reimbursableByClient, reimbursableBySourcePeriod, deferrals])
+  }, [invoices, clients, reimbursableByClient, reimbursableBySourcePeriod, deferrals, billedElsewhere])
 
   // ---- Print handler — A4 landscape, same pattern as Client Report ----
   const handlePrint = () => {
@@ -2121,13 +2176,35 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             const perInstanceRows = []
             for (const c of clients) {
               if (!c.active) continue
-              if (clientsWithLegacyDb.has(c.id)) continue
+              // Clients with a legacy combined row here render that row
+              // below; only their per-month split rows (if any) are added.
+              const legacy = clientsWithLegacyDb.has(c.id)
               if (outboundClientIds.has(c.id)) continue
-              const inbound = inboundDeferralsFor(c, 'monthly_fee').filter(d => d.amount > 0)
-              const hasOutbound = !!outboundDeferralFor(c, 'monthly_fee')
-              const hasNatural  = !hasOutbound && Number(c.monthly_fee_net || 0) > 0
-              if (!hasNatural && inbound.length === 0) continue
+              const inbound = legacy ? [] : inboundDeferralsFor(c, 'monthly_fee').filter(d => d.amount > 0)
+              const hasOutbound = legacy || !!outboundDeferralFor(c, 'monthly_fee')
+              // Not natural if this month's fee was already invoiced in
+              // another month (advance / later) — shown as a coloured row.
+              const hasNatural  = !hasOutbound && Number(c.monthly_fee_net || 0) > 0 &&
+                billedElsewhereFor(c.id, 'monthly_fee').length === 0
+              // Split rows FILED here for other months with no deferral
+              // behind them (e.g. October billed in advance in September,
+              // or a past month caught up here) — show them too.
+              const extraSplit = splitInvoices.filter(i =>
+                i.client_id === c.id &&
+                !(hasNatural && i.represents_period_year === selectedYear && i.represents_period_month === selectedMonth) &&
+                !inbound.some(d => d.source_year === i.represents_period_year && d.source_month === i.represents_period_month))
+              if (!hasNatural && inbound.length === 0 && extraSplit.length === 0) continue
               const instances = []
+              for (const i of extraSplit) {
+                const later = i.represents_period_year > selectedYear ||
+                  (i.represents_period_year === selectedYear && i.represents_period_month > selectedMonth)
+                const same = i.represents_period_year === selectedYear && i.represents_period_month === selectedMonth
+                instances.push({
+                  year: i.represents_period_year, month: i.represents_period_month,
+                  amount: Number(i.amount_net || 0), isDeferred: false,
+                  extraLabel: same ? '' : (later ? ' (billed in advance)' : ' (billed late)'),
+                })
+              }
               for (const d of inbound) {
                 instances.push({
                   year: d.source_year, month: d.source_month,
@@ -2162,6 +2239,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                   return s + net * (1 + vatRate)
                 }, 0)
             const totalRows = perInstanceRows.length + legacyInvoices.length + outboundClients.length
+              + billedElsewhere.filter(i => i.invoice_type === 'monthly_fee').length
             return (
               <section className="clients-block clients-block-monthly">
                 <div className="clients-block-header">
@@ -2226,7 +2304,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             }}>
                               {inst.isDeferred ? '↪ ' : '· '}
                               {monthName(inst.month)} {inst.year} fee
-                              {inst.isDeferred ? ' (deferred in)' : ''}
+                              {inst.isDeferred ? ' (deferred in)' : ''}{inst.extraLabel || ''}
                             </span>
                           </td>
                           <td style={{ textAlign: 'right' }}>
@@ -2472,6 +2550,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                         </tr>
                       )
                     })}
+                    {billedElsewhere.filter(i => i.invoice_type === 'monthly_fee').map(inv => renderBilledElsewhereRow(inv, 15))}
                   </tbody>
                 </table>
                 </div>
@@ -2604,7 +2683,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               .filter(c =>
                 c.active &&
                 effectiveAmountFor(c, 'fixed_expense') > 0 &&
-                !clientIdsWithDbRow.has(c.id)
+                !clientIdsWithDbRow.has(c.id) &&
+                billedElsewhereFor(c.id, 'fixed_expense').length === 0
               )
             // Outbound-only: client's fixed-expense reimbursement deferred
             // away AND no inbound + no DB row, so only thing to surface
@@ -2625,6 +2705,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               ? `${monthName(selectedMonth)} ${selectedYear} fixed expenses`
               : 'Fixed monthly expenses'
             const totalRows = dbInvoices.length + placeholderClients.length + outboundClients.length
+              + billedElsewhere.filter(i => i.invoice_type === 'fixed_expense').length
             return (
               <section className="clients-block clients-block-fixed">
                 <div className="clients-block-header">
@@ -2858,6 +2939,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           </tr>
                         )
                       })}
+                      {billedElsewhere.filter(i => i.invoice_type === 'fixed_expense').map(inv => renderBilledElsewhereRow(inv, 12))}
                     </tbody>
                   </table>
                   </div>
@@ -3722,6 +3804,44 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           </div>
         </div>
       )}
+
+      {billedInfo && (() => {
+        const inv = billedInfo
+        const c = clients.find(x => x.id === inv.client_id) || {}
+        const what = inv.invoice_type === 'fixed_expense' ? 'fixed expense reimbursement' : 'monthly fee'
+        return (
+          <div className="modal-overlay" onClick={() => setBilledInfo(null)}>
+            <div className="modal-content billed-info-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>✓ Already invoiced</h3>
+                <button className="modal-close" onClick={() => setBilledInfo(null)}>×</button>
+              </div>
+              <div className="modal-body">
+                <p style={{ marginTop: 0 }}>
+                  The <strong>{monthName(selectedMonth)} {selectedYear} {what}</strong> for{' '}
+                  <strong>{c.trade_name || c.legal_name}</strong> has already been invoiced.
+                  Do not invoice it again.
+                </p>
+                <table className="billed-info-table"><tbody>
+                  <tr><td>Invoice number</td><td><strong>{inv.invoice_number || '—'}</strong></td></tr>
+                  <tr><td>Date issued</td><td>{fmtDMY(inv.date_issued)}</td></tr>
+                  <tr><td>Filed under</td><td>{monthName(inv.period_month)} {inv.period_year}</td></tr>
+                  <tr><td>Amount (net)</td><td>{formatEuro(Number(inv.amount_net || 0))}</td></tr>
+                  <tr><td>Total</td><td>{formatEuro(Number(inv.amount_total || 0))}</td></tr>
+                  <tr><td>Status</td><td>{inv.status || '—'}{inv.date_paid ? ` · paid ${fmtDMY(inv.date_paid)}` : ''}</td></tr>
+                  {inv.description && <tr><td>Description</td><td style={{ whiteSpace: 'pre-line' }}>{inv.description}</td></tr>}
+                </tbody></table>
+                <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 0 }}>
+                  To see or edit it, switch the top bar to {monthName(inv.period_month)} {inv.period_year}.
+                </p>
+              </div>
+              <div className="modal-footer">
+                <button className="button" onClick={() => setBilledInfo(null)}>OK</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {editing && (
         <div className="modal-overlay" onClick={closeModal}>
