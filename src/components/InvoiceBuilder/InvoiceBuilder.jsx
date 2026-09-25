@@ -342,12 +342,22 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           byMonth.set(key, (byMonth.get(key) || 0) + Number(r.amount || 0))
         }
 
+        // Variable-expense deferrals ONLY (the same table also holds
+        // monthly_fee / fixed_expense deferrals — those must not affect
+        // which expense reports are offered).
         const { data: defs } = await supabase
           .from('expense_deferrals').select('*')
           .eq('company_id', companyId).eq('client_id', form.client_id)
+        const varDefs = (defs || []).filter(d => (d.invoice_type || 'variable_expense') === 'variable_expense')
         const deferBySource = new Map()
-        for (const d of (defs || [])) deferBySource.set(`${d.source_year}-${d.source_month}`, d)
+        for (const d of varDefs) deferBySource.set(`${d.source_year}-${d.source_month}`, d)
 
+        // Which expense months are already invoiced?
+        //  - Invoices made here record the exact months (covered_expense_periods).
+        //  - Older invoices (Client Invoicing tab) don't; there an invoice
+        //    filed under month P billed P's own expenses UNLESS P was
+        //    deferred away, PLUS every month deferred INTO P. This is the
+        //    same rule the Client Invoicing tab uses to build the amount.
         const { data: invs } = await supabase
           .from('invoices').select('covered_expense_periods, period_year, period_month')
           .eq('company_id', companyId).eq('client_id', form.client_id).eq('invoice_type', 'variable_expense')
@@ -355,12 +365,15 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         for (const iv of (invs || [])) {
           const cp = Array.isArray(iv.covered_expense_periods) ? iv.covered_expense_periods : []
           if (cp.length > 0) {
-            // New picker invoices: the exact source months they covered.
             for (const p of cp) covered.add(`${p.year}-${p.month}`)
           } else if (iv.period_year && iv.period_month) {
-            // Older variable invoices (e.g. from the Client Invoicing tab):
-            // fall back to their own billing period.
-            covered.add(`${iv.period_year}-${iv.period_month}`)
+            const pk = `${iv.period_year}-${iv.period_month}`
+            if (!deferBySource.has(pk)) covered.add(pk)
+            for (const d of varDefs) {
+              if (d.target_year === iv.period_year && d.target_month === iv.period_month) {
+                covered.add(`${d.source_year}-${d.source_month}`)
+              }
+            }
           }
         }
 
