@@ -554,8 +554,10 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 /* ===== Modal ===== */
 .clients-modal {
-  max-width: 720px;
+  max-width: 940px;
   width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
 }
 .clients-modal .form-grid {
   display: grid;
@@ -830,4 +832,23 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   /* Don't print the Email Delivery card grid (info already on the page). */
   .clients-block-email,
   .clients-block-inactive { display: none !important; }
+}
+
+/* ---- Client modal: section titles + fee phases (V38) ---- */
+.cl-section-title {
+  font-weight: 700; font-size: 13px; color: #1f2937;
+  border-top: 1px solid #e5e7eb; padding-top: 10px; margin-top: 4px;
+}
+.cl-phases { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cl-phases th { text-align: left; font-weight: 600; color: #6b7280; padding: 4px; border-bottom: 1px solid #e5e7eb; }
+.cl-phases td { padding: 3px 4px; vertical-align: middle; }
+.cl-phases input, .cl-phases select {
+  width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px;
+  border: 1px solid #d1d5db; border-radius: 4px;
+}
+.cl-phases td:nth-child(1) { width: 90px; }
+.cl-phases td:nth-child(3), .cl-phases td:nth-child(4) { width: 130px; }
+.cl-phases td:nth-child(5) { width: 110px; }
+.cl-phase-del {
+  background: none; border: none; color: #b91c1c; font-size: 16px; cursor: pointer; padding: 0 4px;
 }

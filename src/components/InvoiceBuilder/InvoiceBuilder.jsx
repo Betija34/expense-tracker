@@ -3,6 +3,7 @@ import { supabase } from '../../supabaseClient'
 import { RabonaLogo } from '../../assets/RabonaLogo'
 import { EspargosLogo } from '../../assets/EspargosLogo'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
+import { resolveMonthlyFee, fmtPhaseRange } from '../../lib/feePhases'
 import './InvoiceBuilder.css'
 
 /**
@@ -66,11 +67,10 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
-// Default agreement section + schedule per project, used only to seed the
-// editable description. These become per-client fields in the next phase
-// (client info); until then everyone defaults to section 6.1 / Schedule 2.
-const SECTION_BY_TRADE = {}   // e.g. { 'Urban City': '6.1' } — filled per client later
-const SCHEDULE_BY_TRADE = {}  // e.g. { 'Urban City': '2' }  — filled per client later
+// Agreement section + schedule + project name + optional custom fee wording
+// come from the client record (V38: agreement_section, agreement_schedule,
+// invoice_project_name, fee_wording). Blank = the standard defaults
+// (section 6.1 / Schedule 2 / trade name / standard wording).
 
 function typeInfo(t) { return TYPES.find(x => x.value === t) || TYPES[0] }
 function pad3(n) { return String(n).padStart(3, '0') }
@@ -88,11 +88,17 @@ function lastDayLabel(m, y) { return `${MONTHS[(m || 1) - 1]} ${ordinal(new Date
 function describe(client, type, m, y) {
   if (!client) return ''
   const M = MONTHS[(m || 1) - 1]
-  const proj = (client.trade_name || client.legal_name || '').toUpperCase()
-  const sec = SECTION_BY_TRADE[client.trade_name] || '6.1'
-  const sched = SCHEDULE_BY_TRADE[client.trade_name] || '2'
+  const proj = (client.invoice_project_name || client.trade_name || client.legal_name || '').toUpperCase()
+  const sec = (client.agreement_section || '').trim() || '6.1'
+  const sched = (client.agreement_schedule || '').trim() || '2'
   switch (type) {
     case 'monthly_fee':
+      if ((client.fee_wording || '').trim()) {
+        return client.fee_wording.trim()
+          .replace(/\{MONTH\}/g, M.toUpperCase())
+          .replace(/\{YEAR\}/g, String(y))
+          .replace(/\{PROJECT\}/g, proj)
+      }
       return `Services per Consultancy Service Agreement section ${sec} and Schedule ${sched}, ${M} fee ${y}\nProject ${proj}`
     case 'fixed_expense':
       return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Fixed Procure and Running Expenses) ${M} ${y}\nProject ${proj}`
@@ -135,6 +141,10 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const [dateTouched, setDateTouched] = useState(false)
   const [dateApproved, setDateApproved] = useState(false)
   const [descTouched, setDescTouched] = useState(false)
+  const [amountTouched, setAmountTouched] = useState(false)   // user typed over the phase/agreement amount
+
+  // Fee phases (V38) of the selected client: { clientId, rows, error }
+  const [phaseState, setPhaseState] = useState({ clientId: null, rows: [], error: null, loading: false })
 
   const [showInfo, setShowInfo] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -179,6 +189,31 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     load()
     return () => { cancelled = true }
   }, [selectedCompany])
+
+  // ---- Fee phases of the selected client ---------------------------------
+  // Fail-soft: if the table is missing (V38 not run yet) or the read fails,
+  // the client is treated as having no phases (monthly_fee_net is used, as
+  // before) and a note is shown.
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      if (!form.client_id) { setPhaseState({ clientId: null, rows: [], error: null, loading: false }); return }
+      setPhaseState({ clientId: form.client_id, rows: [], error: null, loading: true })
+      try {
+        const { data, error } = await supabase
+          .from('client_fee_phases').select('*')
+          .eq('client_id', form.client_id)
+          .order('kind', { ascending: true })
+          .order('sort_order', { ascending: true })
+        if (error) throw error
+        if (!cancelled) setPhaseState({ clientId: form.client_id, rows: data || [], error: null, loading: false })
+      } catch (err) {
+        if (!cancelled) setPhaseState({ clientId: form.client_id, rows: [], error: err.message || 'Could not load fee phases', loading: false })
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  }, [form.client_id, savedInfo])
 
   // ---- Which months are already invoiced (multi types) -------------------
   useEffect(() => {
@@ -350,6 +385,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     }
     const vat_rate = ti.vat === 'client' && client ? String(client.vat_rate ?? '0') : '0'
     setDescTouched(false)
+    setAmountTouched(false)
     setForm(f => ({ ...f, client_id: clientId, invoice_type: type, amount_net, vat_rate }))
   }, [clients])
 
@@ -380,13 +416,29 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     ? [VAR_HEADING, ...selectedReportList.map(o => `Expenses as of ${lastDayLabel(o.m, o.y)} expense report`)].join('\n')
     : ''
 
+  // ---- Fee phases → per-month monthly-fee amount -------------------------
+  // For the monthly fee, unless the user typed over the amount, each month
+  // takes the amount of the fee phase covering THAT month (so a run that
+  // crosses a phase change bills each month at its own rate). Clients with
+  // no phases fall back to the client's monthly fee (unchanged behaviour).
+  const phasesReady = !!selectedClient && phaseState.clientId === form.client_id && !phaseState.loading
+  const clientPhases = phasesReady ? phaseState.rows : []
+  const usePhases = form.invoice_type === 'monthly_fee' && !amountTouched && !!selectedClient
+  const feeFor = (m) => resolveMonthlyFee(selectedClient, clientPhases, selectedYear, m)
+  const anchorFee = usePhases ? feeFor(anchorMonth) : null
+
   // ---- Derived amounts ---------------------------------------------------
-  const net = isVar ? variableTotal : (parseFloat(form.amount_net) || 0)
   const vatRate = info.vat === 'client' ? (parseFloat(form.vat_rate) || 0) : 0
+  const amountForMonth = (m) => usePhases ? feeFor(m).amount : (parseFloat(form.amount_net) || 0)
+  const net = isVar ? variableTotal : (usePhases ? (anchorFee.amount || 0) : (parseFloat(form.amount_net) || 0))
   const vatAmount = net * vatRate
   const total = net + vatAmount
+  const totalFor = (m) => { const a = amountForMonth(m) || 0; return a + a * vatRate }
 
   const monthsToIssue = info.multi ? [...selMonths].sort((a, b) => a - b) : [selectedMonth]
+  const unresolvedMonths = usePhases
+    ? monthsToIssue.filter(m => { const r = feeFor(m); return r.amount == null })
+    : []
   const startSeq = Number.isNaN(parseInt(seqInput, 10)) ? baseSeq : parseInt(seqInput, 10)
   const plannedNumbers = monthsToIssue.map((_, i) => dashPrefix + pad3(startSeq + i))
   const singleNumber = plannedNumbers[0] || (dashPrefix + pad3(startSeq))
@@ -414,7 +466,10 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     allConfirmed &&
     (isVar
       ? (selectedReportList.length > 0 && variableTotal !== 0)
-      : (!Number.isNaN(parseFloat(form.amount_net)) && parseFloat(form.amount_net) !== 0 && monthsToIssue.length > 0))
+      : usePhases
+        ? (phasesReady && monthsToIssue.length > 0 && unresolvedMonths.length === 0 &&
+           monthsToIssue.every(m => Number(feeFor(m).amount) !== 0))
+        : (!Number.isNaN(parseFloat(form.amount_net)) && parseFloat(form.amount_net) !== 0 && monthsToIssue.length > 0))
 
   const handleSave = async () => {
     setSaveError(null); setSavedInfo(null)
@@ -456,9 +511,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             period_month: m,
             invoice_type: form.invoice_type,
             description: desc || null,
-            amount_net: net,
+            amount_net: amountForMonth(m),
             vat_rate: vatRate,
-            amount_total: total,
+            amount_total: totalFor(m),
             status: 'issued',
             invoice_number: number,
             date_issued: form.date_issued,
@@ -556,9 +611,18 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </label>
 
           <label className="ib-field ib-field-sm">
-            <span>Amount (net €){isVar ? ' — from expense reports' : (info.src !== 'manual' ? ' — from agreement' : '')}</span>
-            <input type="number" step="0.01" value={isVar ? variableTotal : form.amount_net} disabled={isVar}
-              onChange={e => setForm(f => ({ ...f, amount_net: e.target.value }))} placeholder="0.00" />
+            <span>Amount (net €){isVar ? ' — from expense reports'
+              : usePhases && anchorFee?.status === 'phase' ? ` — phase: ${anchorFee.phase.label}`
+              : amountTouched && form.invoice_type === 'monthly_fee' ? ' — typed (overrides phases)'
+              : (info.src !== 'manual' ? ' — from agreement' : '')}</span>
+            <input type="number" step="0.01"
+              value={isVar ? variableTotal : (usePhases ? (anchorFee.amount ?? '') : form.amount_net)}
+              disabled={isVar}
+              onChange={e => { if (form.invoice_type === 'monthly_fee') setAmountTouched(true); setForm(f => ({ ...f, amount_net: e.target.value })) }}
+              placeholder="0.00" />
+            {amountTouched && form.invoice_type === 'monthly_fee' && (
+              <button type="button" className="ib-link" onClick={() => setAmountTouched(false)}>↺ Use fee phases again</button>
+            )}
           </label>
 
           <label className="ib-field ib-field-sm">
@@ -592,13 +656,35 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 <div>Company number: {selectedClient.registration_number || '—'} · VAT number: {selectedClient.vat_id || '—'}</div>
                 <div>Address: {selectedClient.address || '— none on file —'}</div>
                 <div>
-                  Current monthly fee: <strong>{fmtEuro(selectedClient.monthly_fee_net)}</strong>
+                  Base monthly fee: <strong>{fmtEuro(selectedClient.monthly_fee_net)}</strong>
                   {Number(selectedClient.monthly_fixed_expense_net) > 0 && <> · Fixed reimb: <strong>{fmtEuro(selectedClient.monthly_fixed_expense_net)}</strong></>}
                   {' '}· VAT rate: <strong>{(Number(selectedClient.vat_rate) * 100)}%</strong>
                 </div>
+                <div>
+                  Wording: section <strong>{selectedClient.agreement_section || '6.1'}</strong> · Schedule <strong>{selectedClient.agreement_schedule || '2'}</strong>
+                  {' '}· Project line: <strong>{(selectedClient.invoice_project_name || selectedClient.trade_name || '—').toUpperCase()}</strong>
+                  {selectedClient.fee_wording ? <> · custom wording on file</> : null}
+                </div>
                 <div className="ib-phasebox">
-                  Fee <strong>phase schedule</strong> will live here (next build): the amount auto-matches the period's phase, still overridable above.
-                  Edit identity &amp; wording on the Client Invoicing tab.
+                  {phaseState.loading ? 'Loading fee phases…'
+                    : phaseState.error ? <>Fee phases unavailable ({phaseState.error}) — using the base monthly fee. Run the V38 migration if not done yet.</>
+                    : clientPhases.length === 0 ? <>No fee phases on file — the base monthly fee is used for every month. Add phases on the Clients tab (edit client → Fee phases).</>
+                    : (
+                      <table className="ib-phasetable"><tbody>
+                        {clientPhases.map(p => {
+                          const live = p.kind === 'monthly' && anchorFee?.phase?.id === p.id
+                          return (
+                            <tr key={p.id} className={live ? 'live' : undefined}>
+                              <td>{p.kind === 'monthly' ? 'Monthly' : 'One-off'}</td>
+                              <td>{p.label}{live ? ' ◀ in effect' : ''}</td>
+                              <td>{fmtPhaseRange(p)}</td>
+                              <td className="a">{fmtEuro(p.amount_net)}{p.kind === 'monthly' ? '/mo' : ''}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody></table>
+                    )}
+                  <div style={{ marginTop: 4 }}>Edit client details, wording and phases on the Clients tab (edit client).</div>
                 </div>
               </>
             ) : <div>Select a client first.</div>}
@@ -629,6 +715,13 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
               Dashed = a month with no invoice on record (auto-ticked to catch up). Grey = already invoiced.
               Tick future months to bill in advance. Each ticked month becomes its own invoice — all numbered under {MONTHS[selectedMonth - 1]} {selectedYear}.
             </div>
+            {unresolvedMonths.length > 0 && (
+              <div className="ib-error" style={{ marginTop: 8 }}>
+                No single fee phase covers {unresolvedMonths.map(m => MONTHS[m - 1]).join(', ')} {selectedYear}
+                {' '}({unresolvedMonths.map(m => feeFor(m).status === 'overlap' ? 'phases overlap' : 'no phase').filter((v, i, a) => a.indexOf(v) === i).join(' / ')}).
+                Fix the phases on the Clients tab, or type the amount above to override.
+              </div>
+            )}
             {monthsToIssue.length > 0 && (
               <div className="ib-willmake">
                 <strong>Will create {monthsToIssue.length} invoice{monthsToIssue.length > 1 ? 's' : ''}:</strong>
@@ -637,7 +730,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                     <tr key={m}>
                       <td className="n">{plannedNumbers[i]}</td>
                       <td>{describe(selectedClient, form.invoice_type, m, selectedYear)}</td>
-                      <td className="a">{fmtEuro(total)}</td>
+                      <td className="a">{usePhases && feeFor(m).amount == null ? '—' : fmtEuro(totalFor(m))}</td>
                     </tr>
                   ))}
                 </tbody></table>

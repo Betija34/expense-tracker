@@ -375,3 +375,9 @@
   .ib-unconfirmed,
   .ib-unconfirmed * { color: #1d1d1b !important; }
 }
+
+/* Fee phases list in the client-details panel (V38) */
+.ib-phasetable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ib-phasetable td { padding: 2px 6px; }
+.ib-phasetable td.a { text-align: right; white-space: nowrap; }
+.ib-phasetable tr.live td { font-weight: 700; color: #065f46; }

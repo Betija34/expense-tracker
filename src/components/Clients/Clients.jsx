@@ -4,6 +4,7 @@ import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import { ComposeEmailsModal } from './ComposeEmailsModal'
 import { SoaModal } from './SoaModal'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
+import { validatePhases, resolveMonthlyFee } from '../../lib/feePhases'
 import './Clients.css'
 
 /**
@@ -52,7 +53,22 @@ const BLANK_FORM = {
   email_cc: '',
   notes: '',
   active: true,
+  // Invoice header + wording (V32 / V38)
+  registration_number: '',
+  vat_id: '',
+  address: '',
+  agreement_section: '',
+  agreement_schedule: '',
+  invoice_project_name: '',
+  fee_wording: '',
 }
+
+// One editable row of the fee-phase schedule (V38 client_fee_phases).
+let _phaseKey = 0
+const blankPhase = (kind = 'monthly') => ({
+  _key: `new-${++_phaseKey}`, id: null, kind, label: '',
+  effective_from: '', effective_to: '', amount_net: '', notes: '',
+})
 
 export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // Period-lock guard. When the top-bar selection lands on a closed
@@ -99,6 +115,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const [form, setForm]           = useState(BLANK_FORM)
   const [saveError, setSaveError] = useState(null)
   const [saving, setSaving]       = useState(false)
+  // Fee phases being edited in the client modal (V38).
+  const [phaseRows, setPhaseRows]         = useState([])
+  const [phasesLoading, setPhasesLoading] = useState(false)
+  const [phasesError, setPhasesError]     = useState(null)
   // One-off invoice modal state. null = closed.
   // Otherwise: { client_id, oneoff_type ('service' | 'reimbursement'),
   //              description, amount_net, vat_rate, notes }
@@ -1556,8 +1576,33 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const openAdd = () => {
     setForm({ ...BLANK_FORM })
     setSaveError(null)
+    setPhaseRows([]); setPhasesError(null); setPhasesLoading(false)
     setEditing({ mode: 'add', client: null })
   }
+  const loadPhasesFor = async (clientId) => {
+    setPhaseRows([]); setPhasesError(null); setPhasesLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('client_fee_phases').select('*')
+        .eq('client_id', clientId)
+        .order('kind', { ascending: true })
+        .order('sort_order', { ascending: true })
+        .order('effective_from', { ascending: true, nullsFirst: false })
+      if (error) throw error
+      setPhaseRows((data || []).map(r => ({
+        _key: r.id, id: r.id, kind: r.kind, label: r.label || '',
+        effective_from: r.effective_from || '', effective_to: r.effective_to || '',
+        amount_net: r.amount_net != null ? String(r.amount_net) : '', notes: r.notes || '',
+      })))
+    } catch (err) {
+      setPhasesError(`Fee phases could not be loaded (${err.message || err}). If this is the first use, run DATABASE_SCHEMA_V38_MIGRATION.sql in Supabase.`)
+    } finally {
+      setPhasesLoading(false)
+    }
+  }
+  const updatePhase = (key, patch) => setPhaseRows(rows => rows.map(r => r._key === key ? { ...r, ...patch } : r))
+  const removePhase = (key) => setPhaseRows(rows => rows.filter(r => r._key !== key))
+  const addPhase = (kind) => setPhaseRows(rows => [...rows, blankPhase(kind)])
   const openEdit = (client) => {
     setForm({
       legal_name:      client.legal_name || '',
@@ -1570,14 +1615,56 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       email_cc:        client.email_cc || '',
       notes:           client.notes || '',
       active:          client.active !== false,
+      registration_number:  client.registration_number || '',
+      vat_id:               client.vat_id || '',
+      address:              client.address || '',
+      agreement_section:    client.agreement_section || '',
+      agreement_schedule:   client.agreement_schedule || '',
+      invoice_project_name: client.invoice_project_name || '',
+      fee_wording:          client.fee_wording || '',
     })
     setSaveError(null)
     setEditing({ mode: 'edit', client })
+    loadPhasesFor(client.id)
   }
   const closeModal = () => {
     setEditing(null)
     setForm(BLANK_FORM)
     setSaveError(null)
+    setPhaseRows([]); setPhasesError(null)
+  }
+
+  // ---- Sync the edited fee phases to client_fee_phases (V38) ----
+  // Rows removed in the form are deleted, edited rows updated, new rows
+  // inserted. Only this client's phases are touched.
+  const savePhases = async (clientId) => {
+    const { data: existing, error: exErr } = await supabase
+      .from('client_fee_phases').select('id').eq('client_id', clientId)
+    if (exErr) throw new Error(`Client saved, but fee phases were not: ${exErr.message}`)
+    const keepIds = new Set(phaseRows.filter(r => r.id).map(r => r.id))
+    const toDelete = (existing || []).map(r => r.id).filter(id => !keepIds.has(id))
+    if (toDelete.length) {
+      const { error } = await supabase.from('client_fee_phases').delete().in('id', toDelete)
+      if (error) throw new Error(`Client saved, but removing fee phases failed: ${error.message}`)
+    }
+    const now = new Date().toISOString()
+    for (const [i, r] of phaseRows.entries()) {
+      const rec = {
+        client_id:      clientId,
+        kind:           r.kind,
+        label:          r.label.trim(),
+        effective_from: r.effective_from || null,
+        effective_to:   r.effective_to || null,
+        amount_net:     parseFloat(r.amount_net),
+        notes:          r.notes?.trim() || null,
+        sort_order:     i,
+      }
+      const q = r.id
+        ? supabase.from('client_fee_phases').update({ ...rec, updated_at: now }).eq('id', r.id)
+        : supabase.from('client_fee_phases').insert([rec])
+      const { error } = await q
+      if (error) throw new Error(`Client saved, but fee phase "${rec.label}" was not: ${error.message}`)
+    }
   }
 
   // ---- Save (insert or update) ----
@@ -1601,6 +1688,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     if (Number.isNaN(vat) || vat < 0 || vat > 1) {
       setSaveError('VAT rate must be a decimal between 0 and 1 (e.g. 0.19 for 19%)'); return
     }
+    // Fee phases: validate before touching the database.
+    if (phasesError) {
+      setSaveError('Fee phases did not load, so saving is blocked to avoid overwriting them. Close and reopen this client (or run the V38 migration).'); return
+    }
+    const phaseErr = validatePhases(phaseRows)
+    if (phaseErr) { setSaveError(phaseErr); return }
 
     // Duplicate-project guard. trade_name is unique per company
     // (case-insensitive) — enforced by V22's partial unique index but
@@ -1636,6 +1729,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       email_cc:        form.email_cc?.trim() || null,
       notes:           form.notes?.trim() || null,
       active:          !!form.active,
+      registration_number:  form.registration_number?.trim() || null,
+      vat_id:               form.vat_id?.trim() || null,
+      address:              form.address?.trim() || null,
+      agreement_section:    form.agreement_section?.trim() || null,
+      agreement_schedule:   form.agreement_schedule?.trim() || null,
+      invoice_project_name: form.invoice_project_name?.trim() || null,
+      fee_wording:          form.fee_wording?.trim() || null,
     }
 
     try {
@@ -1649,6 +1749,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           .single()
         if (updErr) throw updErr
         setClients(prev => prev.map(c => c.id === updated.id ? updated : c))
+        await savePhases(updated.id)
       } else {
         const { data: inserted, error: insErr } = await supabase
           .from('clients')
@@ -1659,6 +1760,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         setClients(prev => [...prev, inserted].sort((a, b) =>
           (a.trade_name || a.legal_name).localeCompare(b.trade_name || b.legal_name)
         ))
+        if (phaseRows.length > 0) await savePhases(inserted.id)
       }
       closeModal()
     } catch (err) {
@@ -3714,6 +3816,125 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     <span>{form.active ? 'Active (billing every month)' : 'Inactive (archived)'}</span>
                   </label>
                 </div>
+                <div className="form-group full-row">
+                  <div className="cl-section-title">Invoice header (BILL TO)</div>
+                </div>
+                <div className="form-group">
+                  <label>Company number</label>
+                  <input type="text" className="form-input" value={form.registration_number}
+                    onChange={(e) => setForm(f => ({ ...f, registration_number: e.target.value }))}
+                    placeholder="e.g. HE439329" />
+                </div>
+                <div className="form-group">
+                  <label>VAT number</label>
+                  <input type="text" className="form-input" value={form.vat_id}
+                    onChange={(e) => setForm(f => ({ ...f, vat_id: e.target.value }))}
+                    placeholder="e.g. 10439329Y" />
+                </div>
+                <div className="form-group full-row">
+                  <label>Address</label>
+                  <input type="text" className="form-input" value={form.address}
+                    onChange={(e) => setForm(f => ({ ...f, address: e.target.value }))}
+                    placeholder="Registered address as printed on the invoice" />
+                </div>
+
+                <div className="form-group full-row">
+                  <div className="cl-section-title">Monthly-fee invoice wording</div>
+                </div>
+                <div className="form-group">
+                  <label>Agreement section</label>
+                  <input type="text" className="form-input" value={form.agreement_section}
+                    onChange={(e) => setForm(f => ({ ...f, agreement_section: e.target.value }))}
+                    placeholder="6.1 (default)" />
+                </div>
+                <div className="form-group">
+                  <label>Schedule</label>
+                  <input type="text" className="form-input" value={form.agreement_schedule}
+                    onChange={(e) => setForm(f => ({ ...f, agreement_schedule: e.target.value }))}
+                    placeholder="2 (default)" />
+                </div>
+                <div className="form-group full-row">
+                  <label>Project name on invoice</label>
+                  <input type="text" className="form-input" value={form.invoice_project_name}
+                    onChange={(e) => setForm(f => ({ ...f, invoice_project_name: e.target.value }))}
+                    placeholder={`Blank = trade name (${form.trade_name || '—'})`} />
+                </div>
+                <div className="form-group full-row">
+                  <label>Custom fee wording (optional — replaces the standard text)</label>
+                  <textarea rows={2} className="form-input" value={form.fee_wording}
+                    onChange={(e) => setForm(f => ({ ...f, fee_wording: e.target.value }))}
+                    placeholder="e.g. Consultancy Services ({MONTH} FEE {YEAR})" />
+                  <small style={{ color: '#6b7280', fontSize: 11 }}>
+                    Leave blank for the standard wording: "Services per Consultancy Service Agreement section {form.agreement_section || '6.1'} and Schedule {form.agreement_schedule || '2'}, &lt;Month&gt; fee &lt;Year&gt;" + "Project &lt;NAME&gt;".
+                    Placeholders: {'{MONTH}'} {'{YEAR}'} {'{PROJECT}'}.
+                  </small>
+                </div>
+
+                <div className="form-group full-row">
+                  <div className="cl-section-title">Fee phases</div>
+                  <small style={{ color: '#6b7280', fontSize: 11, display: 'block', marginBottom: 6 }}>
+                    One row per fee phase / stage. The Issue Invoice tab uses the monthly phase covering the month being invoiced.
+                    Leave a phase's start date blank while its dates are not known — it stays on file but is not used.
+                    With no monthly phases, the "Monthly fee (net)" above is used for every month.
+                    One-off items (bonuses, completion fees) are for reference only and are never billed automatically.
+                  </small>
+                  {phasesLoading && <div style={{ fontSize: 12, color: '#6b7280' }}>Loading phases…</div>}
+                  {phasesError && <div className="message error" style={{ marginBottom: 8 }}>{phasesError}</div>}
+                  {!phasesLoading && !phasesError && (
+                    <>
+                      {phaseRows.length > 0 && (
+                        <table className="cl-phases">
+                          <thead><tr>
+                            <th>Type</th><th>Phase name</th><th>From</th><th>To</th><th>Amount (net €)</th><th>Notes</th><th></th>
+                          </tr></thead>
+                          <tbody>
+                            {phaseRows.map(r => (
+                              <tr key={r._key}>
+                                <td>
+                                  <select value={r.kind} onChange={(e) => updatePhase(r._key, { kind: e.target.value })}>
+                                    <option value="monthly">Monthly</option>
+                                    <option value="one_off">One-off</option>
+                                  </select>
+                                </td>
+                                <td><input type="text" value={r.label} placeholder={r.kind === 'monthly' ? 'e.g. Phase 2 — Execution' : 'e.g. Completion bonus'}
+                                  onChange={(e) => updatePhase(r._key, { label: e.target.value })} /></td>
+                                <td><input type="date" value={r.effective_from}
+                                  onChange={(e) => updatePhase(r._key, { effective_from: e.target.value })} /></td>
+                                <td>{r.kind === 'monthly'
+                                  ? <input type="date" value={r.effective_to}
+                                      onChange={(e) => updatePhase(r._key, { effective_to: e.target.value })} />
+                                  : <span style={{ color: '#9ca3af', fontSize: 11 }}>—</span>}</td>
+                                <td><input type="number" step="0.01" min="0" value={r.amount_net} style={{ textAlign: 'right' }}
+                                  onChange={(e) => updatePhase(r._key, { amount_net: e.target.value })} /></td>
+                                <td><input type="text" value={r.notes}
+                                  onChange={(e) => updatePhase(r._key, { notes: e.target.value })} /></td>
+                                <td><button type="button" className="cl-phase-del" title="Remove this phase"
+                                  onClick={() => removePhase(r._key)}>×</button></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                        <button type="button" className="btn-secondary" onClick={() => addPhase('monthly')}>+ Add monthly phase</button>
+                        <button type="button" className="btn-secondary" onClick={() => addPhase('one_off')}>+ Add one-off item</button>
+                      </div>
+                      {(() => {
+                        if (!selectedYear || !selectedMonth) return null
+                        const rows = phaseRows.map(r => ({ ...r, effective_from: r.effective_from || null, effective_to: r.effective_to || null }))
+                        const res = resolveMonthlyFee({ monthly_fee_net: parseFloat(form.monthly_fee_net) || 0 }, rows, selectedYear, selectedMonth)
+                        const lbl = `${monthName(selectedMonth)} ${selectedYear}`
+                        const txt =
+                          res.status === 'no_phases' ? `No monthly phases — ${lbl} uses the monthly fee above.` :
+                          res.status === 'phase'     ? `In effect for ${lbl}: "${res.phase.label}" — €${Number(res.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}.` :
+                          res.status === 'none'      ? `No phase covers ${lbl} — the invoice amount will have to be typed in.` :
+                                                       `More than one phase covers ${lbl} — fix the dates.`
+                        return <div style={{ fontSize: 12, marginTop: 8, color: res.status === 'phase' || res.status === 'no_phases' ? '#065f46' : '#b45309' }}>{txt}</div>
+                      })()}
+                    </>
+                  )}
+                </div>
+
                 <div className="form-group full-row">
                   <label>Email TO (comma-separated)</label>
                   <input
