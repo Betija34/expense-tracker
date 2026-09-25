@@ -59,7 +59,7 @@ const TYPES = [
   { value: 'variable_expense',      label: 'Variable expense reimbursement',     vat: false,    multi: false, src: 'manual' },
   { value: 'one_off_service',       label: 'One-off — service',                  vat: 'client', multi: false, src: 'manual' },
   { value: 'one_off_reimbursement', label: 'One-off — reimbursement',            vat: false,    multi: false, src: 'manual' },
-  { value: 'credit_note',           label: 'Credit note (negative)',             vat: false,    multi: false, src: 'manual' },
+  { value: 'credit_note',           label: 'Credit note',                        vat: false,    multi: false, src: 'manual' },
 ]
 
 const MONTHS = [
@@ -121,7 +121,7 @@ function describe(client, type, m, y, phase = null) {
     case 'one_off_reimbursement':
       return `Reimbursement of [describe] — expenses as of ${lastDayLabel(m, y)} expense report`
     case 'credit_note':
-      return `Credit note re invoice [number] (amount wrongly issued)`
+      return `Credit note to invoice [number]`
     default:
       return ''
   }
@@ -487,8 +487,12 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
   // ---- Derived amounts ---------------------------------------------------
   const vatRate = info.vat === 'client' ? (parseFloat(form.vat_rate) || 0) : 0
-  const amountForMonth = (m) => usePhases ? feeFor(m).amount : (parseFloat(form.amount_net) || 0)
-  const net = isVar ? variableTotal : (usePhases ? (anchorFee.amount || 0) : (parseFloat(form.amount_net) || 0))
+  // Credit notes are stored as a POSITIVE amount, like every earlier credit
+  // note: the Statement of Account puts them in the credit (received)
+  // column by type. So a minus typed in is ignored.
+  const typedAmount = () => { const v = parseFloat(form.amount_net) || 0; return isCN ? Math.abs(v) : v }
+  const amountForMonth = (m) => usePhases ? feeFor(m).amount : typedAmount()
+  const net = isVar ? variableTotal : (usePhases ? (anchorFee.amount || 0) : typedAmount())
   const vatAmount = net * vatRate
   const total = net + vatAmount
   const totalFor = (m) => { const a = amountForMonth(m) || 0; return a + a * vatRate }
