@@ -1052,7 +1052,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       <>
         <td>
           <div className="invoice-num-wrap">
-            <span className="invoice-num-prefix">{typePrefix}</span>
+            <span className="invoice-num-prefix">{prefixLabelFor(typePrefix, invoice.invoice_number, initialSuffix)}</span>
             <input
               type="text"
               className="invoice-num-suffix lifecycle-input-mono"
@@ -1140,7 +1140,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       <>
         <td>
           <div className="invoice-num-wrap">
-            <span className="invoice-num-prefix">{typePrefix}</span>
+            <span className="invoice-num-prefix">{prefixLabelFor(typePrefix, invoice.invoice_number, initialSuffix)}</span>
             <input
               type="text"
               className="invoice-num-suffix lifecycle-input-mono"
@@ -1371,6 +1371,16 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // If the stored value doesn't match the current top-bar period (e.g.
   // legacy credit notes still in YYYY-MM-NNN), returns the full value
   // so it stays visible and the validation can fire on next save.
+  // The fixed prefix label shown before the suffix box. Mirrors the stored
+  // number's separator (Issue Invoice writes YYYY/MM/NNN, this tab YYYY-MM-NNN)
+  // and is hidden when the stored number belongs to another period (the
+  // suffix box then holds the full number) — otherwise the two run together.
+  const prefixLabelFor = (defaultPrefix, stored, suffix) => {
+    const full = String(stored || '').trim()
+    if (full && suffix === full) return ''
+    return /^\d{4}\//.test(full) ? defaultPrefix.replace(/-/g, '/') : defaultPrefix
+  }
+
   const extractInvoiceSuffix = (fullValue, invoiceType) => {
     if (!fullValue) return ''
     const trimmed = String(fullValue).trim()
@@ -1540,7 +1550,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       <>
         <td>
           <div className="invoice-num-wrap">
-            <span className="invoice-num-prefix">{expectedPrefix}</span>
+            <span className="invoice-num-prefix">{prefixLabelFor(expectedPrefix, inv?.invoice_number, initialSuffix)}</span>
             <input
               type="text"
               className="invoice-num-suffix lifecycle-input-mono"
@@ -2304,7 +2314,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             }}>
                               {inst.isDeferred ? '↪ ' : '· '}
                               {monthName(inst.month)} {inst.year} fee
-                              {inst.isDeferred ? ' (deferred in)' : ''}{inst.extraLabel || ''}
+                              {inst.isDeferred ? ' (deferred in)' : ''}
+                              {inst.extraLabel ? <span className="billed-advance-badge">{inst.extraLabel.replace(/[()]/g, '').trim()}</span> : null}
                             </span>
                           </td>
                           <td style={{ textAlign: 'right' }}>
