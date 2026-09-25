@@ -167,6 +167,12 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   // Without this the page moved on to the NEXT free number as soon as the
   // save completed. savedIdx picks which saved invoice (multi-month runs).
   const [savedIdx, setSavedIdx] = useState(0)
+  // Multi-month runs: ONE invoice listing every ticked month (one number,
+  // one line per month) or a separate invoice per month. Either way each
+  // month is still stored as its own invoices row (its own period), so the
+  // per-month tracking, VAT and "already invoiced" logic are unchanged;
+  // combined rows simply share the invoice number and date.
+  const [combine, setCombine] = useState(true)
 
   // Variable-expense report picker (pulled from the system).
   const [reportOptions, setReportOptions] = useState([]) // [{ y, m, amount, deferredTo }]
@@ -502,7 +508,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     ? monthsToIssue.filter(m => { const r = feeFor(m); return r.amount == null })
     : []
   const startSeq = Number.isNaN(parseInt(seqInput, 10)) ? baseSeq : parseInt(seqInput, 10)
-  const plannedNumbers = monthsToIssue.map((_, i) => numPrefix + pad3(startSeq + i))
+  const combined = info.multi && combine && monthsToIssue.length > 1
+  const plannedNumbers = monthsToIssue.map((_, i) => numPrefix + pad3(startSeq + (combined ? 0 : i)))
   const singleNumber = plannedNumbers[0] || (numPrefix + pad3(startSeq))
 
   // ---- Confirmation state (screen aid only) ------------------------------
@@ -562,7 +569,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         }]
       } else {
         rows = monthsToIssue.map((m, i) => {
-          const number = numPrefix + pad3(startSeq + i)
+          const number = numPrefix + pad3(startSeq + (combined ? 0 : i))
           const desc = info.multi
             ? describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m))
             : (form.description || '').trim()
@@ -588,8 +595,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       setSavedIdx(0)
       setSavedInfo({
         count: rows.length,
-        numbers: rows.map(r => r.invoice_number),
+        numbers: [...new Set(rows.map(r => r.invoice_number))],
         rows,                                    // exactly what was written
+        combined,                                // one document for all rows
         client: selectedClient,                  // BILL TO as saved
         reports: isVar ? selectedReportList.map(o => ({ ...o })) : [],
       })
@@ -616,7 +624,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
   // ---- What the invoice document shows -----------------------------------
   // Before saving: the live form. After saving: the saved invoice (frozen).
-  const savedRow = savedInfo?.rows?.[savedIdx] || null
+  const savedRow = savedInfo?.rows?.[savedInfo?.combined ? 0 : savedIdx] || null
   const doc = savedRow ? {
     number: savedRow.invoice_number,
     date: savedRow.date_issued,
@@ -624,7 +632,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     isVar: savedRow.invoice_type === 'variable_expense',
     reports: savedInfo.reports || [],
     desc: savedRow.description || '—',
-    net: Number(savedRow.amount_net) || 0,
+    lines: (savedInfo.combined ? savedInfo.rows : [savedRow])
+      .map(r => ({ desc: r.description || '—', amount: Number(r.amount_net) || 0 })),
+    net: 0,
     vatRate: Number(savedRow.vat_rate) || 0,
   } : {
     number: singleNumber,
@@ -635,9 +645,19 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     desc: info.multi
       ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear, phaseFor(docMonth)) || 'Select a project above…')
       : (form.description || (clientOk ? '—' : 'Select a project above…')),
+    lines: null,
     net,
     vatRate,
   }
+  if (!savedRow) {
+    doc.lines = combined
+      ? monthsToIssue.map(m => ({
+          desc: describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m)),
+          amount: amountForMonth(m) || 0,
+        }))
+      : [{ desc: doc.desc, amount: net }]
+  }
+  doc.net = doc.lines.reduce((t, l) => t + l.amount, 0)
   doc.vatAmount = doc.net * doc.vatRate
   doc.total = doc.net + doc.vatAmount
   const docIsCN = savedRow ? savedRow.invoice_type === 'credit_note' : isCN
@@ -830,9 +850,23 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 Fix the phases on the Clients tab, or type the amount above to override.
               </div>
             )}
+            {monthsToIssue.length > 1 && (
+              <div className="ib-combine">
+                <label>
+                  <input type="radio" name="ib-combine" checked={combine} onChange={() => setCombine(true)} />
+                  <span><strong>One invoice</strong> for all {monthsToIssue.length} months (one number, one line per month)</span>
+                </label>
+                <label>
+                  <input type="radio" name="ib-combine" checked={!combine} onChange={() => setCombine(false)} />
+                  <span>A <strong>separate invoice</strong> per month</span>
+                </label>
+              </div>
+            )}
             {monthsToIssue.length > 0 && (
               <div className="ib-willmake">
-                <strong>Will create {monthsToIssue.length} invoice{monthsToIssue.length > 1 ? 's' : ''}:</strong>
+                <strong>{combined
+                  ? `Will create 1 invoice (${plannedNumbers[0]}) covering ${monthsToIssue.length} months:`
+                  : `Will create ${monthsToIssue.length} invoice${monthsToIssue.length > 1 ? 's' : ''}:`}</strong>
                 <table><tbody>
                   {monthsToIssue.map((m, i) => (
                     <tr key={m}>
@@ -883,7 +917,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </button>
           <button className="ib-btn ib-btn-primary" onClick={handleSave} disabled={saving || !canSave || !!savedInfo}
             title={savedInfo ? 'Already saved — click + New invoice to issue another' : undefined}>
-            {saving ? 'Saving…' : (monthsToIssue.length > 1 ? `Save ${monthsToIssue.length} invoices` : 'Save invoice')}
+            {saving ? 'Saving…' : (combined ? `Save invoice (${monthsToIssue.length} months)` : monthsToIssue.length > 1 ? `Save ${monthsToIssue.length} invoices` : 'Save invoice')}
           </button>
           {savedInfo && <button className="ib-btn ib-btn-secondary" onClick={handleNew}>+ New invoice</button>}
         </div>
@@ -897,9 +931,11 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         {saveError && <div className="ib-error">{saveError}</div>}
         {savedInfo && (
           <div className="ib-success">
-            ✅ {savedInfo.count} invoice{savedInfo.count > 1 ? 's' : ''} saved as issued
-            ({savedInfo.numbers.join(', ')}) — now in the Client Invoicing tracker.
-            {savedInfo.count > 1 && (
+            ✅ {savedInfo.combined
+              ? <>Invoice {savedInfo.numbers[0]} saved as issued, covering {savedInfo.count} months</>
+              : <>{savedInfo.count} invoice{savedInfo.count > 1 ? 's' : ''} saved as issued ({savedInfo.numbers.join(', ')})</>}
+            {' '}— now in the Client Invoicing tracker.
+            {savedInfo.count > 1 && !savedInfo.combined && (
               <div className="ib-savedpick">
                 Show / print:{' '}
                 {savedInfo.rows.map((r, i) => (
@@ -916,11 +952,11 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       </div>
 
       {/* ---- Invoice document -------------------------------------------- */}
-      {savedInfo && savedInfo.count > 1 ? (
+      {savedInfo && savedInfo.count > 1 && !savedInfo.combined ? (
         <div className="ib-papernote no-print">
           Showing saved invoice {savedIdx + 1} of {savedInfo.count} ({savedRow?.invoice_number}) — pick another above to print it.
         </div>
-      ) : !savedInfo && monthsToIssue.length > 1 && (
+      ) : !savedInfo && monthsToIssue.length > 1 && !combined && (
         <div className="ib-papernote no-print">
           Showing 1 of {monthsToIssue.length} — each ticked month is a separate, separately-numbered invoice. After saving you can show and print each one.
         </div>
@@ -980,12 +1016,14 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                   )}
                 </>
               ) : (
-                <tr>
-                  <td className={'ib-col-desc' + (docClientOk ? '' : ' ib-unconfirmed')}>
-                    {doc.desc}
-                  </td>
-                  <td className="ib-col-amt">{fmtEuro(doc.net)}</td>
-                </tr>
+                doc.lines.map((l, i) => (
+                  <tr key={i}>
+                    <td className={'ib-col-desc' + (docClientOk ? '' : ' ib-unconfirmed')}>
+                      {l.desc}
+                    </td>
+                    <td className="ib-col-amt">{fmtEuro(l.amount)}</td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

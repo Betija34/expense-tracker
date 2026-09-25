@@ -391,3 +391,7 @@ fieldset.ib-lockable:disabled { opacity: 0.55; }
   border-radius: 6px; color: #065f46; font-size: 13px;
 }
 .ib-savedpick { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Multi-month: one combined invoice vs separate invoices */
+.ib-combine { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 4px; font-size: 13px; }
+.ib-combine label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
