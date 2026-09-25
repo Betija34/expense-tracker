@@ -248,15 +248,24 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     const run = async () => {
       if (!companyId || !form.client_id || !info.multi) { setIssuedMonths(new Set()); return }
       try {
+        // A month counts as invoiced when a row of this type covers it:
+        // its represents_period (V27 — e.g. Jan + Feb fees billed in March
+        // after a deferral are filed under March but represent Jan / Feb),
+        // or, when that is empty, its own period.
         const { data, error } = await supabase
-          .from('invoices').select('period_month')
+          .from('invoices').select('period_year, period_month, represents_period_year, represents_period_month')
           .eq('company_id', companyId)
           .eq('client_id', form.client_id)
           .eq('invoice_type', form.invoice_type)
-          .eq('period_year', selectedYear)
+          .or(`period_year.eq.${selectedYear},represents_period_year.eq.${selectedYear}`)
         if (error) throw error
         if (cancelled) return
-        const s = new Set((data || []).map(r => r.period_month))
+        const s = new Set()
+        for (const r of (data || [])) {
+          const y = r.represents_period_year && r.represents_period_month ? r.represents_period_year : r.period_year
+          const m = r.represents_period_year && r.represents_period_month ? r.represents_period_month : r.period_month
+          if (y === selectedYear && m) s.add(m)
+        }
         setIssuedMonths(s)
         const def = new Set()
         for (let m = 1; m <= selectedMonth; m++) if (!s.has(m)) def.add(m)
