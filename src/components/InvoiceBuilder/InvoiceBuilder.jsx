@@ -162,6 +162,11 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [savedInfo, setSavedInfo] = useState(null)
+  // After a save, the document shows the invoice(s) exactly as saved —
+  // number, date, wording, amounts — so they can be printed afterwards.
+  // Without this the page moved on to the NEXT free number as soon as the
+  // save completed. savedIdx picks which saved invoice (multi-month runs).
+  const [savedIdx, setSavedIdx] = useState(0)
 
   // Variable-expense report picker (pulled from the system).
   const [reportOptions, setReportOptions] = useState([]) // [{ y, m, amount, deferredTo }]
@@ -538,7 +543,14 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
       }
       const { error } = await supabase.from('invoices').insert(rows).select('id')
       if (error) throw error
-      setSavedInfo({ count: rows.length, numbers: rows.map(r => r.invoice_number) })
+      setSavedIdx(0)
+      setSavedInfo({
+        count: rows.length,
+        numbers: rows.map(r => r.invoice_number),
+        rows,                                    // exactly what was written
+        client: selectedClient,                  // BILL TO as saved
+        reports: isVar ? selectedReportList.map(o => ({ ...o })) : [],
+      })
     } catch (err) {
       setSaveError(err.message || 'Could not save the invoice(s).')
     } finally {
@@ -547,7 +559,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   }
 
   const handleNew = () => {
-    setSavedInfo(null); setSaveError(null)
+    setSavedInfo(null); setSaveError(null); setSavedIdx(0)
     setNumberTouched(false); setNumberApproved(false)
     setDateTouched(false); setDateApproved(false)
     setDescTouched(false)
@@ -559,6 +571,36 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     : <RabonaLogo height={128} />
 
   const docMonth = anchorMonth
+
+  // ---- What the invoice document shows -----------------------------------
+  // Before saving: the live form. After saving: the saved invoice (frozen).
+  const savedRow = savedInfo?.rows?.[savedIdx] || null
+  const doc = savedRow ? {
+    number: savedRow.invoice_number,
+    date: savedRow.date_issued,
+    client: savedInfo.client,
+    isVar: savedRow.invoice_type === 'variable_expense',
+    reports: savedInfo.reports || [],
+    desc: savedRow.description || '—',
+    net: Number(savedRow.amount_net) || 0,
+    vatRate: Number(savedRow.vat_rate) || 0,
+  } : {
+    number: singleNumber,
+    date: form.date_issued,
+    client: selectedClient,
+    isVar,
+    reports: selectedReportList,
+    desc: info.multi
+      ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear, phaseFor(docMonth)) || 'Select a project above…')
+      : (form.description || (clientOk ? '—' : 'Select a project above…')),
+    net,
+    vatRate,
+  }
+  doc.vatAmount = doc.net * doc.vatRate
+  doc.total = doc.net + doc.vatAmount
+  const docNumberOk = !!savedRow || numberOk
+  const docDateOk = !!savedRow || dateOk
+  const docClientOk = !!savedRow || clientOk
 
   return (
     <div className="invoice-builder">
@@ -572,6 +614,14 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
         {loadError && <div className="ib-error">{loadError}</div>}
 
+        {savedInfo && (
+          <div className="ib-savedbar">
+            Showing the saved invoice exactly as issued — print it now if you haven't yet.
+            Click <strong>+ New invoice</strong> to start the next one.
+          </div>
+        )}
+
+        <fieldset className="ib-lockable" disabled={!!savedInfo}>
         <div className="ib-grid">
           <label className="ib-field ib-field-wide2">
             <span>Project</span>
@@ -782,17 +832,20 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </div>
         )}
 
+        </fieldset>
+
         <div className="ib-actions">
-          <button className="ib-btn ib-btn-secondary" onClick={() => window.print()} disabled={!allConfirmed}>
+          <button className="ib-btn ib-btn-secondary" onClick={() => window.print()} disabled={!allConfirmed && !savedRow}>
             🖨 Print / Save as PDF
           </button>
-          <button className="ib-btn ib-btn-primary" onClick={handleSave} disabled={saving || !canSave}>
+          <button className="ib-btn ib-btn-primary" onClick={handleSave} disabled={saving || !canSave || !!savedInfo}
+            title={savedInfo ? 'Already saved — click + New invoice to issue another' : undefined}>
             {saving ? 'Saving…' : (monthsToIssue.length > 1 ? `Save ${monthsToIssue.length} invoices` : 'Save invoice')}
           </button>
           {savedInfo && <button className="ib-btn ib-btn-secondary" onClick={handleNew}>+ New invoice</button>}
         </div>
 
-        {pendingLabels.length > 0 && (
+        {!savedInfo && pendingLabels.length > 0 && (
           <div className="ib-pending">
             Shown in red on the invoice - still to confirm: {pendingLabels.join(', ')}.
           </div>
@@ -803,14 +856,30 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           <div className="ib-success">
             ✅ {savedInfo.count} invoice{savedInfo.count > 1 ? 's' : ''} saved as issued
             ({savedInfo.numbers.join(', ')}) — now in the Client Invoicing tracker.
+            {savedInfo.count > 1 && (
+              <div className="ib-savedpick">
+                Show / print:{' '}
+                {savedInfo.rows.map((r, i) => (
+                  <button key={r.invoice_number + i} type="button"
+                    className={`ib-mchip${i === savedIdx ? ' on' : ''}`}
+                    onClick={() => setSavedIdx(i)}>
+                    {r.invoice_number} · {MONTHS[(r.period_month || 1) - 1].slice(0, 3)}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* ---- Invoice document -------------------------------------------- */}
-      {monthsToIssue.length > 1 && (
+      {savedInfo && savedInfo.count > 1 ? (
         <div className="ib-papernote no-print">
-          Showing 1 of {monthsToIssue.length} — each ticked month is a separate, separately-numbered invoice.
+          Showing saved invoice {savedIdx + 1} of {savedInfo.count} ({savedRow?.invoice_number}) — pick another above to print it.
+        </div>
+      ) : !savedInfo && monthsToIssue.length > 1 && (
+        <div className="ib-papernote no-print">
+          Showing 1 of {monthsToIssue.length} — each ticked month is a separate, separately-numbered invoice. After saving you can show and print each one.
         </div>
       )}
       <div className="ib-paper">
@@ -831,19 +900,19 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           <div className="ib-title-row">
             <h1 className="ib-doc-title">INVOICE</h1>
             <table className="ib-meta"><tbody>
-              <tr><td>Invoice No</td><td className={numberOk ? undefined : 'ib-unconfirmed'}>{singleNumber || '—'}</td></tr>
-              <tr><td>Date issued</td><td className={dateOk ? undefined : 'ib-unconfirmed'}>{form.date_issued || '—'}</td></tr>
+              <tr><td>Invoice No</td><td className={docNumberOk ? undefined : 'ib-unconfirmed'}>{doc.number || '—'}</td></tr>
+              <tr><td>Date issued</td><td className={docDateOk ? undefined : 'ib-unconfirmed'}>{doc.date || '—'}</td></tr>
             </tbody></table>
           </div>
 
           <div className="ib-billto">
             <div className="ib-billto-label">BILL TO</div>
-            {selectedClient ? (
+            {doc.client ? (
               <>
-                <div className="ib-billto-name">{selectedClient.legal_name}</div>
-                {selectedClient.registration_number && <div className="ib-billto-line">Company number: {selectedClient.registration_number}</div>}
-                {selectedClient.vat_id && <div className="ib-billto-line">VAT number: {selectedClient.vat_id}</div>}
-                {selectedClient.address && <div className="ib-billto-line">Address: {selectedClient.address}</div>}
+                <div className="ib-billto-name">{doc.client.legal_name}</div>
+                {doc.client.registration_number && <div className="ib-billto-line">Company number: {doc.client.registration_number}</div>}
+                {doc.client.vat_id && <div className="ib-billto-line">VAT number: {doc.client.vat_id}</div>}
+                {doc.client.address && <div className="ib-billto-line">Address: {doc.client.address}</div>}
               </>
             ) : <div className="ib-billto-line ib-unconfirmed">Select a project above…</div>}
           </div>
@@ -851,30 +920,28 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           <table className="ib-lines">
             <thead><tr><th className="ib-col-desc">Description</th><th className="ib-col-amt">Amount</th></tr></thead>
             <tbody>
-              {isVar ? (
+              {doc.isVar ? (
                 <>
                   <tr>
                     <td className="ib-col-desc">{VAR_HEADING}</td>
                     <td className="ib-col-amt"></td>
                   </tr>
-                  {selectedReportList.map(o => (
+                  {doc.reports.map(o => (
                     <tr key={`${o.y}-${o.m}`}>
                       <td className="ib-col-desc">Expenses as of {lastDayLabel(o.m, o.y)} expense report</td>
                       <td className="ib-col-amt">{fmtEuro(o.amount)}</td>
                     </tr>
                   ))}
-                  {selectedReportList.length === 0 && (
+                  {doc.reports.length === 0 && (
                     <tr><td className="ib-col-desc ib-muted">No expense reports selected</td><td className="ib-col-amt"></td></tr>
                   )}
                 </>
               ) : (
                 <tr>
-                  <td className={'ib-col-desc' + (clientOk ? '' : ' ib-unconfirmed')}>
-                    {info.multi
-                      ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear, phaseFor(docMonth)) || 'Select a project above…')
-                      : (form.description || (clientOk ? '—' : 'Select a project above…'))}
+                  <td className={'ib-col-desc' + (docClientOk ? '' : ' ib-unconfirmed')}>
+                    {doc.desc}
                   </td>
-                  <td className="ib-col-amt">{fmtEuro(net)}</td>
+                  <td className="ib-col-amt">{fmtEuro(doc.net)}</td>
                 </tr>
               )}
             </tbody>
@@ -882,14 +949,14 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
           <div className="ib-totals">
             <table><tbody>
-              {vatRate > 0 ? (
+              {doc.vatRate > 0 ? (
                 <>
-                  <tr><td>Subtotal (excl. VAT)</td><td>{fmtEuro(net)}</td></tr>
-                  <tr><td>VAT ({(vatRate * 100).toLocaleString('en-US', { maximumFractionDigits: 2 })}%)</td><td>{fmtEuro(vatAmount)}</td></tr>
-                  <tr className="ib-total-grand"><td>Total (incl. VAT)</td><td>{fmtEuro(total)}</td></tr>
+                  <tr><td>Subtotal (excl. VAT)</td><td>{fmtEuro(doc.net)}</td></tr>
+                  <tr><td>VAT ({(doc.vatRate * 100).toLocaleString('en-US', { maximumFractionDigits: 2 })}%)</td><td>{fmtEuro(doc.vatAmount)}</td></tr>
+                  <tr className="ib-total-grand"><td>Total (incl. VAT)</td><td>{fmtEuro(doc.total)}</td></tr>
                 </>
               ) : (
-                <tr className="ib-total-grand"><td>Total</td><td>{fmtEuro(total)}</td></tr>
+                <tr className="ib-total-grand"><td>Total</td><td>{fmtEuro(doc.total)}</td></tr>
               )}
             </tbody></table>
           </div>
