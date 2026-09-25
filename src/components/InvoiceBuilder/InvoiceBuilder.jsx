@@ -85,7 +85,23 @@ function todayISO() { return new Date().toISOString().slice(0, 10) }
 function ordinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]) }
 function lastDayLabel(m, y) { return `${MONTHS[(m || 1) - 1]} ${ordinal(new Date(y, m, 0).getDate())}, ${y}` }
 
-function describe(client, type, m, y) {
+// Wording precedence for the monthly fee of month m:
+//   1. the fee phase covering m has its own invoice_wording (V40)
+//   2. the client's custom fee_wording (V38)
+//   3. standard wording with the client's section / schedule
+function fillWording(tpl, { M, y, proj, phase }) {
+  const d = (iso) => { if (!iso) return ''; const [yy, mm, dd] = iso.split('-'); return `${dd}/${mm}/${yy}` }
+  return tpl.trim()
+    .replace(/\{MONTH\}/g, M.toUpperCase())
+    .replace(/\{YEAR\}/g, String(y))
+    .replace(/\{PROJECT\}/g, proj)
+    .replace(/\{PHASE\}/g, phase?.label || '')
+    .replace(/\{AMOUNT\}/g, phase ? fmtEuro(phase.amount_net) : '')
+    .replace(/\{FROM\}/g, d(phase?.effective_from))
+    .replace(/\{TO\}/g, phase?.effective_to ? d(phase.effective_to) : 'open')
+}
+
+function describe(client, type, m, y, phase = null) {
   if (!client) return ''
   const M = MONTHS[(m || 1) - 1]
   const proj = (client.invoice_project_name || client.trade_name || client.legal_name || '').toUpperCase()
@@ -93,12 +109,8 @@ function describe(client, type, m, y) {
   const sched = (client.agreement_schedule || '').trim() || '2'
   switch (type) {
     case 'monthly_fee':
-      if ((client.fee_wording || '').trim()) {
-        return client.fee_wording.trim()
-          .replace(/\{MONTH\}/g, M.toUpperCase())
-          .replace(/\{YEAR\}/g, String(y))
-          .replace(/\{PROJECT\}/g, proj)
-      }
+      if ((phase?.invoice_wording || '').trim()) return fillWording(phase.invoice_wording, { M, y, proj, phase })
+      if ((client.fee_wording || '').trim()) return fillWording(client.fee_wording, { M, y, proj, phase })
       return `Services per Consultancy Service Agreement section ${sec} and Schedule ${sched}, ${M} fee ${y}\nProject ${proj}`
     case 'fixed_expense':
       return `Services per Consultancy Service Agreement section 6.2 (Reimbursement of Fixed Procure and Running Expenses) ${M} ${y}\nProject ${proj}`
@@ -285,9 +297,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   // ---- Auto-build the description (unless the user edited it) -------------
   useEffect(() => {
     if (descTouched) return
-    setForm(f => ({ ...f, description: describe(selectedClient, f.invoice_type, anchorMonth, selectedYear) }))
+    setForm(f => ({ ...f, description: describe(selectedClient, f.invoice_type, anchorMonth, selectedYear, phaseFor(anchorMonth)) }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.client_id, form.invoice_type, anchorMonth, selectedYear, clients, descTouched])
+  }, [form.client_id, form.invoice_type, anchorMonth, selectedYear, clients, descTouched, phaseState])
 
   // ---- Variable expense: pull un-invoiced reimbursable expense reports ----
   // For the chosen project, group reimbursable expenses by the month they
@@ -425,6 +437,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const clientPhases = phasesReady ? phaseState.rows : []
   const usePhases = form.invoice_type === 'monthly_fee' && !amountTouched && !!selectedClient
   const feeFor = (m) => resolveMonthlyFee(selectedClient, clientPhases, selectedYear, m)
+  // Phase covering month m — drives the invoice WORDING even when the
+  // amount has been typed over.
+  const phaseFor = (m) => (form.invoice_type === 'monthly_fee' && selectedClient) ? feeFor(m).phase : null
   const anchorFee = usePhases ? feeFor(anchorMonth) : null
 
   // ---- Derived amounts ---------------------------------------------------
@@ -502,7 +517,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         rows = monthsToIssue.map((m, i) => {
           const number = dashPrefix + pad3(startSeq + i)
           const desc = info.multi
-            ? describe(selectedClient, form.invoice_type, m, selectedYear)
+            ? describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m))
             : (form.description || '').trim()
           return {
             company_id: companyId,
@@ -676,7 +691,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                           return (
                             <tr key={p.id} className={live ? 'live' : undefined}>
                               <td>{p.kind === 'monthly' ? 'Monthly' : 'One-off'}</td>
-                              <td>{p.label}{live ? ' ◀ in effect' : ''}{p.source_ref ? <div className="ib-phaseref">{p.source_ref}</div> : null}</td>
+                              <td>{p.label}{live ? ' ◀ in effect' : ''}{p.source_ref ? <div className="ib-phaseref">{p.source_ref}</div> : null}{p.invoice_wording ? <div className="ib-phaseref">Invoice wording: {p.invoice_wording}</div> : null}</td>
                               <td>{fmtPhaseRange(p)}</td>
                               <td className="a">{fmtEuro(p.amount_net)}{p.kind === 'monthly' ? '/mo' : ''}</td>
                             </tr>
@@ -729,7 +744,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                   {monthsToIssue.map((m, i) => (
                     <tr key={m}>
                       <td className="n">{plannedNumbers[i]}</td>
-                      <td>{describe(selectedClient, form.invoice_type, m, selectedYear)}</td>
+                      <td>{describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m))}</td>
                       <td className="a">{usePhases && feeFor(m).amount == null ? '—' : fmtEuro(totalFor(m))}</td>
                     </tr>
                   ))}
@@ -856,7 +871,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                 <tr>
                   <td className={'ib-col-desc' + (clientOk ? '' : ' ib-unconfirmed')}>
                     {info.multi
-                      ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear) || 'Select a project above…')
+                      ? (describe(selectedClient, form.invoice_type, docMonth, selectedYear, phaseFor(docMonth)) || 'Select a project above…')
                       : (form.description || (clientOk ? '—' : 'Select a project above…'))}
                   </td>
                   <td className="ib-col-amt">{fmtEuro(net)}</td>

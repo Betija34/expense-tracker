@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import { ComposeEmailsModal } from './ComposeEmailsModal'
@@ -67,7 +67,7 @@ const BLANK_FORM = {
 let _phaseKey = 0
 const blankPhase = (kind = 'monthly') => ({
   _key: `new-${++_phaseKey}`, id: null, kind, label: '',
-  effective_from: '', effective_to: '', amount_net: '', source_ref: '', notes: '',
+  effective_from: '', effective_to: '', amount_net: '', source_ref: '', invoice_wording: '', notes: '',
 })
 
 export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
@@ -1593,7 +1593,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         _key: r.id, id: r.id, kind: r.kind, label: r.label || '',
         effective_from: r.effective_from || '', effective_to: r.effective_to || '',
         amount_net: r.amount_net != null ? String(r.amount_net) : '',
-        source_ref: r.source_ref || '', notes: r.notes || '',
+        source_ref: r.source_ref || '', invoice_wording: r.invoice_wording || '', notes: r.notes || '',
       })))
     } catch (err) {
       setPhasesError(`Fee phases could not be loaded (${err.message || err}). If this is the first use, run DATABASE_SCHEMA_V38_MIGRATION.sql in Supabase.`)
@@ -1658,6 +1658,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         effective_to:   r.effective_to || null,
         amount_net:     parseFloat(r.amount_net),
         source_ref:     r.source_ref?.trim() || null,
+        invoice_wording: r.kind === 'monthly' ? (r.invoice_wording?.trim() || null) : null,
         notes:          r.notes?.trim() || null,
         sort_order:     i,
       }
@@ -3868,7 +3869,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     placeholder="e.g. Consultancy Services ({MONTH} FEE {YEAR})" />
                   <small style={{ color: '#6b7280', fontSize: 11 }}>
                     Leave blank for the standard wording: "Services per Consultancy Service Agreement section {form.agreement_section || '6.1'} and Schedule {form.agreement_schedule || '2'}, &lt;Month&gt; fee &lt;Year&gt;" + "Project &lt;NAME&gt;".
-                    Placeholders: {'{MONTH}'} {'{YEAR}'} {'{PROJECT}'}.
+                    Placeholders: {'{MONTH}'} {'{YEAR}'} {'{PROJECT}'}. A fee phase's own invoice wording (below) takes priority for months in that phase.
                   </small>
                 </div>
 
@@ -3891,7 +3892,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           </tr></thead>
                           <tbody>
                             {phaseRows.map(r => (
-                              <tr key={r._key}>
+                              <React.Fragment key={r._key}>
+                              <tr>
                                 <td>
                                   <select value={r.kind} onChange={(e) => updatePhase(r._key, { kind: e.target.value })}>
                                     <option value="monthly">Monthly</option>
@@ -3916,6 +3918,17 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 <td><button type="button" className="cl-phase-del" title="Remove this phase"
                                   onClick={() => removePhase(r._key)}>×</button></td>
                               </tr>
+                              {r.kind === 'monthly' && (
+                                <tr className="cl-phase-wording">
+                                  <td></td>
+                                  <td colSpan={7}>
+                                    <textarea rows={2} value={r.invoice_wording}
+                                      placeholder="Invoice wording for this phase (optional) — e.g. Services per Consultancy Service Agreement section 6.2 and Schedule 3, {MONTH} FEE {YEAR}&#10;Project {PROJECT}. Blank = the client wording above."
+                                      onChange={(e) => updatePhase(r._key, { invoice_wording: e.target.value })} />
+                                  </td>
+                                </tr>
+                              )}
+                              </React.Fragment>
                             ))}
                           </tbody>
                         </table>
