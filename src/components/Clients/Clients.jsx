@@ -426,6 +426,20 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // own). Takes an explicit `savedAmount` so DB rows can flag a
   // mismatch if the saved invoice total doesn't match the current
   // breakdown sum (e.g. deferrals changed after the invoice was saved).
+  // Invoices issued from the Issue Invoice tab store the full printed
+  // wording ("Services per Consultancy Service Agreement section 6.1 …
+  // October fee 2026 / Project …"). In this tracker show just the short
+  // "October 2026 fee" label; the full wording stays in the tooltip.
+  const shortInvoiceLabel = (inv) => {
+    const desc = (inv?.description || '').trim()
+    if (!/^Services per Consultancy Service Agreement/i.test(desc)) return desc || null
+    const y = inv.represents_period_year || inv.period_year
+    const m = inv.represents_period_month || inv.period_month
+    if (inv.invoice_type === 'monthly_fee')   return `${monthName(m)} ${y} fee`
+    if (inv.invoice_type === 'fixed_expense') return `${monthName(m)} ${y} fixed expenses`
+    return desc
+  }
+
   const renderBreakdownCell = (client, savedAmount = null, fallbackText = null, invoiceType = 'variable_expense') => {
     const bk = periodBreakdown(client, invoiceType)
     const periodLbl = (() => {
@@ -2422,7 +2436,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                         <tr key={inv.id}>
                           {renderProjectCell(c)}
                           <td>
-                            {renderBreakdownCell(c, inv.amount_net, inv.description, 'monthly_fee')}
+                            <span title={inv.description || ''}>{renderBreakdownCell(c, inv.amount_net, shortInvoiceLabel(inv), 'monthly_fee')}</span>
                             {outbound && !periodBreakdown(c, 'monthly_fee').outbound && (
                               <div style={{
                                 display: 'inline-block', marginTop: 4,
@@ -2825,7 +2839,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                           <tr key={inv.id}>
                             {renderProjectCell(c)}
                             <td>
-                              {renderBreakdownCell(c, inv.amount_net, inv.description, 'fixed_expense')}
+                              <span title={inv.description || ''}>{renderBreakdownCell(c, inv.amount_net, shortInvoiceLabel(inv), 'fixed_expense')}</span>
                               {outbound && !periodBreakdown(c, 'fixed_expense').outbound && (
                                 <div style={{
                                   display: 'inline-block', marginTop: 4,
