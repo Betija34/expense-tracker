@@ -180,6 +180,10 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
   // Numbers are YYYY/MM from the TOP-BAR month; only the sequence is editable.
   const dashPrefix = `${selectedYear}/${pad2(selectedMonth)}/`
+  // Credit notes have their OWN yearly sequence: YYYY/NNN (no month),
+  // separate from invoice numbers. YYYY comes from the top-bar year.
+  const isCN = form.invoice_type === 'credit_note'
+  const numPrefix = isCN ? `${selectedYear}/` : dashPrefix
 
   // ---- Load clients ------------------------------------------------------
   useEffect(() => {
@@ -261,20 +265,40 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId, form.client_id, form.invoice_type, selectedYear, selectedMonth, savedInfo])
 
-  // ---- Next sequence for the top-bar month -------------------------------
+  // ---- Next free sequence -----------------------------------------------
+  // Invoices: YYYY/MM/NNN per top-bar month. Older invoices from the Client
+  // Invoicing tab were written YYYY-MM-NNN, so BOTH spellings count.
+  // Credit notes: YYYY/NNN per year (older ones written YYYY-NNN, some
+  // with a suffix like "2026-001 (4)"), counted per company.
   useEffect(() => {
     let cancelled = false
     const run = async () => {
       try {
-        const { data, error } = await supabase
-          .from('invoices').select('invoice_number')
-          .ilike('invoice_number', `${dashPrefix}%`)
-        if (error) throw error
-        if (cancelled) return
         let max = 0
-        for (const r of (data || [])) {
-          const mm = (r.invoice_number || '').match(/\/(\d+)\s*$/)
-          if (mm) max = Math.max(max, parseInt(mm[1], 10))
+        if (isCN) {
+          if (!companyId) return
+          const { data, error } = await supabase
+            .from('invoices').select('invoice_number')
+            .eq('company_id', companyId).eq('invoice_type', 'credit_note')
+          if (error) throw error
+          if (cancelled) return
+          const re = new RegExp(`^${selectedYear}[/-](\\d{1,4})(?!\\d)(?![/-]\\d)`)
+          for (const r of (data || [])) {
+            const mm = (r.invoice_number || '').trim().match(re)
+            if (mm) max = Math.max(max, parseInt(mm[1], 10))
+          }
+        } else {
+          const y = selectedYear, m = pad2(selectedMonth)
+          const { data, error } = await supabase
+            .from('invoices').select('invoice_number')
+            .or(`invoice_number.ilike.${y}/${m}/*,invoice_number.ilike.${y}-${m}-*`)
+          if (error) throw error
+          if (cancelled) return
+          const re = new RegExp(`^${y}[/-]${m}[/-](\\d+)`)
+          for (const r of (data || [])) {
+            const mm = (r.invoice_number || '').trim().match(re)
+            if (mm) max = Math.max(max, parseInt(mm[1], 10))
+          }
         }
         setBaseSeq(max + 1)
       } catch {
@@ -283,10 +307,11 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     }
     run()
     return () => { cancelled = true }
-  }, [dashPrefix, companyId, savedInfo])
+  }, [numPrefix, isCN, selectedYear, selectedMonth, companyId, savedInfo])
 
-  // When the top-bar month changes, re-suggest the sequence for that month.
-  useEffect(() => { setNumberTouched(false); setNumberApproved(false) }, [dashPrefix])
+  // When the number series changes (month, or invoice <-> credit note),
+  // re-suggest the sequence and require confirmation again.
+  useEffect(() => { setNumberTouched(false); setNumberApproved(false) }, [numPrefix])
 
   // Keep the running sequence in step (unless the user edited it).
   useEffect(() => {
@@ -473,8 +498,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     ? monthsToIssue.filter(m => { const r = feeFor(m); return r.amount == null })
     : []
   const startSeq = Number.isNaN(parseInt(seqInput, 10)) ? baseSeq : parseInt(seqInput, 10)
-  const plannedNumbers = monthsToIssue.map((_, i) => dashPrefix + pad3(startSeq + i))
-  const singleNumber = plannedNumbers[0] || (dashPrefix + pad3(startSeq))
+  const plannedNumbers = monthsToIssue.map((_, i) => numPrefix + pad3(startSeq + i))
+  const singleNumber = plannedNumbers[0] || (numPrefix + pad3(startSeq))
 
   // ---- Confirmation state (screen aid only) ------------------------------
   // The invoice number and the issue date arrive pre-filled (next free
@@ -533,7 +558,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         }]
       } else {
         rows = monthsToIssue.map((m, i) => {
-          const number = dashPrefix + pad3(startSeq + i)
+          const number = numPrefix + pad3(startSeq + i)
           const desc = info.multi
             ? describe(selectedClient, form.invoice_type, m, selectedYear, phaseFor(m))
             : (form.description || '').trim()
@@ -611,6 +636,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   }
   doc.vatAmount = doc.net * doc.vatRate
   doc.total = doc.net + doc.vatAmount
+  const docIsCN = savedRow ? savedRow.invoice_type === 'credit_note' : isCN
   const docNumberOk = !!savedRow || numberOk
   const docDateOk = !!savedRow || dateOk
   const docClientOk = !!savedRow || clientOk
@@ -659,9 +685,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </label>
 
           <label className="ib-field ib-field-sm">
-            <span>Invoice number{info.multi ? ' (first of the batch)' : ''}</span>
+            <span>{isCN ? 'Credit note number (yearly series)' : `Invoice number${info.multi ? ' (first of the batch)' : ''}`}</span>
             <div className="ib-num">
-              <span className="ib-num-prefix">{dashPrefix}</span>
+              <span className="ib-num-prefix">{numPrefix}</span>
               <input
                 type="text"
                 className="ib-num-seq"
@@ -911,9 +937,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </div>
 
           <div className="ib-title-row">
-            <h1 className="ib-doc-title">INVOICE</h1>
+            <h1 className="ib-doc-title">{docIsCN ? 'CREDIT NOTE' : 'INVOICE'}</h1>
             <table className="ib-meta"><tbody>
-              <tr><td>Invoice No</td><td className={docNumberOk ? undefined : 'ib-unconfirmed'}>{doc.number || '—'}</td></tr>
+              <tr><td>{docIsCN ? 'Credit Note No' : 'Invoice No'}</td><td className={docNumberOk ? undefined : 'ib-unconfirmed'}>{doc.number || '—'}</td></tr>
               <tr><td>Date issued</td><td className={docDateOk ? undefined : 'ib-unconfirmed'}>{doc.date || '—'}</td></tr>
             </tbody></table>
           </div>
