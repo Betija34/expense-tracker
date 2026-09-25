@@ -4,6 +4,7 @@ import { RabonaLogo } from '../../assets/RabonaLogo'
 import { EspargosLogo } from '../../assets/EspargosLogo'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import { resolveMonthlyFee, fmtPhaseRange } from '../../lib/feePhases'
+import { InvoiceChecklist } from './InvoiceChecklist'
 import './InvoiceBuilder.css'
 
 /**
@@ -175,6 +176,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   // per-month tracking, VAT and "already invoiced" logic are unchanged;
   // combined rows simply share the invoice number and date.
   const [combine, setCombine] = useState(true)
+  const [showChecklist, setShowChecklist] = useState(false)   // printable monthly checklist view
 
   // Variable-expense report picker (pulled from the system).
   const [reportOptions, setReportOptions] = useState([]) // [{ y, m, amount, deferredTo }]
@@ -683,11 +685,29 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const docDateOk = !!savedRow || dateOk
   const docClientOk = !!savedRow || clientOk
 
+  if (showChecklist) {
+    return (
+      <div className="invoice-builder">
+        <div className="ib-controls no-print ib-cl-bar">
+          <button className="ib-btn ib-btn-secondary" onClick={() => setShowChecklist(false)}>← Back to invoice</button>
+          <button className="ib-btn ib-btn-primary" onClick={() => window.print()}>🖨 Print checklist</button>
+          <span className="ib-muted">Month and company come from the top bar.</span>
+        </div>
+        <InvoiceChecklist selectedCompany={selectedCompany} selectedMonth={selectedMonth} selectedYear={selectedYear} />
+      </div>
+    )
+  }
+
   return (
     <div className="invoice-builder">
       {/* ---- Controls (screen only) -------------------------------------- */}
       <div className="ib-controls no-print">
-        <h2>Issue Invoice</h2>
+        <div className="ib-titlebar">
+          <h2>Issue Invoice</h2>
+          <button type="button" className="ib-btn ib-btn-secondary" onClick={() => setShowChecklist(true)}>
+            📋 Monthly checklist
+          </button>
+        </div>
         <p className="ib-sub">
           Company: <strong>{selectedCompany}</strong> · Invoice month: <strong>{MONTHS[selectedMonth - 1]} {selectedYear}</strong> (from the top bar).
           Choose a client and type, then Print / Save as PDF and Save invoice.

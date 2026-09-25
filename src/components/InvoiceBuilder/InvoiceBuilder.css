@@ -404,3 +404,41 @@ fieldset.ib-lockable:disabled { opacity: 0.55; }
 }
 .ib-doneinfo-row { margin-top: 4px; }
 .ib-doneinfo-x { position: absolute; top: 4px; right: 8px; background: none; border: 0; font-size: 18px; color: #6d28d9; cursor: pointer; }
+
+/* ---- Monthly invoicing checklist (printable) ---- */
+.ib-titlebar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ib-cl-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ib-checklist {
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px 20px;
+  margin-top: 12px; color: #1f2937;
+}
+.ib-cl-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.ib-cl-title { font-size: 18px; font-weight: 700; }
+.ib-cl-sub { font-size: 12px; color: #6b7280; margin-top: 2px; }
+.ib-cl-sum { display: flex; gap: 18px; font-size: 12px; }
+.ib-cl-sum div { display: flex; flex-direction: column; align-items: flex-end; }
+.ib-cl-sum span { color: #6b7280; }
+.ib-cl-sum strong { font-size: 14px; }
+.ib-cl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ib-cl-table th {
+  text-align: left; font-weight: 600; color: #374151; background: #f3f4f6;
+  border-bottom: 1px solid #d1d5db; padding: 6px 6px;
+}
+.ib-cl-table td { padding: 5px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+.ib-cl-table tr.first td { border-top: 1px solid #d1d5db; }
+.ib-cl-table td.p { font-weight: 700; white-space: nowrap; }
+.ib-cl-table .a { text-align: right; white-space: nowrap; }
+.ib-cl-table .c { text-align: center; width: 52px; font-size: 14px; }
+.ib-cl-table td.n { white-space: nowrap; font-family: monospace; }
+.ib-cl-table td.s { white-space: nowrap; }
+.ib-cl-table tr.todo td.s { font-weight: 700; color: #b45309; }
+.ib-cl-table tr.muted td { color: #6d28d9; background: #faf5ff; }
+.ib-cl-table tfoot td { font-weight: 700; border-top: 2px solid #374151; padding-top: 7px; }
+.ib-cl-note { margin-top: 12px; font-size: 11px; color: #6b7280; }
+
+@media print {
+  .ib-checklist { border: 0; padding: 0; margin: 0; }
+  .ib-cl-table th { background: #f3f4f6 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .ib-cl-table tr.muted td { background: #f5f3ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .ib-cl-table tr { page-break-inside: avoid; }
+}
