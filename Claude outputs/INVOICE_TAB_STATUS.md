@@ -38,8 +38,9 @@ Files: `src/components/InvoiceBuilder/InvoiceBuilder.jsx` + `.css`; wired into
 - All code edits are done on the Mac via the device bridge; the cloud VM cannot run vite (esbuild arch mismatch), so verification = esbuild syntax check in the cloud, then user deploys and views on Vercel.
 
 ## OPEN — next
-1. **Revisit the print/PDF view** — review the printout layout again (footer/bank block
-   is pinned to the bottom via min-height calc(100vh-6mm)); confirm it prints correctly.
+1. ~~Revisit the print/PDF view~~ — DONE 2026-09-22: user confirmed on the live Vercel
+   build that the printed invoice is laid out correctly (footer/bank block pinned to the
+   bottom, everything in the right place, no red on paper).
 2. **Credit notes** — discuss and finalise how they should look/work (currently a manual
    negative one-off with generic wording).
 3. ~~Confirm the last deploy went through~~ — DONE 2026-09-22: local `main` == `origin/main`,
@@ -70,3 +71,36 @@ single current fee). Also: add missing projects (Thermalpark Residenza, §7.1 Re
 ## User preferences
 - Prefers prose answers over the AskUserQuestion multiple-choice tool.
 - Reimbursements NEVER carry VAT; VAT only on service (monthly fee + one-off service), per client's VAT rate (location-based).
+
+## BUILT 2026-09-25 — fee phases + client header/wording (commit 1504163, V38)
+- Run `DATABASE_SCHEMA_V38_MIGRATION.sql`, then `V39` (phase source_ref), then `V40` (per-phase invoice_wording) in Supabase BEFORE deploying (new table
+  `client_fee_phases`; new clients columns agreement_section, agreement_schedule,
+  invoice_project_name, fee_wording). Without it, saving a client fails.
+- Clients tab → edit client: Company no / VAT no / Address; section, schedule, project
+  name on invoice, optional custom wording ({MONTH} {YEAR} {PROJECT}); Fee phases editor
+  (monthly phases with from/to — blank start = dates TBC, not used; one-off items = reference only).
+- Issue Invoice: monthly fee per month = phase covering that month; typed amount overrides
+  ("↺ Use fee phases again" to undo). No phases = base monthly fee as before.
+- NOT yet phase-aware: the Client Invoicing tracker's auto-drafted monthly-fee rows and
+  totals still use the base `monthly_fee_net`.
+- NEXT: load the 9 projects' details + phases (evidence check vs agreements + accounts@ emails first).
+- TODO (user, 2026-09-25): Client Invoicing → Monthly Fee Invoices table is wider than the
+  screen; the ✏️ edit / 🗑️ delete column sits off-screen right of ACTIVE. Make it fit
+  (e.g. move edit/delete next to the project name, or compact columns).
+
+## DONE 2026-09-25 (all pushed + verified live by user)
+- After Save the document stays on the saved invoice (prints with its own number); controls locked until "+ New invoice"; multi-month saves get a picker.
+- Variable-expense picker: older invoices' coverage derived via deferrals (P covers P unless deferred away + months deferred into P); only variable_expense deferrals count.
+- Credit notes: own yearly series YYYY/NNN per company (counts old YYYY-NNN too); heading CREDIT NOTE; stored POSITIVE (SOA puts them in the credit column). First one issued here: 2026/005 (Urban City, €7,500, to inv 2026/09/005).
+- Invoice sequence also counts old YYYY-MM-NNN numbers.
+- Open: historical duplicate credit-note number 2026-001 (Urban City 30/04 "2026-001 (4)" and Kypseli 14/05) — user says sequence continues from 004, left as is. VAT on credit notes not supported yet (none so far carried VAT).
+
+## DONE 2026-09-25 (later) — multi-month / advance billing (user confirmed "perfect")
+- Issue Invoice: "One invoice" for several ticked months (one number, one line per month). Rows are FILED under the issue (top-bar) month with represents_period = covered month.
+- Month picker counts represents_period; already-invoiced months are purple, click = invoice details.
+- Client Invoicing: months invoiced in another month show a purple "✓ Already invoiced" row + details popup (not a new draft); advance lines in the issue month carry a "billed in advance" badge; Inv.# prefix follows the stored number; Issue-Invoice descriptions shown short ("October 2026 fee", full wording in tooltip).
+- Data fix run by user in Supabase: Evia Mare inv. 2026/09/006 — both rows filed Sep, represent Sep/Oct.
+- TEST client set inactive (no invoices).
+- Still open: load 9 projects' details/phases; Client Invoicing table width; VAT on credit notes; BAD City Hall €47 Sep variable draft (Client Invoicing) vs issuing Aug report from Issue Invoice; BAD City SPA Hotel Jan 2026 fee has no invoice on record.
+
+- 2026-09-25: Monthly invoicing checklist (Issue Invoice → 📋 Monthly checklist, printable A4 landscape) — commit f9e5f5a, pushed. Print layout to be confirmed by user.
