@@ -67,7 +67,7 @@ const BLANK_FORM = {
 let _phaseKey = 0
 const blankPhase = (kind = 'monthly') => ({
   _key: `new-${++_phaseKey}`, id: null, kind, label: '',
-  effective_from: '', effective_to: '', amount_net: '', notes: '',
+  effective_from: '', effective_to: '', amount_net: '', source_ref: '', notes: '',
 })
 
 export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
@@ -1592,7 +1592,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       setPhaseRows((data || []).map(r => ({
         _key: r.id, id: r.id, kind: r.kind, label: r.label || '',
         effective_from: r.effective_from || '', effective_to: r.effective_to || '',
-        amount_net: r.amount_net != null ? String(r.amount_net) : '', notes: r.notes || '',
+        amount_net: r.amount_net != null ? String(r.amount_net) : '',
+        source_ref: r.source_ref || '', notes: r.notes || '',
       })))
     } catch (err) {
       setPhasesError(`Fee phases could not be loaded (${err.message || err}). If this is the first use, run DATABASE_SCHEMA_V38_MIGRATION.sql in Supabase.`)
@@ -1656,6 +1657,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         effective_from: r.effective_from || null,
         effective_to:   r.effective_to || null,
         amount_net:     parseFloat(r.amount_net),
+        source_ref:     r.source_ref?.trim() || null,
         notes:          r.notes?.trim() || null,
         sort_order:     i,
       }
@@ -3885,7 +3887,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                       {phaseRows.length > 0 && (
                         <table className="cl-phases">
                           <thead><tr>
-                            <th>Type</th><th>Phase name</th><th>From</th><th>To</th><th>Amount (net €)</th><th>Notes</th><th></th>
+                            <th>Type</th><th>Phase name</th><th>From</th><th>To</th><th>Amount (net €)</th><th>Agreement / amendment ref</th><th>Notes</th><th></th>
                           </tr></thead>
                           <tbody>
                             {phaseRows.map(r => (
@@ -3906,6 +3908,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                   : <span style={{ color: '#9ca3af', fontSize: 11 }}>—</span>}</td>
                                 <td><input type="number" step="0.01" min="0" value={r.amount_net} style={{ textAlign: 'right' }}
                                   onChange={(e) => updatePhase(r._key, { amount_net: e.target.value })} /></td>
+                                <td><input type="text" value={r.source_ref} placeholder="e.g. Amendment No. 1, 15/10/2026"
+                                  title={r.source_ref || 'Which agreement or amendment this phase comes from'}
+                                  onChange={(e) => updatePhase(r._key, { source_ref: e.target.value })} /></td>
                                 <td><input type="text" value={r.notes}
                                   onChange={(e) => updatePhase(r._key, { notes: e.target.value })} /></td>
                                 <td><button type="button" className="cl-phase-del" title="Remove this phase"

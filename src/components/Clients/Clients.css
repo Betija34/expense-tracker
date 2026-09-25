@@ -849,6 +849,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .cl-phases td:nth-child(1) { width: 90px; }
 .cl-phases td:nth-child(3), .cl-phases td:nth-child(4) { width: 130px; }
 .cl-phases td:nth-child(5) { width: 110px; }
+.cl-phases td:nth-child(6) { width: 170px; }
 .cl-phase-del {
   background: none; border: none; color: #b91c1c; font-size: 16px; cursor: pointer; padding: 0 4px;
 }

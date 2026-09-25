@@ -676,7 +676,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                           return (
                             <tr key={p.id} className={live ? 'live' : undefined}>
                               <td>{p.kind === 'monthly' ? 'Monthly' : 'One-off'}</td>
-                              <td>{p.label}{live ? ' ◀ in effect' : ''}</td>
+                              <td>{p.label}{live ? ' ◀ in effect' : ''}{p.source_ref ? <div className="ib-phaseref">{p.source_ref}</div> : null}</td>
                               <td>{fmtPhaseRange(p)}</td>
                               <td className="a">{fmtEuro(p.amount_net)}{p.kind === 'monthly' ? '/mo' : ''}</td>
                             </tr>
