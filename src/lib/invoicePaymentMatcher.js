@@ -67,6 +67,24 @@ export function parseInvoiceNumbers(raw) {
 }
 
 // ---------------------------------------------------------------------
+// Normalize an invoice number for matching, so cosmetic differences
+// don't block a save:
+//   "INV 2026/08/004", "Inv. No 2026-08-004", "2026/8/4", "#2026.08.004"
+//     → "2026/8/4"
+// Drops a leading INV / INVOICE / NO / # label, upper-cases, splits on
+// any separator (space - / . _) and strips leading zeros from numeric
+// parts. Credit notes ("2026-004" → "2026/4") stay distinct from
+// monthly invoices because they have fewer parts.
+// ---------------------------------------------------------------------
+export function normalizeInvoiceNumber(raw) {
+  if (raw == null) return ''
+  let s = String(raw).toUpperCase().trim()
+  s = s.replace(/^(?:INVOICE|INV|NUMBER|NO|NR|[#:.\s])+/, '')
+  const parts = s.split(/[\s\-\/._]+/).filter(Boolean)
+  return parts.map(p => (/^\d+$/.test(p) ? String(parseInt(p, 10)) : p)).join('/')
+}
+
+// ---------------------------------------------------------------------
 // Look up the invoice rows that match the typed invoice numbers for
 // this company. Returns three buckets so the caller can render a
 // precise error message:
@@ -89,28 +107,41 @@ export async function findInvoicesByNumbers({ supabase, companyId, invoiceNumber
     return { found: [], missing: [], conflicts: [] }
   }
 
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('id, invoice_number, invoice_type, date_paid, status, client_id')
-    .eq('company_id', companyId)
-    .in('invoice_number', invoiceNumbers)
+  // Match on a NORMALIZED key, not the raw text: the printed document
+  // says "INV 2026/08/004" while Issue Invoice stores "2026/08/004", and
+  // older rows use "2026-08-004". Fetch the company's numbered invoices
+  // (paged — PostgREST caps a response at 1000 rows) and compare keys.
+  const data = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error } = await supabase
+      .from('invoices')
+      .select('id, invoice_number, invoice_type, date_paid, status, client_id')
+      .eq('company_id', companyId)
+      .not('invoice_number', 'is', null)
+      .order('id')
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    data.push(...(page || []))
+    if (!page || page.length < PAGE) break
+  }
 
-  if (error) throw error
-
-  // Group ALL hits by number first (including non-payable, so we can
-  // give a more helpful error when a typed number ONLY matches a
-  // pro_forma or credit_note).
+  // Group ALL hits by normalized number first (including non-payable,
+  // so we can give a more helpful error when a typed number ONLY
+  // matches a pro_forma or credit_note).
   const allByNumber = new Map()
-  for (const row of (data || [])) {
-    if (!allByNumber.has(row.invoice_number)) allByNumber.set(row.invoice_number, [])
-    allByNumber.get(row.invoice_number).push(row)
+  for (const row of data) {
+    const key = normalizeInvoiceNumber(row.invoice_number)
+    if (!key) continue
+    if (!allByNumber.has(key)) allByNumber.set(key, [])
+    allByNumber.get(key).push(row)
   }
 
   const found = []
   const missing = []
   const conflicts = []
   for (const num of invoiceNumbers) {
-    const hits = allByNumber.get(num) || []
+    const hits = allByNumber.get(normalizeInvoiceNumber(num)) || []
     const payable = hits.filter(r => !NON_PAYABLE_INVOICE_TYPES.has(r.invoice_type))
     if (payable.length === 0) {
       missing.push(num)
