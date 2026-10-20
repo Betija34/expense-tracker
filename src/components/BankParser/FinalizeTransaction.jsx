@@ -77,6 +77,92 @@ function serializeAdditionalSubRefs(arr, series = 'S') {
  *   4. INSERT into expenses
  *   5. UPDATE bank_transactions.status='matched', matched_expense_id = new id
  */
+// Categories whose "subcategory" is really the client project name.
+// For these the dropdown is driven by the company's own client list
+// (clients table, per company) instead of the global subcategory table,
+// and there is NO "Other" option: every payment must carry a real
+// project name so it matches the project everywhere else in the app.
+const PROJECT_CATEGORIES = ['Client Payment', 'Client Reimbursement']
+const ADD_PROJECT_VALUE = '__add_new_project__'
+
+// A usable project name — not blank and not the legacy "Other" placeholder.
+function isRealProject(name) {
+  const n = (name || '').trim()
+  return !!n && n.toLowerCase() !== 'other'
+}
+
+// Dropdown of the company's projects + "+ Add new project…".
+// onAdd(rawName) must resolve to the canonical saved name (or null on failure).
+function ProjectPicker({ value, onChange, activeNames, inactiveNames, onAdd, placeholder, style }) {
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft]   = useState('')
+  const [busy, setBusy]     = useState(false)
+  const current = isRealProject(value) ? value.trim() : ''
+  const known = [...activeNames, ...inactiveNames]
+  const isLegacy = current && !known.some(n => n.toLowerCase() === current.toLowerCase())
+
+  const confirmAdd = async () => {
+    const name = draft.trim()
+    if (!name || busy) return
+    setBusy(true)
+    try {
+      const saved = await onAdd(name)
+      if (saved) {
+        onChange(saved)
+        setAdding(false)
+        setDraft('')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <select
+        value={current}
+        onChange={(e) => {
+          if (e.target.value === ADD_PROJECT_VALUE) { setAdding(true); return }
+          setAdding(false)
+          onChange(e.target.value)
+        }}
+        className="form-input"
+        style={style}
+      >
+        <option value="">{placeholder || '— Select project —'}</option>
+        {activeNames.map(n => <option key={n} value={n}>{n}</option>)}
+        {inactiveNames.length > 0 && (
+          <optgroup label="Inactive projects">
+            {inactiveNames.map(n => <option key={n} value={n}>{n}</option>)}
+          </optgroup>
+        )}
+        {isLegacy && <option value={current}>{current} (not in project list)</option>}
+        <option value={ADD_PROJECT_VALUE}>+ Add new project…</option>
+      </select>
+      {adding && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <input
+            type="text"
+            placeholder="New project name (e.g. Thermal Park Residence)"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmAdd() } }}
+            className="form-input"
+            style={{ flex: 1 }}
+            autoFocus
+          />
+          <button type="button" className="button" onClick={confirmAdd} disabled={busy || !draft.trim()}>
+            {busy ? 'Adding…' : 'Add'}
+          </button>
+          <button type="button" className="button" onClick={() => { setAdding(false); setDraft('') }} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </>
+  )
+}
+
 export function FinalizeTransaction({ transaction, companyId, companyName, existingExpense, onClose, onSave }) {
   // Period-lock awareness — used in handleSave to refuse finalizing into
   // a closed period. We use the raw hook (not isCurrentLocked) because
@@ -86,7 +172,6 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   const isEditMode = !!existingExpense
   const [categories, setCategories]   = useState([])
   const [subcategories, setSubcats]   = useState([])
-  const [clientList, setClientList]   = useState([])
   const [loading, setLoading]         = useState(false)
   // Synchronous re-entry guard for handleSave / handleSplitSave. React
   // state updates have a brief delay before the button visually disables,
@@ -99,26 +184,99 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   const [loadError, setLoadError]     = useState(null)
   const [saveError, setSaveError]     = useState(null)
 
+  // V19 clients table — per-company project list (active + inactive).
+  // Inactive projects stay pickable because a late payment can still
+  // arrive after a contract ends.
+  const loadDbClients = async () => {
+    if (!companyId) return
+    const { data, error } = await supabase
+      .from('clients')
+      .select('trade_name, active')
+      .eq('company_id', companyId)
+      .order('trade_name')
+    if (error) {
+      console.warn('Could not load clients:', error)
+      return
+    }
+    setDbClients((data || [])
+      .filter(r => r.trade_name?.trim())
+      .map(r => ({ trade_name: r.trade_name.trim(), active: r.active !== false })))
+  }
+
+  // "+ Add new project…" — reuse an existing project of THIS company if
+  // the name matches (case-insensitive), otherwise create the client
+  // record for this company. Returns the canonical name, or null.
+  const addProject = async (rawName) => {
+    const name = (rawName || '').trim()
+    if (!isRealProject(name)) {
+      setSaveError('Please type a real project name ("Other" is not allowed).')
+      return null
+    }
+    try {
+      const { data: existing, error: findErr } = await supabase
+        .from('clients')
+        .select('trade_name')
+        .eq('company_id', companyId)
+        .ilike('trade_name', name)
+      if (findErr) throw findErr
+      if (existing && existing.length > 0) {
+        await loadDbClients()
+        return existing[0].trade_name
+      }
+      const { data: created, error: insErr } = await supabase
+        .from('clients')
+        .insert([{
+          company_id: companyId,
+          legal_name: name,
+          trade_name: name,
+          active:     true,
+          notes:      `Added from the bank statement parser on ${new Date().toISOString().slice(0, 10)}. Fill in legal name, fees and email details in Client Invoicing.`,
+        }])
+        .select('trade_name')
+        .single()
+      if (insErr) {
+        if (insErr.code === '23505') {
+          const { data: re } = await supabase
+            .from('clients').select('trade_name')
+            .eq('company_id', companyId).ilike('trade_name', name)
+            .maybeSingle()
+          await loadDbClients()
+          return re?.trade_name || name
+        }
+        throw insErr
+      }
+      await loadDbClients()
+      setSaveError(null)
+      return created.trade_name
+    } catch (err) {
+      console.error('Add project failed:', err)
+      setSaveError('Could not add the project: ' + (err.message || err))
+      return null
+    }
+  }
+
   // Direction is derived from the bank transaction type
   const direction = transaction.transaction_type === 'credit' ? 'in' : 'out'
 
-  // Client dropdown options for the current company — pulled dynamically
-  // from the clients table (V19) so adding a client on the Clients tab
-  // immediately makes it selectable here. "Other" is always appended as
-  // the free-text fallback (routes through canonicalizeClientName for
-  // existing-match or create-new flow).
-  const [dbClients, setDbClients] = useState([])
-  const PREDEFINED_CLIENTS = useMemo(
-    () => [...dbClients, 'Other'],
+  // Project (client) list for the CURRENT company — pulled from the
+  // clients table (V19), which is per company, so Rabona and Espargos
+  // each see only their own projects. Drives every project picker in
+  // this modal (Client Payment / Client Reimbursement subcategory,
+  // incoming split, reimbursable expense). There is no "Other": a new
+  // project is added through "+ Add new project…", which creates the
+  // client record for this company.
+  const [dbClients, setDbClients] = useState([])   // [{ trade_name, active }]
+  const activeProjects = useMemo(
+    () => dbClients.filter(c => c.active).map(c => c.trade_name),
     [dbClients]
   )
-  const initialClient = isEditMode
-    ? (existingExpense.client_name && PREDEFINED_CLIENTS.includes(existingExpense.client_name)
-        ? existingExpense.client_name
-        : (existingExpense.client_name ? 'Other' : ''))
-    : ''
-  const initialCustomClient = isEditMode && existingExpense.client_name && !PREDEFINED_CLIENTS.includes(existingExpense.client_name)
+  const inactiveProjects = useMemo(
+    () => dbClients.filter(c => !c.active).map(c => c.trade_name),
+    [dbClients]
+  )
+  const initialClient = isEditMode && isRealProject(existingExpense.client_name)
     ? existingExpense.client_name : ''
+  const initialCustomClient = ''
 
   const [form, setForm] = useState({
     category_id:       isEditMode ? (existingExpense.category_id || '') : '',
@@ -272,14 +430,13 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             'company'
         }
 
-        const clientInPredefined = s.client_name && PREDEFINED_CLIENTS.includes(s.client_name)
         newPortions[slotKey] = {
           amount:             String(Math.abs(Number(s.amount || 0)).toFixed(2)),
           category_id:        s.category_id || '',
           subcategory_id:     s.subcategory_id || '',
           subcategory_name:   s.subcategory_name || '',
-          client_name:        clientInPredefined ? s.client_name : (s.client_name ? 'Other' : ''),
-          custom_client_name: !clientInPredefined && s.client_name ? s.client_name : '',
+          client_name:        isRealProject(s.client_name) ? s.client_name : '',
+          custom_client_name: '',
           invoice_number:     s.invoice_number || '',
           // Preserve the shareholder_code on the Company portion so a Travel
           // Expense for a specific shareholder keeps its travel-log routing
@@ -335,6 +492,20 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     [categories, form.category_id]
   )
 
+  // Client Payment / Client Reimbursement → project picker (per company).
+  const isProjectCategory = PROJECT_CATEGORIES.includes(selectedCategory?.name)
+
+  // Picking a project for a project category. subcategory_name carries the
+  // project (that is what Client Report and the rest of the app read).
+  // subcategory_id points at the matching legacy subcategory row when one
+  // exists with the same name, otherwise stays empty (null on save).
+  const handleProjectChange = (name) => {
+    const match = subcategories.find(
+      sc => (sc.name || '').trim().toLowerCase() === (name || '').trim().toLowerCase()
+    )
+    setForm(f => ({ ...f, subcategory_name: name, subcategory_id: match ? match.id : '' }))
+  }
+
   // What sub-ref series will this be?
   const subRefSeries = useMemo(
     () => decideSubRefSeries(selectedCategory, form.is_reimbursable),
@@ -363,21 +534,6 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         setLoadError('Failed to load categories. Did you run the V2 migration?')
       }
     }
-    const loadClients = async () => {
-      // Pull client list from 'Client Reimbursement' subcategories (same list as Client Payment)
-      const { data: catData } = await supabase
-        .from('expense_categories')
-        .select('id')
-        .eq('name', 'Client Reimbursement')
-        .single()
-      if (!catData) return
-      const { data: subs } = await supabase
-        .from('expense_subcategories')
-        .select('name, is_custom, sort_order')
-        .eq('category_id', catData.id)
-        .order('sort_order')
-      setClientList(subs || [])
-    }
     const loadAllSubcats = async () => {
       // Load ALL subcategories so each portion can have its own subcategory picker
       const { data } = await supabase
@@ -386,26 +542,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         .order('sort_order')
       setAllSubcats(data || [])
     }
-    // V19 clients table — per-company canonical list. Drives the
-    // "Client / Project" dropdown for reimbursable expenses and incoming
-    // client payments. Espargos starts empty; new clients added via the
-    // Clients tab appear here automatically.
-    const loadDbClients = async () => {
-      if (!companyId) return
-      const { data, error } = await supabase
-        .from('clients')
-        .select('trade_name')
-        .eq('company_id', companyId)
-        .eq('active', true)
-        .order('trade_name')
-      if (error) {
-        console.warn('Could not load clients:', error)
-        return
-      }
-      setDbClients((data || []).map(r => r.trade_name).filter(Boolean))
-    }
     loadCats()
-    loadClients()
     loadAllSubcats()
     loadDbClients()
   }, [direction, companyId])
@@ -775,8 +912,13 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     if (!form.category_id) { setSaveError('Category is required'); return }
     if (!form.vendor?.trim()) { setSaveError('Vendor is required'); return }
 
-    // Subcategory required unless the category has none
-    if (subcategories.length > 0 && !form.subcategory_id) {
+    // Client Payment / Client Reimbursement must carry a real project name.
+    if (isProjectCategory) {
+      if (!isRealProject(form.subcategory_name)) {
+        setSaveError('Please choose the project (or add a new one with "+ Add new project…")'); return
+      }
+    } else if (subcategories.length > 0 && !form.subcategory_id) {
+      // Subcategory required unless the category has none
       setSaveError('Subcategory is required'); return
     }
 
@@ -798,10 +940,8 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
 
     // Client/project required when reimbursable
     if (form.is_reimbursable) {
-      const clientName = form.client_name === 'Other'
-        ? form.custom_client_name?.trim()
-        : form.client_name
-      if (!clientName) {
+      const clientName = form.client_name
+      if (!isRealProject(clientName)) {
         setSaveError('Please select a client/project for the reimbursable expense'); return
       }
     }
@@ -1105,8 +1245,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     //   OUTGOING: each portion has its own category + (per-portion) client picker
     //   INCOMING: categories are auto-resolved by portion type, client is shared at modal level
     if (direction === 'in') {
-      const clientFinal = form.client_name === 'Other' ? form.custom_client_name?.trim() : form.client_name
-      if (!clientFinal) { setSaveError('Client / project is required for incoming split'); return }
+      if (!isRealProject(form.client_name)) { setSaveError('Client / project is required for incoming split'); return }
       // Invoice numbers are OPTIONAL per portion (free-text paper trail) —
       // but when they ARE present, every one must exist in the Invoicing
       // tab. We validate up-front so we never end up with a saved split
@@ -1121,8 +1260,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           setSaveError(`${t.label}: subcategory is required`); return
         }
         if (t.key === 'client') {
-          const clientFinal = p.client_name === 'Other' ? p.custom_client_name?.trim() : p.client_name
-          if (!clientFinal) { setSaveError('Client portion: please select a client/project'); return }
+          if (!isRealProject(p.client_name)) { setSaveError('Client portion: please select a client/project'); return }
         }
       }
     }
@@ -1253,7 +1391,9 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             sub_ref_month:      null,
             sub_ref_seq:        null,
             subcategory_id:     null,
-            subcategory_name:   null,
+            // Project name also in subcategory_name — same field single-mode
+            // incoming payments use, and what Client Report reads.
+            subcategory_name:   sharedClientFinal,
             is_reimbursable:    false,
             requires_reimbursement: false,
             client_name:        sharedClientFinal,
@@ -1572,27 +1712,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           {isSplit && direction === 'in' && (
             <div className="form-group">
               <label>Client / project * <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(shared across both portions)</span></label>
-              <select
+              <ProjectPicker
                 value={form.client_name}
-                onChange={(e) => setForm({ ...form, client_name: e.target.value, custom_client_name: '' })}
-                className="form-input"
-              >
-                <option value="">— Select client —</option>
-                {clientList.map(c => (
-                  <option key={c.name} value={c.name}>{c.name}</option>
-                ))}
-                <option value="Other">Other (custom)</option>
-              </select>
-              {form.client_name === 'Other' && (
-                <input
-                  type="text"
-                  placeholder="Custom client name"
-                  value={form.custom_client_name}
-                  onChange={(e) => setForm({ ...form, custom_client_name: e.target.value })}
-                  className="form-input"
-                  style={{ marginTop: 6 }}
-                />
-              )}
+                onChange={(n) => setForm(f => ({ ...f, client_name: n, custom_client_name: '' }))}
+                activeNames={activeProjects}
+                inactiveNames={inactiveProjects}
+                onAdd={addProject}
+                placeholder="— Select client / project —"
+              />
             </div>
           )}
 
@@ -1695,26 +1822,15 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                         {t.key === 'client' && isActive && (
                           <>
                             <label style={{ fontSize: 11, color: '#6b7280' }}>Client / project *</label>
-                            <select
+                            <ProjectPicker
                               value={p.client_name}
-                              onChange={(e) => updatePortion('client', { client_name: e.target.value, custom_client_name: '' })}
-                              className="form-input"
+                              onChange={(n) => updatePortion('client', { client_name: n, custom_client_name: '' })}
+                              activeNames={activeProjects}
+                              inactiveNames={inactiveProjects}
+                              onAdd={addProject}
+                              placeholder="— Select client / project —"
                               style={{ marginBottom: 4 }}
-                            >
-                              <option value="">— Select client —</option>
-                              {clientList.map(c => (
-                                <option key={c.name} value={c.name}>{c.name}</option>
-                              ))}
-                            </select>
-                            {p.client_name === 'Other' && (
-                              <input
-                                type="text"
-                                placeholder="Custom client name"
-                                value={p.custom_client_name}
-                                onChange={(e) => updatePortion('client', { custom_client_name: e.target.value })}
-                                className="form-input"
-                              />
-                            )}
+                            />
                           </>
                         )}
                       </>
@@ -1761,8 +1877,24 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
           </div>
           )}
 
+          {/* Project picker for Client Payment / Client Reimbursement —
+              this company's projects only, no "Other". */}
+          {!isSplit && isProjectCategory && (
+            <div className="form-group">
+              <label>Project *</label>
+              <ProjectPicker
+                value={form.subcategory_name}
+                onChange={handleProjectChange}
+                activeNames={activeProjects}
+                inactiveNames={inactiveProjects}
+                onAdd={addProject}
+                placeholder="— Select project —"
+              />
+            </div>
+          )}
+
           {/* Subcategory (when category has any) */}
-          {!isSplit && subcategories.length > 0 && (
+          {!isSplit && !isProjectCategory && subcategories.length > 0 && (
             <div className="form-group">
               <label>Subcategory *</label>
               <select
@@ -1985,26 +2117,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
               borderRadius: 4, padding: 12
             }}>
               <label>Client / Project *</label>
-              <select
+              <ProjectPicker
                 value={form.client_name}
-                onChange={(e) => setForm({ ...form, client_name: e.target.value, custom_client_name: '' })}
-                className="form-input"
-              >
-                <option value="">— Select client / project —</option>
-                {clientList.map(c => (
-                  <option key={c.name} value={c.name}>{c.name}</option>
-                ))}
-              </select>
-              {form.client_name === 'Other' && (
-                <input
-                  type="text"
-                  value={form.custom_client_name}
-                  onChange={(e) => setForm({ ...form, custom_client_name: e.target.value })}
-                  className="form-input"
-                  placeholder="Enter custom client / project name"
-                  style={{ marginTop: 8 }}
-                />
-              )}
+                onChange={(n) => setForm(f => ({ ...f, client_name: n, custom_client_name: '' }))}
+                activeNames={activeProjects}
+                inactiveNames={inactiveProjects}
+                onAdd={addProject}
+                placeholder="— Select client / project —"
+              />
               <small style={{ color: '#92400e', fontSize: 12, marginTop: 4, display: 'block' }}>
                 This expense will be recoverable from the selected client.
                 When they pay back, you'll match it under <strong>Client Reimbursement (incoming)</strong>.
