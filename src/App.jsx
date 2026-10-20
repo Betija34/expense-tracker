@@ -62,10 +62,15 @@ function App() {
     // onAuthStateChange sets session to null → the Login screen renders.
   }
 
-  // Load companies once the user is signed in. Gated on `session` because,
-  // with Row-Level Security on, an anonymous request returns nothing.
+  // Load companies once the user is signed in. Gated on the signed-in
+  // user (not the session object) because, with Row-Level Security on, an
+  // anonymous request returns nothing — and Supabase hands us a NEW session
+  // object on every background token refresh / tab re-focus. Keying on the
+  // session object re-ran this load and reset the company dropdown to the
+  // first company alphabetically (Espargos) while the user was on Rabona.
+  const signedInUserId = session?.user?.id || null
   useEffect(() => {
-    if (!session) return
+    if (!signedInUserId) return
     const loadCompanies = async () => {
       try {
         setLoading(true)
@@ -77,8 +82,12 @@ function App() {
         if (error) throw error
 
         setCompanies(data || [])
+        // Keep the user's current choice; only fall back to the first
+        // company if the current selection isn't a known company.
         if ((data || []).length > 0) {
-          setSelectedCompany(data[0].name)
+          setSelectedCompany(prev =>
+            data.some(c => c.name === prev) ? prev : data[0].name
+          )
         }
       } catch (err) {
         console.error('Error loading companies:', err)
@@ -89,7 +98,7 @@ function App() {
     }
 
     loadCompanies()
-  }, [session])
+  }, [signedInUserId])
 
   // If the user is on a tab that's hidden for the newly selected company
   // (Client Report or Travel Log when on Espargos), bounce back to Dashboard.
