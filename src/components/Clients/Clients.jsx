@@ -623,8 +623,60 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // expense_deferrals tagged with the right invoice_type and refresh
   // local state. Type defaults to 'variable_expense' for back-compat
   // (Block 4 callers), and Block 1 passes 'monthly_fee' explicitly.
+  // Is THIS month's invoice of this type for this client already issued
+  // (invoice # + issue date set)? Once a month's fixed expenses have been
+  // invoiced, they belong to that invoice and cannot be deferred to a
+  // later month — deferring would bill them twice.
+  const isCurrentInvoiceIssued = (client, invoiceType) =>
+    invoices.some(i =>
+      i.client_id === client.id &&
+      i.invoice_type === invoiceType &&
+      i.invoice_number && i.date_issued
+    )
+
+  // Is the invoice in a deferral's TARGET month already issued? This is
+  // the invoice that absorbed the deferred amount, so once it's out the
+  // door the deferral must stay. Queries the target period directly
+  // (the `invoices` state only holds the selected month).
+  const isDeferralTargetIssued = async (deferral) => {
+    const { data, error } = await supabase
+      .from('invoices')
+      .select('id, invoice_number, date_issued')
+      .eq('company_id', companyId)
+      .eq('client_id', deferral.client_id)
+      .eq('invoice_type', deferral.invoice_type || 'variable_expense')
+      .eq('period_year', deferral.target_year)
+      .eq('period_month', deferral.target_month)
+    if (error) throw error
+    return (data || []).some(i => i.invoice_number && i.date_issued)
+  }
+
+  // Undo an OUTBOUND deferral (this month → later month). Locked only when
+  // the target month's invoice is issued — NOT when this month's is.
+  const undoOutboundDeferral = async (client, deferral, label = 'fixed-expense') => {
+    if (lockGuard('undo a deferral')) return
+    let targetIssued
+    try {
+      targetIssued = await isDeferralTargetIssued(deferral)
+    } catch (e) {
+      alert(`Could not check the ${monthName(deferral.target_month)} ${deferral.target_year} invoice: ${e.message}`)
+      return
+    }
+    if (targetIssued) {
+      alert(`Locked — the ${monthName(deferral.target_month)} ${deferral.target_year} invoice that includes this deferral is already issued.`)
+      return
+    }
+    if (window.confirm(`Undo the ${label} deferral of ${monthName(selectedMonth)} ${selectedYear} → ${monthName(deferral.target_month)} ${deferral.target_year} for ${client.trade_name || client.legal_name}?`)) {
+      removeDeferral(deferral.id)
+    }
+  }
+
   const openDeferModal = (client, invoiceType = 'variable_expense') => {
     if (lockGuard('defer fees')) return
+    if (invoiceType === 'fixed_expense' && isCurrentInvoiceIssued(client, invoiceType)) {
+      alert(`${monthName(selectedMonth)} ${selectedYear}'s fixed-expense invoice for ${client.trade_name || client.legal_name} is already issued — these expenses can't be deferred.`)
+      return
+    }
     const nextMonth = selectedMonth === 12 ? 1            : selectedMonth + 1
     const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
     setDeferModal({
@@ -2377,6 +2429,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 title="Cancel this deferral and return the fee to its source month"
                                 style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
                                 onClick={() => {
+                                  // The invoice on THIS row is the one that absorbed the deferred fee —
+                                  // once it's issued, the deferral can't be pulled back out of it.
+                                  if (dbInvoice && dbInvoice.invoice_number && dbInvoice.date_issued) {
+                                    alert(`Locked — the invoice that includes this deferred fee is already issued.`)
+                                    return
+                                  }
                                   if (!lockGuard('undo a deferral') && window.confirm(`Undo the deferral of ${monthName(inst.month)} ${inst.year} fee for ${c.trade_name || c.legal_name}?`)) {
                                     removeDeferral(inst.deferral.deferral_id)
                                   }
@@ -2384,6 +2442,12 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               >
                                 ↩ Undo
                               </button>
+                            ) : (dbInvoice && dbInvoice.invoice_number && dbInvoice.date_issued) ? (
+                              // Invoice issued → this month's fee is billed; no deferral.
+                              <span
+                                style={{ fontSize: 11, color: '#9ca3af' }}
+                                title="Invoice issued — this month's fee is billed and can't be deferred"
+                              >—</span>
                             ) : Number(c.monthly_fee_net || 0) > 0 ? (
                               <button
                                 className="row-btn"
@@ -2483,20 +2547,20 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                             {outbound ? (
                               <button
                                 className="row-btn"
-                                disabled={isTargetInvoiceIssued(c, 'monthly_fee')}
-                                title={isTargetInvoiceIssued(c, 'monthly_fee')
-                                  ? `Locked — target invoice already issued.`
-                                  : `Cancel deferral`}
+                                title={`Cancel deferral to ${monthName(outbound.target_month)} ${outbound.target_year} (locked if that month's invoice is issued)`}
                                 style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
-                                onClick={() => {
-                                  if (isTargetInvoiceIssued(c, 'monthly_fee')) return
-                                  if (!lockGuard('undo a deferral') && window.confirm(`Undo the monthly-fee deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
-                                    removeDeferral(outbound.id)
-                                  }
-                                }}
+                                onClick={() => undoOutboundDeferral(c, outbound, 'monthly-fee')}
                               >
                                 ↩ Undo
                               </button>
+                            ) : (inv.invoice_number && inv.date_issued &&
+                                 (!inv.represents_period_year ||
+                                  (inv.represents_period_year === selectedYear && inv.represents_period_month === selectedMonth))) ? (
+                              // Invoice for THIS month issued → fee is billed; no deferral.
+                              <span
+                                style={{ fontSize: 11, color: '#9ca3af' }}
+                                title="Invoice issued — this month's fee is billed and can't be deferred"
+                              >—</span>
                             ) : Number(c.monthly_fee_net || 0) > 0 ? (
                               <button
                                 className="row-btn"
@@ -2802,17 +2866,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               {bk.outbound ? (
                                 <button
                                   className="row-btn"
-                                  disabled={isTargetInvoiceIssued(c, 'fixed_expense')}
-                                  title={isTargetInvoiceIssued(c, 'fixed_expense')
-                                    ? `Locked — target invoice already issued.`
-                                    : `Cancel deferral`}
+                                  title={`Cancel deferral to ${monthName(bk.outbound.target_month)} ${bk.outbound.target_year} (locked if that month's invoice is issued)`}
                                   style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
-                                  onClick={() => {
-                                    if (isTargetInvoiceIssued(c, 'fixed_expense')) return
-                                    if (!lockGuard('undo a deferral') && window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
-                                      removeDeferral(bk.outbound.id)
-                                    }
-                                  }}
+                                  onClick={() => undoOutboundDeferral(c, bk.outbound)}
                                 >
                                   ↩ Undo
                                 </button>
@@ -2878,20 +2934,18 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               {outbound ? (
                                 <button
                                   className="row-btn"
-                                  disabled={isTargetInvoiceIssued(c, 'fixed_expense')}
-                                  title={isTargetInvoiceIssued(c, 'fixed_expense')
-                                    ? `Locked — target invoice already issued.`
-                                    : `Cancel deferral`}
+                                  title={`Cancel deferral to ${monthName(outbound.target_month)} ${outbound.target_year} (locked if that month's invoice is issued)`}
                                   style={{ fontSize: 11, padding: '3px 6px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4 }}
-                                  onClick={() => {
-                                    if (isTargetInvoiceIssued(c, 'fixed_expense')) return
-                                    if (!lockGuard('undo a deferral') && window.confirm(`Undo the fixed-expense deferral of ${monthName(selectedMonth)} ${selectedYear} for ${c.trade_name || c.legal_name}?`)) {
-                                      removeDeferral(outbound.id)
-                                    }
-                                  }}
+                                  onClick={() => undoOutboundDeferral(c, outbound)}
                                 >
                                   ↩ Undo
                                 </button>
+                              ) : (inv.invoice_number && inv.date_issued) ? (
+                                // Invoice issued → this month's fixed expenses are billed; no deferral.
+                                <span
+                                  style={{ fontSize: 11, color: '#9ca3af' }}
+                                  title="Invoice issued — this month's fixed expenses are billed and can't be deferred"
+                                >—</span>
                               ) : Number(c.monthly_fixed_expense_net || 0) > 0 ? (
                                 <button
                                   className="row-btn"
