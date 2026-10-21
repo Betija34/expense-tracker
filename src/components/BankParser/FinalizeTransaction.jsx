@@ -340,9 +340,30 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     { key: 'payment',       label: 'Client Payment portion',       accent: '#15803d', categoryName: 'Client Payment' },
     { key: 'reimbursement', label: 'Client Reimbursement portion', accent: '#1d4ed8', categoryName: 'Client Reimbursement' },
   ]
-  const PORTION_TYPES = direction === 'in' ? INCOMING_PORTION_TYPES : OUTGOING_PORTION_TYPES
+  // INCOMING "refund" split — a supplier refund where the ORIGINAL payment
+  // was split between the company and a shareholder (e.g. a flight paid by
+  // the company, part company travel / part shareholder personal). The
+  // company's share of the credit is booked as a Supplier Refund; the
+  // shareholder's share stays in the company and is booked as Shareholder
+  // Funding (YK / BK) — i.e. an investment from that shareholder. Uses the
+  // existing categories, so no schema change.
+  const REFUND_PORTION_TYPES = [
+    { key: 'company_refund', label: 'Company refund portion',        accent: '#15803d', categoryName: 'Supplier Refunds' },
+    { key: 'yk_funding',     label: 'YK shareholder investment',     accent: '#3C3489', categoryName: 'Shareholder Funding', shareholderCode: 'YK' },
+    { key: 'bk_funding',     label: 'BK shareholder investment',     accent: '#3C3489', categoryName: 'Shareholder Funding', shareholderCode: 'BK' },
+  ]
+  // Which incoming split the user is building: 'client' (Client Payment +
+  // Client Reimbursement) or 'refund' (Supplier Refund + Shareholder Funding).
+  // For an existing split group this is derived from the siblings' categories.
+  const [incomingSplitKind, setIncomingSplitKind] = useState('client')
+  const PORTION_TYPES = direction === 'in'
+    ? (incomingSplitKind === 'refund' ? REFUND_PORTION_TYPES : INCOMING_PORTION_TYPES)
+    : OUTGOING_PORTION_TYPES
+  const isRefundSplit = direction === 'in' && incomingSplitKind === 'refund'
 
-  const initialPortions = PORTION_TYPES.reduce((acc, t) => ({
+  // Slot state covers every portion key of every split kind, so switching
+  // the incoming kind never hits a missing slot.
+  const initialPortions = [...OUTGOING_PORTION_TYPES, ...INCOMING_PORTION_TYPES, ...REFUND_PORTION_TYPES].reduce((acc, t) => ({
     ...acc,
     [t.key]: {
       amount: '',
@@ -373,7 +394,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     ;(async () => {
       const { data, error } = await supabase
         .from('expenses')
-        .select('*')
+        .select('*, expense_categories(name)')
         .eq('split_group_id', existingExpense.split_group_id)
         .order('split_portion_index', { ascending: true })
       if (!error && !cancelled && data) {
@@ -404,10 +425,19 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       // INCOMING: route by the sibling's category name → payment vs reimbursement.
       const newPortions = { ...initialPortions }
       const categoryById = new Map() // built lazily below from categories state
+      const siblingIsRefundKind = direction === 'in' && groupSiblings.some(s =>
+        ['Supplier Refunds', 'Shareholder Funding'].includes(s.expense_categories?.name)
+      )
+      if (direction === 'in') setIncomingSplitKind(siblingIsRefundKind ? 'refund' : 'client')
 
       for (const s of groupSiblings) {
         let slotKey
-        if (direction === 'in') {
+        if (siblingIsRefundKind) {
+          // Refund split: route by category + shareholder tag.
+          slotKey = s.expense_categories?.name === 'Shareholder Funding'
+            ? (s.shareholder_code === 'BK' ? 'bk_funding' : 'yk_funding')
+            : 'company_refund'
+        } else if (direction === 'in') {
           // For incoming, we need the category name. We don't always have it
           // on the row directly, so we use subcategory_name as a hint or fall
           // back to the order: index 0 → payment, index 1 → reimbursement.
@@ -478,7 +508,8 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
   const bankAmount = Math.abs(Number(transaction.amount || 0))
   const portionTotal = useMemo(() =>
     PORTION_TYPES.reduce((sum, t) => sum + (parseFloat(portions[t.key].amount) || 0), 0),
-    [portions]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [portions, incomingSplitKind, direction]
   )
   const portionMatchesTotal = Math.abs(portionTotal - bankAmount) < 0.005
 
@@ -538,7 +569,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       // Load ALL subcategories so each portion can have its own subcategory picker
       const { data } = await supabase
         .from('expense_subcategories')
-        .select('id, category_id, name, sort_order')
+        .select('id, category_id, name, sort_order, is_dynamic')
         .order('sort_order')
       setAllSubcats(data || [])
     }
@@ -1244,7 +1275,14 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     // Per-portion validation differs by direction:
     //   OUTGOING: each portion has its own category + (per-portion) client picker
     //   INCOMING: categories are auto-resolved by portion type, client is shared at modal level
-    if (direction === 'in') {
+    if (isRefundSplit) {
+      // Refund split: the company portion needs the refund details text
+      // (same rule as single-mode Supplier Refunds' dynamic subcategory).
+      const cr = portions.company_refund
+      if ((parseFloat(cr.amount) || 0) > 0 && !cr.subcategory_name?.trim()) {
+        setSaveError('Company refund portion: please type the refund details (e.g. supplier / booking)'); return
+      }
+    } else if (direction === 'in') {
       if (!isRealProject(form.client_name)) { setSaveError('Client / project is required for incoming split'); return }
       // Invoice numbers are OPTIONAL per portion (free-text paper trail) —
       // but when they ARE present, every one must exist in the Invoicing
@@ -1272,7 +1310,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
     // error otherwise so we never end up with a saved split pointing
     // at non-existent invoices.
     let splitInvoiceMatchResult = null
-    if (direction === 'in') {
+    if (direction === 'in' && !isRefundSplit) {
       const activeNow = PORTION_TYPES.filter(t => (parseFloat(portions[t.key].amount) || 0) > 0)
       const allInvoiceNumbers = []
       const seen = new Set()
@@ -1344,7 +1382,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
       // same name flows into every portion AND lands in the canonical-clients
       // table — matches Add Expense's behavior for reimbursable manual entries.
       let sharedClientFinal = null
-      if (direction === 'in') {
+      if (direction === 'in' && !isRefundSplit) {
         if (form.client_name === 'Other') {
           sharedClientFinal = await canonicalizeClientName(supabase, {
             companyId,
@@ -1365,7 +1403,63 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
         const t = active[i]
         const p = portions[t.key]
 
-        if (direction === 'in') {
+        if (isRefundSplit) {
+          // === INCOMING refund portion (Supplier Refund / Shareholder Funding) ===
+          const cat = categoryByName[t.categoryName]
+          if (!cat) {
+            throw new Error(`Category "${t.categoryName}" not found in the system. Ensure incoming categories are seeded.`)
+          }
+          const catSubs = allSubcats.filter(sc => sc.category_id === cat.id)
+          let subId = null, subName = null, shCode = null
+          if (t.shareholderCode) {
+            // Shareholder Funding → subcategory YK / BK + shareholder tag,
+            // exactly as single-mode Shareholder Funding is stored.
+            const sub = catSubs.find(sc => sc.name === t.shareholderCode)
+            if (!sub) throw new Error(`Subcategory "${t.shareholderCode}" not found under Shareholder Funding.`)
+            subId = sub.id
+            subName = sub.name
+            shCode = t.shareholderCode
+          } else {
+            // Supplier Refunds → dynamic placeholder subcategory + typed details.
+            const sub = catSubs.find(sc => sc.is_dynamic) || catSubs[0]
+            subId = sub ? sub.id : null
+            subName = p.subcategory_name?.trim() || null
+          }
+          rows.push({
+            company_id:         companyId,
+            category_id:        cat.id,
+            account_id:         transaction.account_id,
+            date:               transaction.transaction_date,
+            amount:             parseFloat(p.amount),
+            currency:           'EUR',
+            description:        form.description?.trim() || null,
+            vendor:             form.vendor.trim(),
+            reference_number:   buildMainRef(dateParts.year, dateParts.month, seqs[i], companyName),
+            expense_type:       'income',
+            direction:          'in',
+            main_ref_year:      dateParts.year,
+            main_ref_month:     dateParts.month,
+            main_ref_seq:       seqs[i],
+            sub_ref_series:     null,
+            sub_ref_month:      null,
+            sub_ref_seq:        null,
+            subcategory_id:     subId,
+            subcategory_name:   subName,
+            is_reimbursable:    false,
+            requires_reimbursement: false,
+            client_name:        null,
+            shareholder_code:   shCode,
+            bank_transaction_id: transaction.id,
+            is_split:           true,
+            split_group_id:     splitGroupId,
+            split_portion_index: i + 1,
+            status:             'pending',
+            invoice_number:     null,
+            // Same optional date override single mode stores (e.g. the
+            // supplier's credit-note date).
+            invoice_date:       form.invoice_date || null,
+          })
+        } else if (direction === 'in') {
           // === INCOMING portion (Client Payment / Client Reimbursement) ===
           const cat = categoryByName[t.categoryName]
           if (!cat) {
@@ -1684,7 +1778,7 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                 />
                 <span style={{ fontWeight: 500 }}>
                   {direction === 'in'
-                    ? 'Split this payment (Client Payment + Reimbursement from same client)'
+                    ? 'Split this payment'
                     : 'Split this expense across portions'}
                 </span>
               </label>
@@ -1708,8 +1802,46 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
             </div>
           )}
 
+          {/* INCOMING SPLIT — which kind of split (new splits only; an
+              existing group keeps the kind it was saved with). */}
+          {isSplit && direction === 'in' && !isExistingSplit && (
+            <div className="form-group">
+              <label>Split type *</label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, margin: '4px 0' }}>
+                <input
+                  type="radio"
+                  name="incomingSplitKind"
+                  checked={incomingSplitKind === 'client'}
+                  onChange={() => setIncomingSplitKind('client')}
+                />
+                Client Payment + Reimbursement (same client)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, margin: '4px 0' }}>
+                <input
+                  type="radio"
+                  name="incomingSplitKind"
+                  checked={incomingSplitKind === 'refund'}
+                  onChange={() => {
+                    setIncomingSplitKind('refund')
+                    // Carry over refund details already typed in single mode.
+                    if (!portions.company_refund.subcategory_name && form.subcategory_name && subcategoryIsDynamic) {
+                      updatePortion('company_refund', { subcategory_name: form.subcategory_name })
+                    }
+                  }}
+                />
+                Supplier refund — company refund + shareholder investment
+              </label>
+              {incomingSplitKind === 'refund' && (
+                <small style={{ color: '#4338ca', fontSize: 12, display: 'block', marginTop: 4 }}>
+                  Company portion → Supplier Refunds. Shareholder portion(s) → Shareholder Funding (YK / BK),
+                  shown in the Shareholder Report as a transfer from that shareholder.
+                </small>
+              )}
+            </div>
+          )}
+
           {/* INCOMING SPLIT — shared client picker (one client per transfer) */}
-          {isSplit && direction === 'in' && (
+          {isSplit && direction === 'in' && !isRefundSplit && (
             <div className="form-group">
               <label>Client / project * <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 12 }}>(shared across both portions)</span></label>
               <ProjectPicker
@@ -1759,8 +1891,28 @@ export function FinalizeTransaction({ transaction, companyId, companyName, exist
                       style={{ marginBottom: 6 }}
                     />
 
+                    {/* INCOMING refund split: details text for the company
+                        refund; shareholder portions are fully implied. */}
+                    {isIncomingPortion && isRefundSplit && t.key === 'company_refund' && (
+                      <>
+                        <label style={{ fontSize: 11, color: '#6b7280' }}>Refund details *</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Flight ATH-MLO-ATH (8Y55CU) partial refund"
+                          value={p.subcategory_name}
+                          onChange={(e) => updatePortion(t.key, { subcategory_name: e.target.value })}
+                          className="form-input"
+                        />
+                      </>
+                    )}
+                    {isIncomingPortion && isRefundSplit && t.shareholderCode && (
+                      <small style={{ fontSize: 11, color: '#6b7280' }}>
+                        Booked as Shareholder Funding · {t.shareholderCode}
+                      </small>
+                    )}
+
                     {/* INCOMING: just an invoice # field, no category dropdown */}
-                    {isIncomingPortion && (
+                    {isIncomingPortion && !isRefundSplit && (
                       <>
                         <label style={{ fontSize: 11, color: '#6b7280' }}>
                           Invoice #(s) <span style={{ color: '#9ca3af', fontWeight: 400 }}>(comma-separated for multiple)</span>
