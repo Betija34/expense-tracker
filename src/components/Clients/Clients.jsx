@@ -415,7 +415,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       reimbursableFor(client)
     const naturalCounted = outboundDeferralFor(client, invoiceType) ? 0 : ownNatural
     const inbound = inboundDeferralsFor(client, invoiceType).reduce((s, d) => s + d.amount, 0)
-    return naturalCounted + inbound
+    // Round to cents: summing many expense amounts in floating point leaves
+    // tails like 349.1699999 — money is always shown and saved to 2 decimals.
+    return Math.round((naturalCounted + inbound) * 100) / 100
   }
   // Backward-compat alias used by existing variable_expense call sites.
   const effectiveReimbursableFor = (client) => effectiveAmountFor(client, 'variable_expense')
@@ -2914,7 +2916,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 min="0"
                                 className="lifecycle-input lifecycle-input-mono"
                                 style={{ textAlign: 'right', width: 90 }}
-                                defaultValue={Number(inv.amount_net || 0)}
+                                defaultValue={Math.round(Number(inv.amount_net || 0) * 100) / 100}
                                 onBlur={(e) => {
                                   const next = parseFloat(e.target.value)
                                   if (!Number.isNaN(next) && next !== Number(inv.amount_net || 0)) {
@@ -3286,7 +3288,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 min="0"
                                 className="lifecycle-input lifecycle-input-mono"
                                 style={{ textAlign: 'right', width: 90, color: '#7c2d12' }}
-                                defaultValue={Number(inv.amount_net || 0)}
+                                defaultValue={Math.round(Number(inv.amount_net || 0) * 100) / 100}
                                 onBlur={(e) => {
                                   const next = parseFloat(e.target.value)
                                   if (!Number.isNaN(next) && next !== Number(inv.amount_net || 0)) {
