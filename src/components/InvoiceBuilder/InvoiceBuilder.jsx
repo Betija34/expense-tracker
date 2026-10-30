@@ -4,6 +4,7 @@ import { RabonaLogo } from '../../assets/RabonaLogo'
 import { EspargosLogo } from '../../assets/EspargosLogo'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import { resolveMonthlyFee, fmtPhaseRange } from '../../lib/feePhases'
+import { isFrozen, freezeLabel } from '../../lib/projectFreeze'
 import { InvoiceChecklist } from './InvoiceChecklist'
 import './InvoiceBuilder.css'
 
@@ -180,6 +181,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
 
   // Variable-expense report picker (pulled from the system).
   const [reportOptions, setReportOptions] = useState([]) // [{ y, m, amount, deferredTo }]
+  const [frozenReports, setFrozenReports] = useState([]) // expenses in frozen months (not billable)
   const [selReports, setSelReports] = useState(() => new Set())
   const [reportsLoading, setReportsLoading] = useState(false)
 
@@ -271,9 +273,10 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           if (y === selectedYear && m) s.set(m, [...(s.get(m) || []), r])
         }
         setIssuedMonths(s)
+        const cl = clients.find(c => c.id === form.client_id) || null
         const def = new Set()
-        for (let m = 1; m <= selectedMonth; m++) if (!s.has(m)) def.add(m)
-        if (def.size === 0) def.add(selectedMonth)
+        for (let m = 1; m <= selectedMonth; m++) if (!s.has(m) && !isFrozen(cl, selectedYear, m)) def.add(m)
+        if (def.size === 0 && !isFrozen(cl, selectedYear, selectedMonth)) def.add(selectedMonth)
         setSelMonths(def)
       } catch {
         if (!cancelled) { setIssuedMonths(new Map()); setSelMonths(new Set([selectedMonth])) }
@@ -359,7 +362,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
     let cancelled = false
     const run = async () => {
       if (!companyId || !form.client_id || form.invoice_type !== 'variable_expense') {
-        setReportOptions([]); setSelReports(new Set()); return
+        setReportOptions([]); setSelReports(new Set()); setFrozenReports([]); return
       }
       setReportsLoading(true)
       try {
@@ -422,9 +425,12 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         }
 
         const opts = []
+        const frozenOpts = []
         for (const [key, amount] of byMonth.entries()) {
           if (amount <= 0 || covered.has(key)) continue
           const [yy, mm] = key.split('-').map(Number)
+          // Frozen project: expenses dated in a frozen month are never billed.
+          if (isFrozen(client, yy, mm)) { frozenOpts.push({ y: yy, m: mm, amount }); continue }
           const def = deferBySource.get(key)
           if (def) {
             const targetInFuture = def.target_year > selectedYear ||
@@ -435,6 +441,8 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
         }
         opts.sort((a, b) => (a.y - b.y) || (a.m - b.m))
         if (cancelled) return
+        frozenOpts.sort((a, b) => (a.y - b.y) || (a.m - b.m))
+        setFrozenReports(frozenOpts)
         setReportOptions(opts)
         setSelReports(new Set(opts.map(o => `${o.y}-${o.m}`)))
       } catch {
@@ -468,6 +476,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   const onTypeChange = (t) => applyDefaults(form.client_id, t)
 
   const toggleMonth = (m) => {
+    if (isFrozen(selectedClient, selectedYear, m)) return
     setSelMonths(prev => {
       const n = new Set(prev)
       if (n.has(m)) n.delete(m); else n.add(m)
@@ -545,8 +554,9 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
   ].filter(Boolean)
 
   // ---- Save --------------------------------------------------------------
+  const frozenInRun = info.multi ? monthsToIssue.filter(m => isFrozen(selectedClient, selectedYear, m)) : []
   const canSave =
-    allConfirmed &&
+    allConfirmed && frozenInRun.length === 0 &&
     (isVar
       ? (selectedReportList.length > 0 && variableTotal !== 0)
       : usePhases
@@ -814,6 +824,15 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
           </label>
         </div>
 
+        {selectedClient?.frozen_from && (
+          <div className={isFrozen(selectedClient, selectedYear, selectedMonth) ? 'ib-error' : 'ib-pending'} style={{ marginBottom: 8 }}>
+            ❄️ <strong>{selectedClient.trade_name || selectedClient.legal_name}</strong>: {freezeLabel(selectedClient)}.
+            {' '}No monthly fee, fixed reimbursement or expense reimbursement can be invoiced for frozen months.
+            {selectedClient.frozen_note ? <> ({selectedClient.frozen_note})</> : null}
+            {frozenInRun.length > 0 && <> Untick the frozen month(s): {frozenInRun.map(m => MONTHS[m - 1]).join(', ')}.</>}
+          </div>
+        )}
+
         {showInfo && (
           <div className="ib-clientinfo">
             {selectedClient ? (
@@ -864,13 +883,15 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
               {MONTHS.map((m, i) => {
                 const mo = i + 1
                 const already = issuedMonths.has(mo)
-                const past = mo <= selectedMonth && !already
+                const frozen = !already && isFrozen(selectedClient, selectedYear, mo)
+                const past = mo <= selectedMonth && !already && !frozen
                 const on = selMonths.has(mo)
                 const title = already ? `${m} — already invoiced`
+                  : frozen ? `${m} — project frozen, nothing to invoice`
                   : (mo <= selectedMonth ? `${m} — not yet invoiced` : `${m} — advance`)
                 return (
                   <button key={mo} type="button" title={title}
-                    className={`ib-mchip${on ? ' on' : ''}${past ? ' past' : ''}${already ? ' done' : ''}`}
+                    className={`ib-mchip${on ? ' on' : ''}${past ? ' past' : ''}${already ? ' done' : ''}${frozen ? ' frozen' : ''}`}
                     onClick={() => already ? setDoneInfo({ month: mo, rows: issuedMonths.get(mo) || [] }) : toggleMonth(mo)}>
                     {m.slice(0, 3)}
                   </button>
@@ -893,7 +914,7 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
             )}
             <div className="ib-plegend">
               Dashed = a month with no invoice on record (auto-ticked to catch up). Purple = already invoiced (click it to see the invoice).
-              Tick future months to bill in advance. Each ticked month becomes its own invoice — all numbered under {MONTHS[selectedMonth - 1]} {selectedYear}.
+              {selectedClient?.frozen_from ? 'Grey ❄️ = frozen month (cannot be invoiced). ' : ''}Tick future months to bill in advance. Each ticked month becomes its own invoice — all numbered under {MONTHS[selectedMonth - 1]} {selectedYear}.
             </div>
             {unresolvedMonths.length > 0 && (
               <div className="ib-error" style={{ marginTop: 8 }}>
@@ -953,6 +974,12 @@ export function InvoiceBuilder({ selectedCompany, selectedMonth, selectedYear })
                   )
                 })}
                 <div className="ib-report-total"><span>Total</span><span>{fmtEuro(variableTotal)}</span></div>
+              </div>
+            )}
+            {frozenReports.length > 0 && (
+              <div className="ib-error" style={{ marginTop: 8 }}>
+                ❄️ {freezeLabel(selectedClient)}: {frozenReports.map(o => `${MONTHS[o.m - 1]} ${o.y} (${fmtEuro(o.amount)})`).join(', ')}
+                {' '}— expenses tagged to this project in frozen months are not billable. Move them to the correct project.
               </div>
             )}
             <div className="ib-plegend">

@@ -5,6 +5,7 @@ import { ComposeEmailsModal } from './ComposeEmailsModal'
 import { SoaModal } from './SoaModal'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import { validatePhases, resolveMonthlyFee } from '../../lib/feePhases'
+import { isFrozen, freezeLabel, toMonthInput, fromMonthInput, validateFreeze } from '../../lib/projectFreeze'
 import './Clients.css'
 
 /**
@@ -61,6 +62,10 @@ const BLANK_FORM = {
   agreement_schedule: '',
   invoice_project_name: '',
   fee_wording: '',
+  // Project freeze (V41) — 'YYYY-MM' month inputs
+  frozen_from: '',
+  frozen_until: '',
+  frozen_note: '',
 }
 
 // One editable row of the fee-phase schedule (V38 client_fee_phases).
@@ -393,6 +398,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // on the client record (we treat them as the same value across all
   // periods since no historical rate tracking exists).
   const naturalForPeriod = (client, year, month, invoiceType) => {
+    // Frozen project (V41): nothing is billable for a frozen month.
+    if (isFrozen(client, year, month)) return 0
     if (invoiceType === 'monthly_fee') {
       return Number(client.monthly_fee_net || 0)
     }
@@ -410,6 +417,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // deferred in, AND I defer this month's own to a later month.")
   const effectiveAmountFor = (client, invoiceType = 'variable_expense') => {
     const ownNatural =
+      isFrozen(client, selectedYear, selectedMonth) ? 0 :
       invoiceType === 'monthly_fee'   ? Number(client.monthly_fee_net || 0) :
       invoiceType === 'fixed_expense' ? Number(client.monthly_fixed_expense_net || 0) :
       reimbursableFor(client)
@@ -1754,6 +1762,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       agreement_schedule:   client.agreement_schedule || '',
       invoice_project_name: client.invoice_project_name || '',
       fee_wording:          client.fee_wording || '',
+      frozen_from:          toMonthInput(client.frozen_from),
+      frozen_until:         toMonthInput(client.frozen_until),
+      frozen_note:          client.frozen_note || '',
     })
     setSaveError(null)
     setEditing({ mode: 'edit', client })
@@ -1828,6 +1839,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     }
     const phaseErr = validatePhases(phaseRows)
     if (phaseErr) { setSaveError(phaseErr); return }
+    const freezeErr = validateFreeze(form.frozen_from, form.frozen_until)
+    if (freezeErr) { setSaveError(freezeErr); return }
 
     // Duplicate-project guard. trade_name is unique per company
     // (case-insensitive) — enforced by V22's partial unique index but
@@ -1870,6 +1883,15 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
       agreement_schedule:   form.agreement_schedule?.trim() || null,
       invoice_project_name: form.invoice_project_name?.trim() || null,
       fee_wording:          form.fee_wording?.trim() || null,
+    }
+    // Freeze fields (V41). Only sent when the DB already has the columns
+    // (they come back on the loaded client) or a freeze is being set, so
+    // saving keeps working before the V41 migration is run.
+    const hasFreezeCols = editing.mode === 'edit' && editing.client && 'frozen_from' in editing.client
+    if (hasFreezeCols || form.frozen_from || form.frozen_until || form.frozen_note?.trim()) {
+      row.frozen_from  = fromMonthInput(form.frozen_from)
+      row.frozen_until = fromMonthInput(form.frozen_until)
+      row.frozen_note  = form.frozen_note?.trim() || null
     }
 
     try {
@@ -2050,12 +2072,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     let placeholderTotal = 0
     for (const c of clients) {
       if (!c.active) continue
-      if (Number(c.monthly_fee_net || 0) > 0 &&
+      const frozenHere = isFrozen(c, selectedYear, selectedMonth)
+      if (!frozenHere && Number(c.monthly_fee_net || 0) > 0 &&
           !clientIdsByType.get('monthly_fee')?.has(c.id) &&
           billedElsewhereFor(c.id, 'monthly_fee').length === 0) {
         placeholderTotal += 1
       }
-      if (Number(c.monthly_fixed_expense_net || 0) > 0 &&
+      if (!frozenHere && Number(c.monthly_fixed_expense_net || 0) > 0 &&
           !clientIdsByType.get('fixed_expense')?.has(c.id) &&
           billedElsewhereFor(c.id, 'fixed_expense').length === 0) {
         placeholderTotal += 1
@@ -2112,7 +2135,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // + fixed monthly expense reimbursement  ← pass-through, NO VAT
   // for each active client, summed across all active clients.
   const totalMonthlyBillable = clients
-    .filter(c => c.active)
+    .filter(c => c.active && !isFrozen(c, selectedYear, selectedMonth))
     .reduce((sum, c) => {
       const feeWithVat   = Number(c.monthly_fee_net || 0) * (1 + Number(c.vat_rate || 0))
       const fixedExpense = Number(c.monthly_fixed_expense_net || 0)
@@ -2121,7 +2144,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
 
   // ---- Total reimbursable across all active clients for the selected month ----
   const totalReimbursable = clients
-    .filter(c => c.active)
+    .filter(c => c.active && !isFrozen(c, selectedYear, selectedMonth))
     .reduce((sum, c) => sum + reimbursableFor(c), 0)
 
   if (loading) return <div className="loading">Loading clients…</div>
@@ -2262,7 +2285,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               const hasOutbound = legacy || !!outboundDeferralFor(c, 'monthly_fee')
               // Not natural if this month's fee was already invoiced in
               // another month (advance / later) — shown as a coloured row.
-              const hasNatural  = !hasOutbound && Number(c.monthly_fee_net || 0) > 0 &&
+              const hasNatural  = !hasOutbound && !isFrozen(c, selectedYear, selectedMonth) &&
+                Number(c.monthly_fee_net || 0) > 0 &&
                 billedElsewhereFor(c.id, 'monthly_fee').length === 0
               // Split rows FILED here for other months with no deferral
               // behind them (e.g. October billed in advance in September,
@@ -3661,6 +3685,61 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           </section>
 
           {/* =================================================================
+              Frozen projects (V41) — active projects whose freeze covers the
+              selected month. Nothing is billed for them this month; listed
+              here so they stay editable (to set the restart month) and so
+              any expenses still tagged to them this month are flagged.
+              ================================================================= */}
+          {clients.some(c => c.active && isFrozen(c, selectedYear, selectedMonth)) && (
+            <section className="clients-block clients-block-inactive">
+              <div className="clients-block-header">
+                <h3>❄️ Frozen this month ({clients.filter(c => c.active && isFrozen(c, selectedYear, selectedMonth)).length})</h3>
+                <div className="block-subtitle">
+                  Contract still valid, project on hold — no monthly fee, fixed reimbursement or
+                  expense reimbursement is billed for {monthName(selectedMonth)} {selectedYear}.
+                  Edit the project to set the restart month.
+                </div>
+              </div>
+              <table className="clients-table">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Freeze</th>
+                    <th style={{ textAlign: 'right' }}>Fee (net)</th>
+                    <th>Expenses tagged this month</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clients.filter(c => c.active && isFrozen(c, selectedYear, selectedMonth)).map(c => {
+                    const tagged = reimbursableFor(c)
+                    return (
+                      <tr key={c.id}>
+                        {renderProjectCell(c)}
+                        <td>
+                          {freezeLabel(c)}
+                          {c.frozen_note ? <div style={{ fontSize: 11, color: '#6b7280' }}>{c.frozen_note}</div> : null}
+                        </td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace', opacity: 0.55 }}>{formatEuro(c.monthly_fee_net)}</td>
+                        <td>
+                          {tagged > 0 ? (
+                            <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+                              ⚠️ {formatEuro(tagged)} — not billable while frozen. Move these expenses to the correct project.
+                            </span>
+                          ) : <span style={{ color: '#6b7280' }}>none</span>}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <button className="row-btn" onClick={() => openEdit(c)}>✏️ Edit</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {/* =================================================================
               BLOCK 6 (was 1b) — Inactive clients
               Moved to the very bottom — discoverable / restorable but out
               of the way of the active invoice-prep flow above. Only renders
@@ -4019,6 +4098,37 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                     />
                     <span>{form.active ? 'Active (billing every month)' : 'Inactive (archived)'}</span>
                   </label>
+                </div>
+                <div className="form-group full-row">
+                  <div className="cl-section-title">❄️ Freeze (contract valid, project on hold)</div>
+                  <small style={{ color: '#6b7280', fontSize: 11 }}>
+                    For every month inside the freeze NOTHING is billed — no monthly fee, no fixed
+                    reimbursement, no expense reimbursement. Months before the freeze are not touched.
+                    Leave "Frozen until" blank while the restart date is unknown; fill it in when the
+                    project restarts (the last frozen month).
+                  </small>
+                </div>
+                <div className="form-group">
+                  <label>Frozen from (first frozen month)</label>
+                  <input type="month" className="form-input" value={form.frozen_from}
+                    onChange={(e) => setForm(f => ({ ...f, frozen_from: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label>Frozen until (last frozen month, optional)</label>
+                  <input type="month" className="form-input" value={form.frozen_until}
+                    onChange={(e) => setForm(f => ({ ...f, frozen_until: e.target.value }))} />
+                </div>
+                <div className="form-group full-row">
+                  <label>Freeze note (optional)</label>
+                  <input type="text" className="form-input" value={form.frozen_note}
+                    onChange={(e) => setForm(f => ({ ...f, frozen_note: e.target.value }))}
+                    placeholder="e.g. Client email 01/10/2026 — project on hold" />
+                  {(form.frozen_from || form.frozen_until) && (
+                    <button type="button" className="row-btn" style={{ marginTop: 6 }}
+                      onClick={() => setForm(f => ({ ...f, frozen_from: '', frozen_until: '', frozen_note: '' }))}>
+                      Remove freeze completely
+                    </button>
+                  )}
                 </div>
                 <div className="form-group full-row">
                   <div className="cl-section-title">Invoice header (BILL TO)</div>

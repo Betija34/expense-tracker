@@ -442,3 +442,6 @@ fieldset.ib-lockable:disabled { opacity: 0.55; }
   .ib-cl-table tr.muted td { background: #f5f3ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .ib-cl-table tr { page-break-inside: avoid; }
 }
+
+/* Frozen project month (V41) — cannot be invoiced */
+.ib-mchip.frozen { background: #f3f4f6; border-color: #d1d5db; color: #9ca3af; cursor: not-allowed; text-decoration: line-through; }

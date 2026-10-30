@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../supabaseClient'
 import { resolveMonthlyFee } from '../../lib/feePhases'
+import { isFrozen, freezeLabel } from '../../lib/projectFreeze'
 
 /**
  * InvoiceChecklist — printable monthly invoicing checklist (Issue Invoice tab).
@@ -136,6 +137,9 @@ export function InvoiceChecklist({ selectedCompany, selectedMonth, selectedYear 
               } else if (out) {
                 push({ type: T, what: `${TYPE_LABEL[T]}: ${mShort(M)} ${Y}`, amount: null,
                   status: `Deferred to ${mShort(out.target_month)} ${out.target_year}`, billable: false, muted: true })
+              } else if (isFrozen(c, Y, M)) {
+                push({ type: T, what: `${TYPE_LABEL[T]}: ${mShort(M)} ${Y}`, amount: null,
+                  status: `❄️ ${freezeLabel(c)} — not billed`, billable: false, muted: true })
               } else {
                 const amt = feeFor(Y, M)
                 push({ type: T, what: `${TYPE_LABEL[T]}: ${mShort(M)} ${Y}`,
@@ -146,6 +150,7 @@ export function InvoiceChecklist({ selectedCompany, selectedMonth, selectedYear 
             // Deferred INTO this month and not invoiced anywhere yet.
             for (const d of cDefs.filter(d => defType(d) === T && d.target_year === Y && d.target_month === M)) {
               if (coveredAnywhere.has(key(d.source_year, d.source_month))) continue
+              if (isFrozen(c, d.source_year, d.source_month)) continue
               const amt = feeFor(d.source_year, d.source_month)
               push({ type: T, what: `${TYPE_LABEL[T]}: ${mShort(d.source_month)} ${d.source_year} (deferred in)`,
                 amount: amt == null ? null : amt * (T === 'monthly_fee' ? 1 + vat : 1),
@@ -183,9 +188,13 @@ export function InvoiceChecklist({ selectedCompany, selectedMonth, selectedYear 
             vDefs.forEach(d => { if (d.target_year === iv.period_year && d.target_month === iv.period_month) covered.add(key(d.source_year, d.source_month)) })
           }
           const open = []
+          const frozenTagged = []
           for (const [k, amt] of byMonth) {
             if (amt <= 0 || covered.has(k)) continue
             const [y, m] = k.split('-').map(Number)
+            // Frozen project: expenses dated in a frozen month are never
+            // billed — flag them so they get moved to the right project.
+            if (isFrozen(c, y, m)) { if (!before(Y, M, y, m)) frozenTagged.push({ y, m, amt }); continue }
             const d = vDefBySrc.get(k)
             const due = d ? !before(Y, M, d.target_year, d.target_month) : before(y, m, Y, M)
             if (due) open.push({ y, m, amt, deferred: !!d })
@@ -195,6 +204,14 @@ export function InvoiceChecklist({ selectedCompany, selectedMonth, selectedYear 
             push({ type: 'variable_expense',
               what: `Variable expenses: ${open.map(o => `${mShort(o.m)} ${o.y}${o.deferred ? ' (deferred in)' : ''}`).join(' + ')}`,
               amount: open.reduce((s, o) => s + o.amt, 0), status: 'To do', todo: true, billable: true })
+          }
+          if (frozenTagged.length) {
+            frozenTagged.sort((a, b) => (a.y - b.y) || (a.m - b.m))
+            push({ type: 'variable_expense',
+              what: `Variable expenses: ${frozenTagged.map(o => `${mShort(o.m)} ${o.y}`).join(' + ')}`,
+              amount: null,
+              status: `⚠️ ${frozenTagged.reduce((s, o) => s + o.amt, 0).toFixed(2)} € tagged to a frozen project — move to the correct project`,
+              billable: false, muted: true })
           }
 
           // ---- One-offs / credit notes / pro formas filed this month -------
