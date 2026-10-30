@@ -414,6 +414,10 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
         source_month: d.source_month,
         amount:       naturalForPeriod(client, d.source_year, d.source_month, invoiceType),
         deferral_id:  d.id,
+        // V42: month the amount was FIRST deferred to (set when it is
+        // later moved on to another month). NULL = never moved.
+        original_target_year:  d.original_target_year  || null,
+        original_target_month: d.original_target_month || null,
       }))
       .sort((a, b) =>
         (a.source_year - b.source_year) ||
@@ -529,6 +533,17 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                   {item.isDeferred ? '↪ ' : '· '}
                   {monthName(item.month)} {item.year}
                   {item.isDeferred ? ' (deferred in)' : ' (this month)'}
+                  {item.isDeferred && wasForLabel(item.deferral)}
+                  {item.isDeferred && invoiceType !== 'monthly_fee' && (
+                    <button
+                      className="row-btn"
+                      title={`Can't invoice it this month? Move ${monthName(item.month)} ${item.year} on to a later month (${monthName(item.month)} stays closed)`}
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6, background: '#ecfeff', border: '1px solid #67e8f9', borderRadius: 4, color: '#0e7490', cursor: 'pointer' }}
+                      onClick={() => openMoveOnModal(client, invoiceType, item.deferral.deferral_id)}
+                    >
+                      → Move on
+                    </button>
+                  )}
                 </span>
                 <span style={{ fontFamily: 'monospace', color: '#374151' }}>{formatEuro(item.amount)}</span>
               </li>
@@ -597,6 +612,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           month:      d.source_month,
           amount:     d.amount,
           isDeferred: true,
+          deferral:   d,
         })
       }
     }
@@ -709,21 +725,109 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
     }
   }
 
+  // "(was for October)" — shown on a deferred-in line that has been moved
+  // on from the month it was first deferred to (V42 original_target_*).
+  const wasForLabel = (d) => {
+    if (!d || !d.original_target_month || !d.original_target_year) return null
+    if (d.original_target_year === selectedYear && d.original_target_month === selectedMonth) return null
+    return (
+      <span style={{ fontSize: 10, color: '#6b7280', marginLeft: 4 }}>
+        (first deferred to {monthName(d.original_target_month)} {d.original_target_year})
+      </span>
+    )
+  }
+
+  // Can a deferral that lands in THIS month (inbound) be moved on to a
+  // later month? Returns { reason } when blocked, or { draft } for a
+  // monthly-fee row already saved here for that source month (it moves
+  // with the deferral), or {} when free to move.
+  // Blocked once the invoice in this month that absorbed the amount is
+  // issued — it's billed, moving it would bill it twice.
+  const inboundMoveCheck = (client, invoiceType, d) => {
+    const srcLbl = `${monthName(d.source_month)} ${d.source_year}`
+    const mine = invoices.filter(i => i.client_id === client.id && i.invoice_type === invoiceType)
+    if (invoiceType === 'monthly_fee') {
+      const row = mine.find(i =>
+        i.represents_period_year === d.source_year && i.represents_period_month === d.source_month)
+      if (row && row.invoice_number && row.date_issued) {
+        return { reason: `${srcLbl} fee is already invoiced here (${row.invoice_number}).` }
+      }
+      if (row && row.invoice_number) {
+        return { reason: `A draft for the ${srcLbl} fee already has invoice no. ${row.invoice_number} in ${monthName(selectedMonth)} — clear the number first.` }
+      }
+      return row ? { draft: row } : {}
+    }
+    for (const i of mine) {
+      if (!(i.invoice_number && i.date_issued)) continue
+      const cp = Array.isArray(i.covered_expense_periods) ? i.covered_expense_periods : []
+      if (cp.length === 0 || cp.some(p => p.year === d.source_year && p.month === d.source_month)) {
+        return { reason: `${srcLbl} is included in an issued invoice here (${i.invoice_number}).` }
+      }
+    }
+    return {}
+  }
+
+  // Build the list of carried-in amounts shown in the Defer modal.
+  // `onlyId` = tick just that one (opened from its "→ Move on" button);
+  // otherwise all movable ones are ticked.
+  const buildInboundChoices = (client, invoiceType, onlyId = null) =>
+    inboundDeferralsFor(client, invoiceType).map(d => {
+      const chk = inboundMoveCheck(client, invoiceType, d)
+      return {
+        ...d,
+        blocked: chk.reason || null,
+        draft:   chk.draft  || null,
+        checked: !chk.reason && (onlyId ? d.deferral_id === onlyId : true),
+      }
+    })
+
+  const nextOf = (y, m) => (m === 12 ? { y: y + 1, m: 1 } : { y, m: m + 1 })
+
   const openDeferModal = (client, invoiceType = 'variable_expense') => {
     if (lockGuard('defer fees')) return
     if (invoiceType === 'fixed_expense' && isCurrentInvoiceIssued(client, invoiceType)) {
       alert(`${monthName(selectedMonth)} ${selectedYear}'s fixed-expense invoice for ${client.trade_name || client.legal_name} is already issued — these expenses can't be deferred.`)
       return
     }
-    const nextMonth = selectedMonth === 12 ? 1            : selectedMonth + 1
-    const nextYear  = selectedMonth === 12 ? selectedYear + 1 : selectedYear
+    const nx = nextOf(selectedYear, selectedMonth)
     setDeferModal({
       client,
       invoiceType,
       sourceYear:  selectedYear,
       sourceMonth: selectedMonth,
-      targetYear:  nextYear,
-      targetMonth: nextMonth,
+      targetYear:  nx.y,
+      targetMonth: nx.m,
+      ownAvailable: !outboundDeferralFor(client, invoiceType),
+      includeOwn:   !outboundDeferralFor(client, invoiceType),
+      inbound:      buildInboundChoices(client, invoiceType),
+      busy:        false,
+      error:       null,
+    })
+  }
+
+  // Opened from "→ Move on" on a carried-in line: the amount came from an
+  // earlier (possibly closed) month and can't be invoiced in this one
+  // either, so re-point that deferral to a later month. The source month
+  // is not touched — only where it gets invoiced changes.
+  const openMoveOnModal = (client, invoiceType, deferralId) => {
+    if (lockGuard('move a deferral on')) return
+    const inbound = buildInboundChoices(client, invoiceType, deferralId)
+    const picked = inbound.find(d => d.deferral_id === deferralId)
+    if (picked && picked.blocked) {
+      alert(`Can't move it on — ${picked.blocked}`)
+      return
+    }
+    const nx = nextOf(selectedYear, selectedMonth)
+    setDeferModal({
+      client,
+      invoiceType,
+      sourceYear:  selectedYear,
+      sourceMonth: selectedMonth,
+      targetYear:  nx.y,
+      targetMonth: nx.m,
+      ownAvailable: false,
+      includeOwn:   false,
+      inbound,
       busy:        false,
       error:       null,
     })
@@ -733,33 +837,101 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   const saveDeferral = async () => {
     if (!deferModal) return
     if (lockGuard('save a deferral')) return
-    const { client, invoiceType, sourceYear, sourceMonth, targetYear, targetMonth } = deferModal
+    const { client, invoiceType, sourceYear, sourceMonth, targetYear, targetMonth, includeOwn, ownAvailable } = deferModal
+    const moving = (deferModal.inbound || []).filter(d => d.checked && !d.blocked)
+    const doOwn  = !!(ownAvailable && includeOwn)
+    if (!doOwn && moving.length === 0) {
+      setDeferModal(d => d ? { ...d, error: 'Nothing selected to defer.' } : d)
+      return
+    }
+    // Target must be later than THIS month — for this month's own amount
+    // and for anything carried in (they're being moved off this month).
     if (targetYear < sourceYear ||
         (targetYear === sourceYear && targetMonth <= sourceMonth)) {
-      setDeferModal(d => d ? { ...d, error: 'Target month must be later than the source month.' } : d)
+      setDeferModal(d => d ? { ...d, error: 'Target month must be later than the current month.' } : d)
       return
     }
     setDeferModal(d => d ? { ...d, busy: true, error: null } : d)
     try {
-      const { data: inserted, error: insErr } = await supabase
-        .from('expense_deferrals')
-        .insert([{
-          company_id:   companyId,
-          client_id:    client.id,
-          invoice_type: invoiceType,
-          source_year:  sourceYear,
-          source_month: sourceMonth,
+      // Monthly-fee drafts saved here for a carried-in month move with it —
+      // make sure the target month doesn't already hold a row for that month.
+      for (const d of moving) {
+        if (!d.draft) continue
+        const { data: clash, error: cErr } = await supabase
+          .from('invoices').select('id, invoice_number')
+          .eq('company_id', companyId).eq('client_id', client.id)
+          .eq('invoice_type', invoiceType)
+          .eq('period_year', targetYear).eq('period_month', targetMonth)
+          .eq('represents_period_year', d.source_year).eq('represents_period_month', d.source_month)
+        if (cErr) throw cErr
+        if ((clash || []).length > 0) {
+          throw new Error(`${monthName(targetMonth)} ${targetYear} already has a row for the ${monthName(d.source_month)} ${d.source_year} fee — nothing was changed.`)
+        }
+      }
+
+      const updatedDefs = []
+      for (const d of moving) {
+        const row = deferrals.find(x => x.id === d.deferral_id)
+        const patch = {
           target_year:  targetYear,
           target_month: targetMonth,
-        }])
-        .select('*').single()
-      if (insErr) throw insErr
-      setDeferrals(prev => [...prev, inserted])
+          updated_at:   new Date().toISOString(),
+        }
+        // Keep the first target for the audit trail (only set once).
+        const withOrig = row && !row.original_target_year
+          ? { ...patch, original_target_year: row.target_year, original_target_month: row.target_month }
+          : patch
+        let res = await supabase.from('expense_deferrals').update(withOrig)
+          .eq('id', d.deferral_id).select('*').single()
+        if (res.error && withOrig !== patch &&
+            (res.error.code === '42703' || res.error.code === 'PGRST204' || /original_target/.test(res.error.message || ''))) {
+          // V42 not run yet — move it anyway, without the audit columns.
+          res = await supabase.from('expense_deferrals').update(patch)
+            .eq('id', d.deferral_id).select('*').single()
+        }
+        if (res.error) throw res.error
+        updatedDefs.push(res.data)
+        if (d.draft) {
+          const { error: mvErr } = await supabase.from('invoices')
+            .update({ period_year: targetYear, period_month: targetMonth, updated_at: new Date().toISOString() })
+            .eq('id', d.draft.id)
+          if (mvErr) throw mvErr
+          setInvoices(prev => prev.filter(i => i.id !== d.draft.id))
+        }
+      }
+      let inserted = null
+      if (doOwn) {
+        const { data, error: insErr } = await supabase
+          .from('expense_deferrals')
+          .insert([{
+            company_id:   companyId,
+            client_id:    client.id,
+            invoice_type: invoiceType,
+            source_year:  sourceYear,
+            source_month: sourceMonth,
+            target_year:  targetYear,
+            target_month: targetMonth,
+          }])
+          .select('*').single()
+        if (insErr) throw insErr
+        inserted = data
+      }
+      setDeferrals(prev => {
+        const byId = new Map(updatedDefs.map(r => [r.id, r]))
+        const next = prev.map(r => byId.get(r.id) || r)
+        return inserted ? [...next, inserted] : next
+      })
       setDeferModal(null)
     } catch (err) {
       const friendly = err.code === '23505'
         ? 'This client-month already has a deferral of this type. Remove it first or pick a different source month.'
         : err.message
+      // Some moves may already have saved — reload deferrals so the
+      // screen shows exactly what's in the database.
+      try {
+        const { data: defs } = await supabase.from('expense_deferrals').select('*').eq('company_id', companyId)
+        if (defs) setDeferrals(defs)
+      } catch { /* ignore */ }
       setDeferModal(d => d ? { ...d, busy: false, error: friendly } : d)
     }
   }
@@ -2435,6 +2607,7 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                               {inst.isDeferred ? '↪ ' : '· '}
                               {monthName(inst.month)} {inst.year} fee
                               {inst.isDeferred ? ' (deferred in)' : ''}
+                              {inst.isDeferred && wasForLabel(inst.deferral)}
                               {inst.extraLabel ? <span className="billed-advance-badge">{inst.extraLabel.replace(/[()]/g, '').trim()}</span> : null}
                             </span>
                           </td>
@@ -2495,6 +2668,16 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                                 }}
                               >
                                 ↩ Undo
+                              </button>
+                            ) : null}
+                            {inst.isDeferred ? (
+                              <button
+                                className="row-btn"
+                                title={`Can't invoice it this month? Move ${monthName(inst.month)} ${inst.year}'s fee on to a later month (${monthName(inst.month)} stays closed)`}
+                                style={{ fontSize: 11, padding: '3px 6px', marginLeft: 4, background: '#ecfeff', border: '1px solid #67e8f9', borderRadius: 4, color: '#0e7490' }}
+                                onClick={() => openMoveOnModal(c, 'monthly_fee', inst.deferral.deferral_id)}
+                              >
+                                → Move on
                               </button>
                             ) : (dbInvoice && dbInvoice.invoice_number && dbInvoice.date_issued) ? (
                               // Invoice issued → this month's fee is billed; no deferral.
@@ -4483,14 +4666,61 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
               )}
 
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 12, color: '#6b7280' }}>Postponing reimbursables for:</div>
+                <div style={{ fontSize: 12, color: '#6b7280' }}>
+                  Postponing {deferModal.invoiceType === 'monthly_fee' ? 'monthly fees' : deferModal.invoiceType === 'fixed_expense' ? 'fixed expenses' : 'reimbursable expenses'} for:
+                </div>
                 <div style={{ fontSize: 16, fontWeight: 600, marginTop: 2, color: '#111827' }}>
                   {deferModal.client.trade_name || deferModal.client.legal_name}
                 </div>
-                <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>
-                  Source month: <strong>{monthName(deferModal.sourceMonth)} {deferModal.sourceYear}</strong>
-                  {' '}· amount: <strong>{formatEuro(reimbursableFor(deferModal.client))}</strong>
+                <div style={{ fontSize: 12, color: '#374151', marginTop: 10, fontWeight: 600 }}>
+                  Move out of {monthName(deferModal.sourceMonth)} {deferModal.sourceYear}:
                 </div>
+                <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {deferModal.ownAvailable && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#111827' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!deferModal.includeOwn}
+                        disabled={deferModal.busy}
+                        onChange={(e) => setDeferModal(d => d ? { ...d, includeOwn: e.target.checked } : d)}
+                      />
+                      <span style={{ flex: 1 }}>{monthName(deferModal.sourceMonth)} {deferModal.sourceYear} (this month)</span>
+                      <span style={{ fontFamily: 'monospace' }}>
+                        {formatEuro(naturalForPeriod(deferModal.client, deferModal.sourceYear, deferModal.sourceMonth, deferModal.invoiceType))}
+                      </span>
+                    </label>
+                  )}
+                  {(deferModal.inbound || []).map(d => (
+                    <label
+                      key={d.deferral_id}
+                      title={d.blocked || ''}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: d.blocked ? '#9ca3af' : '#0e7490' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!d.checked}
+                        disabled={deferModal.busy || !!d.blocked}
+                        onChange={(e) => setDeferModal(m => m ? {
+                          ...m,
+                          inbound: m.inbound.map(x => x.deferral_id === d.deferral_id ? { ...x, checked: e.target.checked } : x),
+                        } : m)}
+                      />
+                      <span style={{ flex: 1 }}>
+                        ↪ {monthName(d.source_month)} {d.source_year} (carried in)
+                        {d.blocked && <span style={{ fontSize: 11 }}> — locked: {d.blocked}</span>}
+                      </span>
+                      <span style={{ fontFamily: 'monospace' }}>{formatEuro(d.amount)}</span>
+                    </label>
+                  ))}
+                  {!deferModal.ownAvailable && (deferModal.inbound || []).length === 0 && (
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>Nothing to defer.</div>
+                  )}
+                </div>
+                {(deferModal.inbound || []).some(d => d.checked) && (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
+                    Carried-in months are re-routed to the new month. Their own (closed) months are not changed.
+                  </div>
+                )}
               </div>
 
               <div style={{ marginBottom: 12 }}>
@@ -4524,9 +4754,9 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                   </select>
                 </div>
                 <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-                  These expenses will be bundled into the {' '}
+                  The selected amounts will be bundled into the {' '}
                   <strong>{monthName(deferModal.targetMonth)} {deferModal.targetYear}</strong>{' '}
-                  variable expense invoice for this client.
+                  {deferModal.invoiceType === 'monthly_fee' ? 'monthly fee' : deferModal.invoiceType === 'fixed_expense' ? 'fixed expense' : 'variable expense'} invoice for this client.
                 </div>
               </div>
             </div>
