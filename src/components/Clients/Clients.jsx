@@ -75,6 +75,34 @@ const blankPhase = (kind = 'monthly') => ({
   effective_from: '', effective_to: '', amount_net: '', source_ref: '', invoice_wording: '', notes: '',
 })
 
+// Month + year dropdowns producing 'YYYY-MM' (or '' when either is blank).
+// Used instead of <input type="month">, which Safari shows as a plain
+// text box whose typed text can't be read back as a date.
+const PICKER_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December']
+function MonthYearPicker({ value, onChange }) {
+  const [y0, m0] = (value || '').split('-')
+  const [mm, setMm] = useState(m0 || '')
+  const [yy, setYy] = useState(y0 || '')
+  useEffect(() => { const [y, m] = (value || '').split('-'); setMm(m || ''); setYy(y || '') }, [value])
+  const thisYear = new Date().getFullYear()
+  const years = []
+  for (let y = thisYear - 3; y <= thisYear + 5; y++) years.push(String(y))
+  const emit = (m, y) => { setMm(m); setYy(y); onChange(m && y ? `${y}-${m}` : '') }
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      <select className="form-input" value={mm} onChange={(e) => emit(e.target.value, yy)}>
+        <option value="">— month —</option>
+        {PICKER_MONTHS.map((n, i) => <option key={n} value={String(i + 1).padStart(2, '0')}>{n}</option>)}
+      </select>
+      <select className="form-input" value={yy} onChange={(e) => emit(mm, e.target.value)}>
+        <option value="">— year —</option>
+        {years.map(y => <option key={y} value={y}>{y}</option>)}
+      </select>
+    </div>
+  )
+}
+
 export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // Period-lock guard. When the top-bar selection lands on a closed
   // period (closed_periods row), every mutation function in this
@@ -4110,13 +4138,13 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
                 </div>
                 <div className="form-group">
                   <label>Frozen from (first frozen month)</label>
-                  <input type="month" className="form-input" value={form.frozen_from}
-                    onChange={(e) => setForm(f => ({ ...f, frozen_from: e.target.value }))} />
+                  <MonthYearPicker value={form.frozen_from}
+                    onChange={(v) => setForm(f => ({ ...f, frozen_from: v }))} />
                 </div>
                 <div className="form-group">
                   <label>Frozen until (last frozen month, optional)</label>
-                  <input type="month" className="form-input" value={form.frozen_until}
-                    onChange={(e) => setForm(f => ({ ...f, frozen_until: e.target.value }))} />
+                  <MonthYearPicker value={form.frozen_until}
+                    onChange={(v) => setForm(f => ({ ...f, frozen_until: v }))} />
                 </div>
                 <div className="form-group full-row">
                   <label>Freeze note (optional)</label>
