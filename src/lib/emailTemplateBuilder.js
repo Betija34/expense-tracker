@@ -403,3 +403,238 @@ export function buildOutlookComposeUrl({ to, cc, subject, body }) {
   const qs = params.toString().replace(/\+/g, '%20')   // spaces as %20, not +
   return `https://outlook.office.com/mail/deeplink/compose${qs ? `?${qs}` : ''}`
 }
+
+// =====================================================================
+// Accountant monthly summary email (added Nov 3 2026)
+// ---------------------------------------------------------------------
+// One email per month to the external accountants (Mastserve) listing
+// every invoice ISSUED in that calendar month (by date_issued, not by
+// billing period) across both companies. Wording mirrors what Betija
+// has been sending by hand since Oct 2025, e.g. subject
+// "Rabona Invoices issued September 2026" and body
+// "Enclosed please find invoices issued September 2026 from Rabona.
+//  Please note that there were no invoices issued from Espargos this month."
+//
+// Per invoice: number | project | description | issue date | total.
+// Credit notes sit right after the invoice they credit. There is no
+// link column, so the original is found from the invoice number written
+// in the credit note's description ("Credit note to invoice 2026-09-004",
+// the Issue Invoice default); failing that, after the same project's
+// last invoice in the list; failing that, at the end of the list.
+// Pro formas are excluded (not tax invoices).
+//
+// A second section shows the expense reimbursement CALCULATED for the
+// month per project (same rule as Client Invoicing: reimbursable expenses
+// dated in the month, matched on the project's trade/legal name), with
+// whether it is invoiced, deferred to a later month, or still to be
+// invoiced.
+// =====================================================================
+
+export const ACCOUNTANT_DEFAULT_TO      = 'panayiota.panayiotou@mastserve.com'
+export const ACCOUNTANT_DEFAULT_CONTACT = 'Panayiota'
+
+// Short company label used in the wording ("Rabona", "Espargos").
+export function shortCompanyName(name) {
+  if (!name) return ''
+  return String(name).replace(/\s+(Holdings|Ltd|Limited)\b.*$/i, '').trim()
+}
+
+export function fmtEur(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100
+  return '€' + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtDate(iso) {
+  if (!iso) return ''
+  const [y, m, d] = String(iso).slice(0, 10).split('-')
+  return `${d}/${m}/${y}`
+}
+
+// Digits-only form so "2026-09-004", "2026/09/004" and "2026:09:004" match.
+const numKey = (s) => String(s || '').replace(/\D/g, '')
+
+// Order a company's issued documents: invoices by number, each credit
+// note directly after the invoice it credits. Returns
+// [{ inv, creditFor: <invoice row|null>, creditForNumber: string|null }]
+export function orderWithCreditNotes(invoices) {
+  const byNum = (a, b) => String(a.invoice_number || '').localeCompare(String(b.invoice_number || ''), undefined, { numeric: true })
+  const regular = invoices.filter(i => i.invoice_type !== 'credit_note').sort(byNum)
+  const credits = invoices.filter(i => i.invoice_type === 'credit_note').sort(byNum)
+  const out = regular.map(inv => ({ inv, creditFor: null, creditForNumber: null }))
+
+  for (const cn of credits) {
+    // 1) invoice number named in the description
+    const desc = String(cn.description || '')
+    const m = desc.match(/\binv(?:oice)?\.?\s*(?:no\.?|number)?\s*[:#]?\s*([0-9][0-9\-\/:.]*[0-9])/i)
+    const named = m ? m[1] : null
+    let idx = -1
+    if (named) idx = out.map(r => r.inv.invoice_type !== 'credit_note' ? numKey(r.inv.invoice_number) : null).lastIndexOf(numKey(named))
+    // 2) after the same project's last invoice
+    if (idx === -1) {
+      for (let k = out.length - 1; k >= 0; k--) {
+        if (out[k].inv.client_id === cn.client_id && out[k].inv.invoice_type !== 'credit_note') { idx = k; break }
+      }
+    }
+    const row = { inv: cn, creditFor: idx >= 0 && named && numKey(out[idx].inv.invoice_number) === numKey(named) ? out[idx].inv : null, creditForNumber: named }
+    if (idx === -1) { out.push(row); continue }
+    // keep several credit notes for the same invoice in number order
+    let at = idx + 1
+    while (at < out.length && out[at].inv.invoice_type === 'credit_note') at++
+    out.splice(at, 0, row)
+  }
+  return out
+}
+
+// Short "what is it" label for the accountant list (not the full printed
+// invoice wording):
+//   monthly_fee           → "October 2026 fee"   (the month the fee is FOR)
+//   one_off_service       → the invoice's own description, as printed
+//   fixed_expense         → "October 2026 fixed expenses" (month it is FOR)
+//   variable_expense      → "Expenses as of August 2026 expense report"
+//                           (months from covered_expense_periods, V37)
+//   one_off_reimbursement → "Expense reimbursement"
+//   credit_note           → "Credit note to invoice 2026-10-001"
+// "Expenses as of August 2026 expense report", or for a bundle
+// "Expenses as of August and September 2026 expense reports".
+// Months come from covered_expense_periods (V37, set by Issue Invoice);
+// failing that, the "Expenses as of ... expense report" phrase already in
+// the description; failing that, the invoice's period month.
+export function expenseReportLabel(inv) {
+  let periods = Array.isArray(inv.covered_expense_periods)
+    ? inv.covered_expense_periods
+        .map(p => ({ year: Number(p.year), month: Number(p.month) }))
+        .filter(p => p.month >= 1 && p.month <= 12 && Number.isFinite(p.year))
+    : []
+  if (!periods.length) {
+    const desc = String(inv.description || '')
+    const m = desc.match(/Expenses as of .*?expense reports?/i)
+    if (m) return m[0].replace(/\s+/g, ' ')
+    // Older Client-Invoicing wording: "Jun (€630.39) + Jul (€342.05) reimbursable expenses"
+    const py = inv.period_year, pm = inv.period_month
+    const found = [...desc.matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+(\d{4}))?\s*\(/gi)]
+    if (found.length && py) {
+      periods = found.map(f => {
+        const mo = MONTH_NAMES.findIndex(n => n.slice(0, 3).toLowerCase() === f[1].toLowerCase()) + 1
+        const yr = f[2] ? Number(f[2]) : (pm && mo > pm ? py - 1 : py)
+        return { year: yr, month: mo }
+      })
+    }
+    if (!periods.length) {
+      const y = inv.represents_period_year || inv.period_year
+      const mo = inv.represents_period_month || inv.period_month
+      if (formatMonthYear(mo, y)) periods = [{ year: y, month: mo }]
+    }
+  }
+  if (!periods.length) return 'Expense reimbursement'
+  periods.sort((a, b) => (a.year - b.year) || (a.month - b.month))
+  // Group months by year: "August and September 2026", "December 2025 and January 2026"
+  const byYear = []
+  for (const p of periods) {
+    const last = byYear[byYear.length - 1]
+    const name = MONTH_NAMES[p.month - 1]
+    if (last && last.year === p.year) { if (!last.months.includes(name)) last.months.push(name) }
+    else byYear.push({ year: p.year, months: [name] })
+  }
+  const text = joinWithAnd(byYear.map(g => `${joinWithAnd(g.months)} ${g.year}`))
+  return `Expenses as of ${text} expense report${periods.length > 1 ? 's' : ''}`
+}
+
+export function accountantShortLabel(inv, row = {}) {
+  const y = inv.represents_period_year || inv.period_year
+  const m = inv.represents_period_month || inv.period_month
+  switch (inv.invoice_type) {
+    case 'monthly_fee':           return formatMonthYear(m, y) ? `${formatMonthYear(m, y)} fee` : 'Monthly fee'
+    case 'one_off_service':       return String(inv.description || '').replace(/\s+/g, ' ').trim() || 'One-off service fee'
+    case 'fixed_expense':         return formatMonthYear(m, y) ? `${formatMonthYear(m, y)} fixed expenses` : 'Fixed expense reimbursement'
+    case 'variable_expense':      return expenseReportLabel(inv)
+    case 'one_off_reimbursement': return 'Expense reimbursement'
+    case 'credit_note':           return row.creditForNumber ? `Credit note to invoice ${row.creditForNumber}` : 'Credit note'
+    default:                      return LABEL_FOR_TYPE[inv.invoice_type] || inv.invoice_type
+  }
+}
+
+// One line per document:
+//   "2026-09-001 | Project Blue Lagoon | <description> | Issued 02/09/2026 | Total €5,000.00"
+// Credit notes are indented under their invoice and shown as a negative.
+export function buildAccountantInvoiceLine(row, client) {
+  const inv = row.inv
+  const isCN = inv.invoice_type === 'credit_note'
+  const label = LABEL_FOR_TYPE[inv.invoice_type] || inv.invoice_type
+  const desc  = accountantShortLabel(inv, row)
+  const num   = inv.invoice_number || '(no number)'
+  const total = isCN ? `−${fmtEur(Math.abs(Number(inv.amount_total) || 0))}` : fmtEur(inv.amount_total)
+  let note = ''
+  if (isCN && !row.creditFor && row.creditForNumber) note = ` (original invoice issued in an earlier month)`
+  const parts = [
+    isCN ? `   ↳ Credit Note ${num}` : num,
+    `Project ${client?.trade_name || client?.legal_name || '?'}`,
+    desc + (inv.status === 'voided' ? ' (VOIDED)' : '') + note,
+    `Issued ${fmtDate(inv.date_issued)}`,
+    `Total ${total}`,
+  ]
+  return parts.join(' | ')
+}
+
+// Expense reimbursement line, e.g.
+//   "Project Kipseli: €812.40 — invoiced in 2026-10-004 (issued 30/10/2026)"
+export function buildExpenseCalcLine(row, month, year) {
+  const name = `Project ${row.client?.trade_name || row.client?.legal_name || '?'}`
+  const amt  = fmtEur(row.calculated)
+  switch (row.status) {
+    case 'invoiced':
+      return `${name}: ${amt} — invoiced in ${row.invoices.map(i => `${i.invoice_number || '(no number)'} (issued ${fmtDate(i.date_issued)})`).join(', ')}`
+    case 'deferred':
+      return `${name}: ${amt} — not invoiced yet; deferred to ${formatMonthYear(row.target.month, row.target.year)} and will be invoiced with that month's expense reimbursement`
+    case 'frozen':
+      return `${name}: ${amt} — project billing paused (frozen) for ${formatMonthYear(month, year)}; not invoiced`
+    default:
+      return `${name}: ${amt} — not invoiced yet; will be invoiced in a later month`
+  }
+}
+
+// companies: [{ id, name, invoices: [...], expenseCalc: [rows] }] in display order
+export function buildAccountantSubject(companies, month, year) {
+  const withInv = companies.filter(c => c.invoices.length > 0).map(c => shortCompanyName(c.name))
+  const who = withInv.length ? withInv.join(' & ') : companies.map(c => shortCompanyName(c.name)).join(' & ')
+  return `${who} Invoices issued ${formatMonthYear(month, year)}`
+}
+
+export function buildAccountantBody(companies, clientsById, month, year, contact = ACCOUNTANT_DEFAULT_CONTACT) {
+  const period = formatMonthYear(month, year)
+  const withInv    = companies.filter(c => c.invoices.length > 0)
+  const withoutInv = companies.filter(c => c.invoices.length === 0)
+  const lines = [`Dear ${contact},`, '']
+
+  if (withInv.length === 0) {
+    lines.push(`Please note that there were no invoices issued from ${joinWithAnd(companies.map(c => shortCompanyName(c.name)))} in ${period}.`)
+  } else {
+    lines.push(`Enclosed please find invoices issued ${period} from ${joinWithAnd(withInv.map(c => shortCompanyName(c.name)))}.`)
+    for (const c of withInv) {
+      lines.push('')
+      lines.push(`${shortCompanyName(c.name)} — invoices issued ${period}:`)
+      for (const row of orderWithCreditNotes(c.invoices)) {
+        lines.push(buildAccountantInvoiceLine(row, clientsById.get(row.inv.client_id)))
+      }
+    }
+  }
+
+  // Expense reimbursement calculated for the month, per company.
+  for (const c of companies) {
+    const rows = (c.expenseCalc || []).filter(r => r.calculated > 0)
+    if (!rows.length) continue
+    const total = rows.reduce((s, r) => s + r.calculated, 0)
+    lines.push('')
+    lines.push(`${shortCompanyName(c.name)} — expense reimbursement calculated for ${period} (total ${fmtEur(total)}):`)
+    for (const r of rows) lines.push(buildExpenseCalcLine(r, month, year))
+    if (rows.some(r => r.status === 'deferred' || r.status === 'pending')) {
+      lines.push('Amounts not yet invoiced will be invoiced in a later month (or the month they are deferred to) and will appear in that month\'s list.')
+    }
+  }
+
+  if (withInv.length && withoutInv.length) {
+    lines.push('')
+    lines.push(`Please note that there were no invoices issued from ${joinWithAnd(withoutInv.map(c => shortCompanyName(c.name)))} this month.`)
+  }
+  lines.push('', 'Warm regards,', 'Betija')
+  return lines.join('\n')
+}

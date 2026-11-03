@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { PrintLetterhead } from '../PrintLetterhead/PrintLetterhead'
 import { ComposeEmailsModal } from './ComposeEmailsModal'
+import { AccountantEmailModal } from './AccountantEmailModal'
 import { SoaModal } from './SoaModal'
 import { useIsCurrentPeriodLocked } from '../../lib/useIsCurrentPeriodLocked'
 import { validatePhases, resolveMonthlyFee } from '../../lib/feePhases'
@@ -174,6 +175,8 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
   // every issued invoice for the period and renders one email card per
   // bundle / standalone, ready for the user to tweak + open in mail.
   const [composeOpen, setComposeOpen] = useState(false)
+  // Accountant monthly 'invoices issued' email modal.
+  const [accountantOpen, setAccountantOpen] = useState(false)
 
   // SOA modal — holds the client row whose Statement of Account is
   // being generated. Null = modal closed.
@@ -2413,6 +2416,14 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
             title="Generate emails for all issued invoices in this period"
           >
             ✉️ Compose Emails
+          </button>
+          <button
+            onClick={() => setAccountantOpen(true)}
+            className="button"
+            style={{ background: '#0F766E' }}
+            title="Email the accountants the list of all invoices issued in a month (both companies)"
+          >
+            📨 Accountant Email
           </button>
           <button onClick={handlePrint} className="button" style={{ background: '#475569' }}>
             🖨 Print
@@ -4786,6 +4797,14 @@ export function Clients({ selectedCompany, selectedMonth, selectedYear }) {
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           onClose={() => setComposeOpen(false)}
+        />
+      )}
+
+      {accountantOpen && (
+        <AccountantEmailModal
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          onClose={() => setAccountantOpen(false)}
         />
       )}
 
