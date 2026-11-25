@@ -20,7 +20,9 @@ import { supabase } from '../../supabaseClient'
  * Stored bi-directionally in expenses.linked_expense_id on both rows.
  *
  * Cross-month is supported naturally: a Jan 31 outgoing can pair with a Feb 2
- * incoming because the ±7-day window crosses the boundary.
+ * incoming because the ±7-day window crosses the boundary. When the two legs
+ * are further apart (e.g. money arrives in October but only leaves in
+ * November), the user can widen the window to ±31 / ±62 / ±92 days.
  *
  * Props:
  *   expense        — the expense to link (must include id, amount, date, category,
@@ -54,6 +56,8 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  // Search window in days either side of this expense's date (widenable)
+  const [windowDays, setWindowDays] = useState(7)
 
   const myCategoryName = expense.expense_categories?.name
 
@@ -93,16 +97,16 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
   const formatAmount = (n) =>
     `€${Math.abs(Number(n || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-  // Build the ±7-day search window around this expense's date
+  // Build the ±windowDays search window around this expense's date
   const dateWindow = useMemo(() => {
     if (!expense?.date) return null
     const d = new Date(expense.date + 'T00:00:00')
-    const start = new Date(d); start.setDate(d.getDate() - 7)
-    const end = new Date(d); end.setDate(d.getDate() + 7)
+    const start = new Date(d); start.setDate(d.getDate() - windowDays)
+    const end = new Date(d); end.setDate(d.getDate() + windowDays)
     const fmt = (dt) =>
       `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
     return { start: fmt(start), end: fmt(end) }
-  }, [expense?.date])
+  }, [expense?.date, windowDays])
 
   // Initial load: branch by link mode, fetch current link OR candidates.
   useEffect(() => {
@@ -143,7 +147,7 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
 
         // 3. Not yet linked — fetch candidates per link mode
         if (!dateWindow) {
-          setError('This expense has no date — cannot compute the ±7 day search window.')
+          setError('This expense has no date — cannot compute the search window.')
           setLoading(false)
           return
         }
@@ -228,7 +232,7 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
     }
     load()
     return () => { cancelled = true }
-  }, [expense?.id, expense?.linked_expense_id, currentCompany])
+  }, [expense?.id, expense?.linked_expense_id, currentCompany, windowDays])
 
   // Bi-directionally link this expense ↔ candidate
   const handleLink = async (candidate) => {
@@ -358,13 +362,31 @@ export function LinkInterCompanyModal({ expense, currentCompany, onClose, onSave
                 <div style={{ fontSize: 12, color: '#6b7280' }}>
                   {`Looking for "${otherCategoryName}" expenses for ${formatAmount(absAmount)} (sign-safe)${linkMode === 'intra' ? ' on a different account' : ''}, dated between ${formatDate(dateWindow?.start)} and ${formatDate(dateWindow?.end)}.`}
                 </div>
+                <div style={{ fontSize: 12, color: '#374151', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span>Search window:</span>
+                  {[7, 31, 62, 92].map(n => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setWindowDays(n)}
+                      style={{
+                        padding: '2px 8px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+                        border: '1px solid ' + (windowDays === n ? '#2563eb' : '#d1d5db'),
+                        background: windowDays === n ? '#2563eb' : '#fff',
+                        color: windowDays === n ? '#fff' : '#374151',
+                      }}
+                    >
+                      ±{n === 7 ? '7 days' : n === 31 ? '1 month' : n === 62 ? '2 months' : '3 months'}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {candidates.length === 0 ? (
                 <div style={{ padding: 20, textAlign: 'center', background: '#fef3c7', borderRadius: 6, color: '#92400e' }}>
                   ⚠️ No matching counterparts found.<br />
                   <span style={{ fontSize: 13 }}>
-                    The counterpart may not be entered yet, may be more than 7 days away, or may already be linked to a different expense.
+                    The counterpart may not be entered yet, may be outside the search window (try a wider one above), or may already be linked to a different expense.
                   </span>
                 </div>
               ) : (
