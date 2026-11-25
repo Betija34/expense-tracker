@@ -21,7 +21,7 @@ export function uuid() {
  * Sub-reference: [series][month]/[seq]  (e.g. T1/4, R1/2, S12/3)
  *   - series: 'T' (Travel), 'R' (Reimbursable), 'S' (Salaries/Payroll)
  *   - T and R: auto-derived from payment date month + next seq
- *   - S: MANUAL — user enters the month + seq (may reflect work period, not payment month)
+ *   - S: NO LONGER USED (Nov 2026) — Cost of Labor gets no sub-ref; older rows keep theirs
  *   - sub-refs are mutually exclusive: Reimbursable flag wins (R) over category-derived (T or S)
  */
 
@@ -163,7 +163,13 @@ export async function nextSubRefSeq(companyId, series, month) {
  */
 export function decideSubRefSeries(category, isReimbursable) {
   if (isReimbursable) return 'R'
-  return category?.sub_ref_series || null
+  const series = category?.sub_ref_series || null
+  // Nov 2026: S-series (Salaries / Social Insurance — Cost of Labor) sub-refs
+  // are no longer used. The category keeps sub_ref_series='S' because the
+  // Shareholder Report relies on it to recognise bank-paid payroll lines,
+  // but no sub-reference is assigned to new or re-saved expenses.
+  if (series === 'S') return null
+  return series
 }
 
 /**
@@ -171,6 +177,7 @@ export function decideSubRefSeries(category, isReimbursable) {
  * Currently: Cost of Labor (sub_ref_manual = true on the category row).
  */
 export function isSubRefManual(category, isReimbursable) {
-  if (isReimbursable) return false // R is always auto from payment date
-  return !!category?.sub_ref_manual
+  // Manual entry only ever applied to S-series (Cost of Labor), which is no
+  // longer used (Nov 2026) — so no category requires manual sub-ref entry.
+  return false
 }
